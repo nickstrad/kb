@@ -1,0 +1,330 @@
+// `kb doctor`: check the driver, the embedder, and the drift between the database, the files and
+// index.md. P4.4 implements it.
+//
+// Every check prints exactly one line while it runs — "ok   <check>: <detail>",
+// "FAIL <check>: <detail>" or "warn <check>: <detail>" — except entries/db-vs-files, which print
+// one FAIL or warn line per offending path plus a summary ok line when there were none. The
+// command exits non-zero if any check FAILed; a warn never affects the exit code.
+package cli
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"knowledge/kb/internal/embed"
+	"knowledge/kb/internal/embed/ollama"
+	"knowledge/kb/internal/entry"
+	"knowledge/kb/internal/index"
+	"knowledge/kb/internal/store"
+)
+
+// newDoctorCmd builds `kb doctor`.
+func newDoctorCmd(stdout, stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:           "doctor",
+		Short:         "Check driver, embedder and index health",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDoctor(cmd.Context(), stdout, Root())
+		},
+	}
+}
+
+// doctorState accumulates the ok/FAIL/warn lines doctor prints and the counts that decide its
+// exit code and final summary line.
+type doctorState struct {
+	stdout io.Writer
+	failed int
+	warned int
+}
+
+func (d *doctorState) ok(check, detail string) {
+	fmt.Fprintf(d.stdout, "ok   %s: %s\n", check, detail)
+}
+
+func (d *doctorState) fail(check, detail string) {
+	fmt.Fprintf(d.stdout, "FAIL %s: %s\n", check, detail)
+	d.failed++
+}
+
+func (d *doctorState) warn(check, detail string) {
+	fmt.Fprintf(d.stdout, "warn %s: %s\n", check, detail)
+	d.warned++
+}
+
+// runDoctor runs every check in turn and prints the final "doctor: N failed, M warnings" line.
+// It returns a non-nil error (ExitUsage) only when at least one check FAILed.
+func runDoctor(ctx context.Context, stdout io.Writer, root string) error {
+	d := &doctorState{stdout: stdout}
+
+	dbPath := DBPath(root)
+	var st *store.Store
+	if _, statErr := os.Stat(dbPath); statErr != nil {
+		d.fail("database", fmt.Sprintf("none at %s; run kb reindex --all", dbPath))
+	} else if opened, err := store.Open(dbPath); err != nil {
+		d.fail("driver", err.Error())
+	} else {
+		st = opened
+		defer st.Close()
+		checkDriver(d, st)
+	}
+
+	entries, err := entry.Discover(root)
+	if err != nil {
+		d.fail("entries", err.Error())
+		entries = nil
+	}
+	goodEntries := make([]entry.Entry, 0, len(entries))
+	for _, e := range entries {
+		if e.Err == nil {
+			goodEntries = append(goodEntries, e)
+		}
+	}
+
+	embedder := newEmbedder()
+
+	if st != nil {
+		checkEmbedMeta(d, st, embedder)
+	}
+	checkOllama(ctx, d, embedder)
+	checkEntries(d, entries)
+	if st != nil {
+		checkDBVsFiles(d, root, st, goodEntries)
+	}
+	checkIndexMD(d, root, goodEntries)
+	checkBinary(d, root)
+
+	fmt.Fprintf(stdout, "doctor: %d failed, %d warnings\n", d.failed, d.warned)
+	if d.failed > 0 {
+		return usageErr("kb doctor: %d check(s) failed", d.failed)
+	}
+	return nil
+}
+
+// checkDriver confirms the open database's driver has fts5 and sqlite-vec, and prints their
+// versions. store.Open has already refused to open a database missing either, so a failure here
+// would mean the pragma queries themselves failed, not that the extensions are absent.
+func checkDriver(d *doctorState, st *store.Store) {
+	rows, err := st.DB().Query("PRAGMA compile_options")
+	if err != nil {
+		d.fail("driver", fmt.Sprintf("read compile_options: %s", err))
+		return
+	}
+	hasFTS5 := false
+	for rows.Next() {
+		var opt string
+		if err := rows.Scan(&opt); err != nil {
+			rows.Close()
+			d.fail("driver", fmt.Sprintf("read compile_options: %s", err))
+			return
+		}
+		if strings.Contains(opt, "ENABLE_FTS5") {
+			hasFTS5 = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		d.fail("driver", fmt.Sprintf("read compile_options: %s", err))
+		return
+	}
+	rows.Close()
+	if !hasFTS5 {
+		d.fail("driver", "sqlite compiled without ENABLE_FTS5; rebuild with `go build -tags fts5 ./cmd/kb`")
+		return
+	}
+
+	var vecVer string
+	if err := st.DB().QueryRow("select vec_version()").Scan(&vecVer); err != nil {
+		d.fail("driver", fmt.Sprintf("vec_version(): %s", err))
+		return
+	}
+	var sqliteVer string
+	if err := st.DB().QueryRow("select sqlite_version()").Scan(&sqliteVer); err != nil {
+		d.fail("driver", fmt.Sprintf("sqlite_version(): %s", err))
+		return
+	}
+	d.ok("driver", fmt.Sprintf("fts5 enabled, sqlite %s, sqlite-vec %s", sqliteVer, vecVer))
+}
+
+// checkEmbedMeta compares the stored embed_meta row against the configured embedder.
+func checkEmbedMeta(d *doctorState, st *store.Store, embedder embed.Embedder) {
+	model, dim, ok, err := st.EmbedMeta()
+	if err != nil {
+		d.fail("embed_meta", err.Error())
+		return
+	}
+	if !ok {
+		d.fail("embed_meta", "not set (empty database); run kb reindex --all")
+		return
+	}
+	if model != embedder.Model() || dim != embedder.Dim() || dim != store.VecDim {
+		d.fail("embed_meta", fmt.Sprintf(
+			"database has %s (%d dims), configured embedder is %s (%d dims); run kb reindex --all",
+			model, dim, embedder.Model(), embedder.Dim()))
+		return
+	}
+	d.ok("embed_meta", fmt.Sprintf("model=%s dim=%d", model, dim))
+}
+
+// checkOllama pings the concrete embedder when it supports it (the pinger interface, defined in
+// reindex.go, is satisfied by *ollama.Client). A test embedder (internal/embed/fake) does not
+// implement Ping, so it is reported as a warning rather than skipped silently or faked as ok.
+func checkOllama(ctx context.Context, d *doctorState, embedder embed.Embedder) {
+	p, isPinger := embedder.(pinger)
+	if !isPinger {
+		d.warn("ollama", "not checked (test embedder)")
+		return
+	}
+	if err := p.Ping(ctx); err != nil {
+		d.fail("ollama", err.Error())
+		return
+	}
+	d.ok("ollama", fmt.Sprintf("reachable at %s, model %s", ollamaBaseURL(), embedder.Model()))
+}
+
+// ollamaBaseURL mirrors ollama.New's own precedence (argument, then KB_OLLAMA_URL, then the
+// package default) for display purposes only; the CLI always calls ollama.New("", "", 0), so this
+// is the base URL actually in effect.
+func ollamaBaseURL() string {
+	if u := os.Getenv("KB_OLLAMA_URL"); u != "" {
+		return u
+	}
+	return ollama.DefaultBaseURL
+}
+
+// checkEntries reports every entry whose front matter failed to parse or validate as a FAIL, and
+// a missing tags or updated field as a warn, then an ok summary when there were no failures.
+func checkEntries(d *doctorState, entries []entry.Entry) {
+	failures := 0
+	for _, e := range entries {
+		if e.Err != nil {
+			d.fail("entry", fmt.Sprintf("%s: %s", e.Path, e.Err))
+			failures++
+			continue
+		}
+		if len(e.Meta.Tags) == 0 {
+			d.warn("entry", fmt.Sprintf("%s: no tags", e.Path))
+		}
+		if strings.TrimSpace(e.Meta.Updated) == "" {
+			d.warn("entry", fmt.Sprintf("%s: no updated date", e.Path))
+		}
+	}
+	if failures == 0 {
+		d.ok("entries", fmt.Sprintf("%d entries valid", len(entries)))
+	}
+}
+
+// checkDBVsFiles compares every good (Err == nil) entry's on-disk body_hash against the database,
+// and reports database rows whose file no longer exists on disk.
+func checkDBVsFiles(d *doctorState, root string, st *store.Store, goodEntries []entry.Entry) {
+	rows, err := st.ListEntries()
+	if err != nil {
+		d.fail("db-vs-files", err.Error())
+		return
+	}
+	byPath := make(map[string]store.EntryRow, len(rows))
+	for _, r := range rows {
+		byPath[r.Path] = r
+	}
+
+	onDisk := make(map[string]bool, len(goodEntries))
+	stale, inSync := 0, 0
+	for _, e := range goodEntries {
+		onDisk[e.Path] = true
+		files, err := entry.Load(root, e)
+		if err != nil {
+			d.fail("db-vs-files", fmt.Sprintf("stale %s: %s; run kb reindex %s", e.Path, err, e.Path))
+			stale++
+			continue
+		}
+		hash := entry.BodyHash(files, e.Files)
+		row, known := byPath[e.Path]
+		if !known || row.BodyHash != hash {
+			d.fail("db-vs-files", fmt.Sprintf("stale %s; run kb reindex %s", e.Path, e.Path))
+			stale++
+			continue
+		}
+		inSync++
+	}
+
+	orphan := 0
+	for _, r := range rows {
+		if !onDisk[r.Path] {
+			d.fail("db-vs-files", fmt.Sprintf("orphan %s", r.Path))
+			orphan++
+		}
+	}
+
+	if stale == 0 && orphan == 0 {
+		d.ok("db-vs-files", fmt.Sprintf("%d entries in sync", inSync))
+	}
+}
+
+// checkIndexMD reports whether index.md is missing or differs from what index.Generate would
+// produce from the good entries right now.
+func checkIndexMD(d *doctorState, root string, goodEntries []entry.Entry) {
+	if _, err := os.Stat(filepath.Join(root, index.Name)); err != nil {
+		if os.IsNotExist(err) {
+			d.fail("index.md", "missing; run kb index")
+			return
+		}
+		d.fail("index.md", err.Error())
+		return
+	}
+	differs, err := index.Diff(root, goodEntries, index.Today())
+	if err != nil {
+		d.fail("index.md", err.Error())
+		return
+	}
+	if differs {
+		d.fail("index.md", "differs from generated; run kb index")
+		return
+	}
+	d.ok("index.md", "up to date")
+}
+
+// checkBinary is informational only: it warns when /usr/local/bin/kb is not a symlink into
+// <root>/kb/.cache/, which is how kb/scripts/install.sh sets it up.
+func checkBinary(d *doctorState, root string) {
+	const linkPath = "/usr/local/bin/kb"
+	fi, err := os.Lstat(linkPath)
+	if err != nil {
+		d.warn("binary", fmt.Sprintf("%s: %s; run kb/scripts/install.sh", linkPath, err))
+		return
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		d.warn("binary", fmt.Sprintf("%s is not a symlink; run kb/scripts/install.sh", linkPath))
+		return
+	}
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		d.warn("binary", fmt.Sprintf("%s: readlink: %s", linkPath, err))
+		return
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(linkPath), target)
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		d.warn("binary", fmt.Sprintf("%s: %s", linkPath, err))
+		return
+	}
+	wantDir, err := filepath.Abs(filepath.Join(root, "kb", ".cache"))
+	if err != nil {
+		d.warn("binary", fmt.Sprintf("%s: %s", linkPath, err))
+		return
+	}
+	if absTarget != wantDir && !strings.HasPrefix(absTarget, wantDir+string(filepath.Separator)) {
+		d.warn("binary", fmt.Sprintf("%s -> %s, not inside %s; run kb/scripts/install.sh", linkPath, absTarget, wantDir))
+		return
+	}
+	d.ok("binary", fmt.Sprintf("%s -> %s", linkPath, absTarget))
+}

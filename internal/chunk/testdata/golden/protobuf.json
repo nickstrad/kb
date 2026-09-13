@@ -1,0 +1,128 @@
+[
+  {
+    "Ord": 0,
+    "SourceFile": "protobuf/README.md",
+    "Heading": "",
+    "Text": "Protobuf wire format — field numbers are the contract: On the wire a protobuf message is only field numbers and wire types; names live in the schema, so renaming is free and re-typing fails silently.",
+    "TextHash": "b0be0e80c9be86bc9830c3f6f1d2077f3b2d839c84795f71b2b62a4026dcc8ab"
+  },
+  {
+    "Ord": 1,
+    "SourceFile": "protobuf/README.md",
+    "Heading": "(intro)",
+    "Text": "Protobuf wire format — field numbers are the contract › (intro)\n# Protobuf wire format — field numbers are the contract\n\nAn encoded protobuf message contains **no field names**. Each field is a varint *tag* packing a\nfield number and a wire type, followed by the payload. The `.proto` file is the only thing that\nmaps number 2 back to `label`.\n\nEverything downstream follows from that one fact: renaming a field is free, changing its number\nis catastrophic, and the decoder cannot tell you when it is wrong.",
+    "TextHash": "1492534a1fc7a533f7b28f8f006963b33e295dd1f12ddb7991783cecc469e834"
+  },
+  {
+    "Ord": 2,
+    "SourceFile": "protobuf/README.md",
+    "Heading": "The bytes",
+    "Text": "Protobuf wire format — field numbers are the contract › The bytes\n```bash\ncat \u003e m.proto \u003c\u003c'P'\nsyntax = \"proto3\";\npackage v;\nmessage M { int32 count = 1; string label = 2; repeated int32 rep = 3; }\nP\necho 'count: 150 label: \"hi\" rep: 0' | protoc -I . --encode=v.M m.proto | od -An -tx1\n```\n\n```\n 08 96 01 12 02 68 69 1a 01 00\n```\n\nRead it as tag/payload pairs, where **tag = (field_number \u003c\u003c 3) | wire_type**:\n\n| Bytes | Tag math | Meaning |\n| --- | --- | --- |\n| `08` | `8 \u003e\u003e 3 = 1`, `8 \u0026 7 = 0` | field 1, wire type 0 (varint) |\n| `96 01` | `0x16 + (1 \u003c\u003c 7)` | `= 150` |\n| `12` | `18 \u003e\u003e 3 = 2`, `18 \u0026 7 = 2` | field 2, wire type 2 (length-delimited) |\n| `02 68 69` | length 2 | `\"hi\"` |\n| `1a` | `26 \u003e\u003e 3 = 3`, `26 \u0026 7 = 2` | field 3, **wire type 2** |\n| `01 00` | length 1 | the single value `0` |\n\nNote field 3: a `repeated int32` is **packed by default in proto3**, so it arrives as one\nlength-delimited blob, not as wire type 0. That surprises people reading hex by hand.\n\nThe tag is itself a varint, which is why field numbers 1–15 cost one byte and 16+ cost two —\nverified: field 15 → `78`, field 16 → `80 01`, field 2000 → `80 7d`. **Spend 1–15 on your\nhot fields.**",
+    "TextHash": "fa2d740714060323098e40f2c02b3fc03253078564d51b71dd0a734e5d537cd6"
+  },
+  {
+    "Ord": 3,
+    "SourceFile": "protobuf/README.md",
+    "Heading": "Renaming is a no-op",
+    "Text": "Protobuf wire format — field numbers are the contract › Renaming is a no-op\nA schema with entirely different names but the same numbers and types decodes the same bytes:\n\n```bash\n# message M { int32 TOTALLY_DIFFERENT = 1; string other_name = 2; repeated int32 rep = 3; }\nprotoc -I renamed --decode=v.M m.proto \u003c msg.bin\n```\n\n```\nTOTALLY_DIFFERENT: 150\nother_name: \"hi\"\nrep: 0\n```\n\nExit 0. So a field rename is a source-level change only — but see\n[grpc-reflection-and-grpcurl.md](../grpc-reflection-and-grpcurl.md), because **JSON-based tooling\nkeys on names**, and that is where a rename does break things.",
+    "TextHash": "31a8de61a4352e2666b11b4bfa132d37b5f1542784a5c38acf985e4dd4319d2e"
+  },
+  {
+    "Ord": 4,
+    "SourceFile": "protobuf/README.md",
+    "Heading": "Changing a type does not raise an error",
+    "Text": "Protobuf wire format — field numbers are the contract › Changing a type does not raise an error\nThis is the part worth internalizing. `protoc --decode` returned **exit 0 with empty stderr in\nevery incompatible case tested.** There are two distinct failure shapes:\n\n**1. Wire types disagree → the field is silently moved to unknown fields.** Decoding the bytes\nabove with `count` re-typed from `int32` (wire type 0) to `string` (wire type 2):\n\n```\nlabel: \"hi\"\nrep: 0\n1: 150          \u003c- the old field, demoted to an unknown field, printed by number\n```\n\nYour data is not lost — it is printed last, by number, as an unknown field — but `count`\nreads as unset. Nothing warns you.\n\n**2. Wire types agree → a genuine silent misread.** `string label = 2` re-typed to a nested\nmessage is still wire type 2, so the decoder happily parses the string's bytes as a submessage:\n\n```\nlabel {\n  13: 105\n}\n```\n\n`\"hi\"` is `68 69`; `0x68 = 104`, and `104 \u003e\u003e 3 = 13`, `104 \u0026 7 = 0` — so the decoder sees \"field\n13, varint\" and eats `0x69 = 105` as its value. Exit 0. **A protobuf decoder cannot tell you your\nschema is wrong; it can only tell you your framing is wrong.**\n\nThe one safe widening confirmed here: `int32 → int64` is byte-identical, negatives included.\n(`int32 -1` sign-extends to a 10-byte varint payload — the same bytes an `int64 -1` produces,\nwhich is exactly why the widening is free and why storing negative numbers in `int32` costs\nmaximum size.)",
+    "TextHash": "9120c8141cfd81ab26c1575626d7c36ad8aa23a7f20fdca21cc56c10ef671cd8"
+  },
+  {
+    "Ord": 5,
+    "SourceFile": "protobuf/README.md",
+    "Heading": "`--decode_raw` guesses, and gets it wrong",
+    "Text": "Protobuf wire format — field numbers are the contract › `--decode_raw` guesses, and gets it wrong\n`protoc --decode_raw` reads bytes with no schema at all — the right first move on an opaque blob:\n\n```bash\nprotoc --decode_raw \u003c msg.bin\n```\n\n```\n1: 150\n2 {\n  13: 105\n}\n3: \"\\000\"\n```\n\nIt recovers field numbers and wire types, never names. And for wire type 2 it **heuristically\nguesses** whether the payload is a nested message or a string — above, it misidentified the\nstring `\"hi\"` as a message. It errs in both directions: a real empty nested message prints as\n`2: \"\"`. Treat wire-type-2 output as a suggestion, not a reading.",
+    "TextHash": "6055d8cd34ee05816d001da0411d9e471d375dee6828b1c37a26408623eb9c4f"
+  },
+  {
+    "Ord": 6,
+    "SourceFile": "protobuf/README.md",
+    "Heading": "Files in this directory",
+    "Text": "Protobuf wire format — field numbers are the contract › Files in this directory\n| Path | What it is |\n| --- | --- |\n| `scripts/wire-demo.sh` | Reproduces every experiment on this page from scratch in a temp dir; run it to re-verify against a newer protoc. |\n| `docs/field-presence.md` | Why a field set to zero can vanish, and what `optional` actually buys. |\n| `docs/reserved-fields.md` | What `reserved` prevents, and the silent corruption it exists to stop. |",
+    "TextHash": "a6bb3fda73292f05a14bbe9843d219f392424be74b13cd951e258cff5977d38f"
+  },
+  {
+    "Ord": 7,
+    "SourceFile": "protobuf/README.md",
+    "Heading": "Scope",
+    "Text": "Protobuf wire format — field numbers are the contract › Scope\nproto3 only, via the `protoc` CLI. **Unverified:** no language runtime was tested, so\nunknown-field *retention* across a decode/re-encode in Go/Java/Python is not established here —\nonly what the CLI prints. proto2 and editions were not tested.",
+    "TextHash": "496b58688984a4209deeff8978d3a53366f558e599544e1bc8aaec5453911f79"
+  },
+  {
+    "Ord": 8,
+    "SourceFile": "protobuf/docs/field-presence.md",
+    "Heading": "(intro)",
+    "Text": "Protobuf wire format — field numbers are the contract › (intro)\n# Proto3 field presence — why a zero disappears\n\nA proto3 scalar without `optional` has **implicit presence**: setting it to its zero value is\nencoded as *nothing at all*. \"Set to 0\" and \"never set\" are the same bytes, so the distinction\ncannot survive serialization.\n\n```proto\nsyntax = \"proto3\";\npackage v;\nmessage Inner { int32 x = 1; }\nmessage P { int32 plain = 1; optional int32 opt = 2; Inner msg = 3; }\n```\n\n```bash\necho \"\"            | protoc -I . --encode=v.P p.proto \u003e absent.bin\necho \"plain: 0\"    | protoc -I . --encode=v.P p.proto \u003e plain0.bin\necho \"opt: 0\"      | protoc -I . --encode=v.P p.proto \u003e opt0.bin\necho \"msg { }\"     | protoc -I . --encode=v.P p.proto \u003e msgempty.bin\necho \"msg { x: 0 }\"| protoc -I . --encode=v.P p.proto \u003e msgzero.bin\nwc -c absent.bin plain0.bin opt0.bin msgempty.bin msgzero.bin\ncmp absent.bin plain0.bin \u0026\u0026 echo identical\n```\n\n```\n0 absent.bin\n0 plain0.bin\n2 opt0.bin\n2 msgempty.bin\n2 msgzero.bin\nidentical\n```\n\nSo:\n\n- `plain: 0` → **0 bytes**, byte-identical to sending nothing.\n- `opt: 0` → **2 bytes** (`10 00`): the tag is emitted precisely so the zero is observable.\n- `msg { }` → **2 bytes** (`1a 00`), and identical to `msg { x: 0 }`. Message-typed fields always\n  have presence; the scalars *inside* them do not, recursively.",
+    "TextHash": "63363cab79d2b0972b01c5e21e8ade341d49cfdcca65f737bbc59f3ce78c5049"
+  },
+  {
+    "Ord": 9,
+    "SourceFile": "protobuf/docs/field-presence.md",
+    "Heading": "The consequence people actually hit",
+    "Text": "Protobuf wire format — field numbers are the contract › The consequence people actually hit\nA plain scalar cannot express \"the client explicitly sent 0\". A partial-update API built on\nimplicit-presence scalars **cannot distinguish \"leave this alone\" from \"set it to zero\"** — the\nclassic symptom is a PATCH that silently refuses to zero out a counter or clear a price.\n\nUse `optional` (or a wrapper message, or a separate field mask) whenever zero is a meaningful\nvalue a client can choose.",
+    "TextHash": "8a02c8214d9750afb75595f89c225e12ccbd63d3a736e63f4ea4a158c7baee5a"
+  },
+  {
+    "Ord": 10,
+    "SourceFile": "protobuf/docs/field-presence.md",
+    "Heading": "The trap: presence lives in the reader's schema too",
+    "Text": "Protobuf wire format — field numbers are the contract › The trap: presence lives in the reader's schema too\n`optional` only protects you if *both* sides declare it. Decode `opt0.bin` with a schema that is\nidentical except the `optional` keyword is missing, and re-encode:\n\n```bash\nprotoc -I noopt --decode=v.P p.proto \u003c opt0.bin \\\n  | protoc -I noopt --encode=v.P p.proto \u003e roundtrip.bin\nwc -c opt0.bin roundtrip.bin\n```\n\n```\n2 opt0.bin\n0 roundtrip.bin\n```\n\n**Two bytes in, zero bytes out.** A middle service running the older schema strips the presence\nbit while cheerfully reporting success — and because the value was zero, nothing in its output\nlooks wrong. Adding or removing `optional` is therefore a semantic change to every hop in the\nchain, not a local edit.\n\nFor non-zero values, `optional` and plain produce identical bytes, so the keyword costs nothing\non the wire except in exactly the case it exists for.",
+    "TextHash": "5f0eac8ba6b2724bcad9034e20d380640739a435f898590ca3365b487b218043"
+  },
+  {
+    "Ord": 11,
+    "SourceFile": "protobuf/docs/field-presence.md",
+    "Heading": "See also",
+    "Text": "Protobuf wire format — field numbers are the contract › See also\n[Protobuf wire format](../README.md) — why none of this is detectable at decode time.",
+    "TextHash": "256c1af7bbc7f10f86c7f12606d40982d26e928a52537b64277c9b0e201dc653"
+  },
+  {
+    "Ord": 12,
+    "SourceFile": "protobuf/docs/reserved-fields.md",
+    "Heading": "(intro)",
+    "Text": "Protobuf wire format — field numbers are the contract › (intro)\n# Protobuf `reserved` — a compile-time tripwire, not a runtime guard\n\nDeleting a field frees its number, and the next person to add a field will be offered that number\nby their editor, their reviewer, or plain bad luck. Nothing on the wire records that the number\nused to mean something else.",
+    "TextHash": "58c38bd5873af00af9e010797e6afb7a8754b34b134018b00e35d112adff0027"
+  },
+  {
+    "Ord": 13,
+    "SourceFile": "protobuf/docs/reserved-fields.md",
+    "Heading": "What goes wrong without it",
+    "Text": "Protobuf wire format — field numbers are the contract › What goes wrong without it\n`v1` writes `age = 2`. Someone deletes `age` and later reuses number 2 for `account_tier`:\n\n```bash\necho 'name: \"ann\" age: 34' | protoc -I v1 --encode=v.U u.proto \u003e old.bin\nod -An -tx1 old.bin                 #  0a 03 61 6e 6e 10 22\nprotoc -I v2 --decode=v.U u.proto \u003c old.bin\n```\n\n```\nname: \"ann\"\naccount_tier: 34\n```\n\nExit 0. A stored age became a tier. No error, no warning, no way for the reader to know — this is\nthe corruption `reserved` exists to prevent.",
+    "TextHash": "df9f86ea002b5775dd16cbdcf3b639a3cd82457bd441925e46ba9971ede041ed"
+  },
+  {
+    "Ord": 14,
+    "SourceFile": "protobuf/docs/reserved-fields.md",
+    "Heading": "What `reserved` does",
+    "Text": "Protobuf wire format — field numbers are the contract › What `reserved` does\n```proto\nmessage U {\n  string name = 1;\n  reserved 2;              // was: age\n  int32 account_tier = 3;\n}\n```\n\n```\nname: \"ann\"\n2: 34\n```\n\nStill exit 0 — but the stale value lands in **unknown fields**, where it is inert, instead of\nimpersonating a live field.",
+    "TextHash": "a773971de0a4065a1f982ca16f18b25149691a8cd4093d93baaf090e6eef704e"
+  },
+  {
+    "Ord": 15,
+    "SourceFile": "protobuf/docs/reserved-fields.md",
+    "Heading": "The error, and how to trigger it",
+    "Text": "Protobuf wire format — field numbers are the contract › The error, and how to trigger it\nReusing a reserved number or name is a hard `protoc` failure, **exit 1**, on any ordinary\ninvocation — `--cpp_out`, `--go_out`, `-o`, even `--encode`. You do not need an exotic flag such\nas `--descriptor_set_out` to surface it:\n\n```\nr.proto:4:12: Field \"replacement\" uses reserved number 2.\nr.proto:4:12: Suggested field numbers for v.R: 3\n```\n\n```\nr.proto:6:10: Field name \"label\" is reserved.\n```\n\nTwo gotchas in that output:\n\n- **The line:column for a reserved *number* points at the `reserved` declaration, not at the\n  offending field** (`4:12` is the `reserved 2;` line). The reserved *name* error points at the\n  field instead. Don't trust the caret to find your mistake.\n- `protoc r.proto` with **no** output flag never gets far enough to check — it exits 1 with\n  `Missing output directives.` A syntax-only check still needs an output flag.\n\nReserve the name as well as the number when the name carried meaning; reserved names must be\nquoted string literals in proto3. Reservations are scoped per message, and accept ranges\n(`reserved 2, 15, 9 to 11;`).",
+    "TextHash": "6cd9ed59399864e0ef6e94ff9be96485fc4a7e10fb560a9eb7275c8389f973a4"
+  },
+  {
+    "Ord": 16,
+    "SourceFile": "protobuf/docs/reserved-fields.md",
+    "Heading": "The honest limitation",
+    "Text": "Protobuf wire format — field numbers are the contract › The honest limitation\n`reserved` buys nothing at runtime. Both the reuse case and the reserved case decode with exit 0;\nthe only difference is whether the stale bytes hit a live field name. It is a note to your future\ncolleague that the compiler happens to enforce — and it evaporates the moment someone deletes the\n`reserved` line to make their build pass.",
+    "TextHash": "6e2f758759649f14ddb37bc8de305f0dbd67b14b4cbfbb5c1c25dbad72dbe602"
+  },
+  {
+    "Ord": 17,
+    "SourceFile": "protobuf/docs/reserved-fields.md",
+    "Heading": "See also",
+    "Text": "Protobuf wire format — field numbers are the contract › See also\n[Protobuf wire format](../README.md) — why a decoder can never detect this on its own.",
+    "TextHash": "1685fefd62672d7a9d73bde91b798e8547378679742a1aed89d9bfbde573c367"
+  }
+]
