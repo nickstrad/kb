@@ -143,6 +143,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		newIndexCmd(stdout, stderr),
 		newDoctorCmd(stdout, stderr),
 		newFeedbackCmd(stdout, stderr),
+		newStatsCmd(stdout, stderr),
 		newVersionCmd(stdout),
 	)
 	return cmd
