@@ -268,12 +268,11 @@ func checkDBVsFiles(d *doctorState, root string, st *store.Store, goodEntries []
 	}
 }
 
-// checkIndexMD reports whether index.md is missing or differs from what index.Generate would
-// produce from the good entries right now.
+// checkIndexMD accepts an absent optional snapshot and warns when an existing one is stale.
 func checkIndexMD(d *doctorState, root string, goodEntries []entry.Entry) {
 	if _, err := os.Stat(filepath.Join(root, index.Name)); err != nil {
 		if os.IsNotExist(err) {
-			d.fail("index.md", "missing; run kb index")
+			d.ok("index.md", "absent (optional export)")
 			return
 		}
 		d.fail("index.md", err.Error())
@@ -285,7 +284,7 @@ func checkIndexMD(d *doctorState, root string, goodEntries []entry.Entry) {
 		return
 	}
 	if differs {
-		d.fail("index.md", "differs from generated; run kb index")
+		d.warn("index.md", "optional snapshot is stale; run kb index to refresh or delete it")
 		return
 	}
 	d.ok("index.md", "up to date")

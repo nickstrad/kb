@@ -1,4 +1,4 @@
-// `kb edit`: open an entry in $EDITOR, then reindex it and regenerate index.md. P4.2 implements it.
+// `kb edit`: open an entry in $EDITOR, then reindex it. P4.2 implements it.
 package cli
 
 import (
@@ -109,10 +109,6 @@ func runEdit(ctx context.Context, stdout, stderr io.Writer, root, arg string) er
 		return usageErr("kb edit: %s", err)
 	}
 	fmt.Fprintln(stdout, sum.String())
-
-	if err := regenerateIndex(root, stderr); err != nil {
-		return usageErr("kb edit: %s", err)
-	}
 
 	if sum.Failed > 0 {
 		return usageErr("kb edit: reindex of %s failed; see warnings above", e2.Path)

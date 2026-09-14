@@ -2,17 +2,17 @@
 //
 // An entry is one of two shapes (AGENTS.md, "Which files are entries"):
 //
-//   - a file entry: every *.md directly under the repo root except AGENTS.md, CLAUDE.md,
+//   - a file entry: every *.md directly under data/ except AGENTS.md, CLAUDE.md,
 //     index.md, plan.md and README.md;
-//   - a directory entry: every directory directly under the repo root that contains a README.md,
+//   - a directory entry: every directory directly under data/ that contains a README.md,
 //     except skill/, .kb/ and .git/. Its indexed files are README.md and docs/*.md.
 //
-// The Path of an entry is always the repo-relative path of its front door: "foo.md" for a file
-// entry, "droplet/README.md" for a directory entry.
+// The Path of an entry is always the repo-relative path of its front door: "data/foo.md" for a
+// file entry, "data/droplet/README.md" for a directory entry.
 //
 // Discover never fails for a bad individual entry — a file it cannot read, front matter it
 // cannot parse, or front matter missing a title/summary all land in that Entry's Err field
-// instead. Only a failure to read the repo root itself is fatal. This lets `kb list` show a
+// instead. Only a failure to read the corpus directory itself is fatal. This lets `kb list` show a
 // broken entry instead of disappearing entirely, and lets `kb reindex` warn on one bad entry,
 // skip it, and keep going — see the Err field doc below.
 package entry
@@ -33,9 +33,13 @@ import (
 const (
 	KindFile = "file"
 	KindDir  = "dir"
+	DataDir  = "data"
 )
 
-// excludedRootFiles are the *.md files at the repo root that are repository machinery, not entries.
+// DataRoot returns the source corpus directory within a repository root.
+func DataRoot(root string) string { return filepath.Join(root, DataDir) }
+
+// excludedRootFiles are the *.md files under data/ that are repository machinery, not entries.
 var excludedRootFiles = map[string]bool{
 	"AGENTS.md": true,
 	"CLAUDE.md": true,
@@ -44,7 +48,7 @@ var excludedRootFiles = map[string]bool{
 	"README.md": true,
 }
 
-// excludedDirs are the directories at the repo root that are never entries even with a README.md.
+// excludedDirs are the directories under data/ that are never entries even with a README.md.
 var excludedDirs = map[string]bool{
 	"skill": true,
 	".kb":   true,
@@ -110,29 +114,30 @@ func (e Entry) HasTag(tag string) bool {
 	return false
 }
 
-// Discover walks the repo root one level deep and returns every entry, sorted by Path. A file or
+// Discover walks data/ one level deep and returns every entry, sorted by Path. A file or
 // directory entry whose front matter cannot be read, parsed or validated is still returned, with
 // Err set (see the Entry.Err doc). The only error Discover itself returns is a failure to read
-// root, which no individual entry can route around.
+// data/, which no individual entry can route around.
 func Discover(root string) ([]Entry, error) {
-	items, err := os.ReadDir(root)
+	items, err := os.ReadDir(DataRoot(root))
 	if err != nil {
-		return nil, fmt.Errorf("read repo root %s: %w", root, err)
+		return nil, fmt.Errorf("read corpus %s: %w", DataRoot(root), err)
 	}
 	var entries []Entry
 	for _, item := range items {
 		name := item.Name()
+		rel := DataDir + "/" + name
 		switch {
 		case item.IsDir():
 			if excludedDirs[name] {
 				continue
 			}
-			readme := filepath.Join(root, name, "README.md")
+			readme := filepath.Join(root, rel, "README.md")
 			if info, err := os.Stat(readme); err != nil || info.IsDir() {
 				continue
 			}
-			e := Entry{Path: name + "/README.md", Kind: KindDir, Dir: name}
-			files, err := dirFiles(root, name)
+			e := Entry{Path: rel + "/README.md", Kind: KindDir, Dir: rel}
+			files, err := dirFiles(root, rel)
 			if err != nil {
 				e.Err = err
 				entries = append(entries, e)
@@ -142,7 +147,7 @@ func Discover(root string) ([]Entry, error) {
 			loadMeta(root, &e)
 			entries = append(entries, e)
 		case strings.HasSuffix(name, ".md") && !excludedRootFiles[name]:
-			e := Entry{Path: name, Kind: KindFile, Files: []string{name}}
+			e := Entry{Path: rel, Kind: KindFile, Files: []string{rel}}
 			loadMeta(root, &e)
 			entries = append(entries, e)
 		}
@@ -199,10 +204,10 @@ func loadMeta(root string, e *Entry) {
 }
 
 // Resolve turns one <entry> command-line argument into the Entry it names, per the CLI argument
-// forms in plan.md: a root-relative file ("foo.md"), a directory name with or without a trailing
-// slash ("droplet", "droplet/"), a directory's explicit front door ("droplet/README.md"), or an
-// absolute path inside the repository. It is an error if the argument does not name a discovered
-// entry — including an entry whose own front matter is broken (Err is not considered here; a
+// forms: a corpus-relative file ("foo.md"), a directory name with or without a trailing
+// slash ("droplet", "droplet/"), a directory's explicit front door ("droplet/README.md"), a
+// repo-relative path ("data/foo.md"), or an absolute path inside data/. It is an error if the
+// argument does not name a discovered entry — including an entry whose own front matter is broken (Err is not considered here; a
 // broken entry is still an entry, and the caller decides what to do with Err).
 func Resolve(root, arg string) (Entry, error) {
 	trimmedArg := strings.TrimSpace(arg)
@@ -230,6 +235,9 @@ func Resolve(root, arg string) (Entry, error) {
 	rel = strings.TrimSuffix(rel, "/")
 	if rel == "" || rel == "." {
 		return Entry{}, fmt.Errorf("resolve %q: not a knowledge entry", arg)
+	}
+	if !filepath.IsAbs(trimmedArg) && !strings.HasPrefix(rel, DataDir+"/") {
+		rel = DataDir + "/" + rel
 	}
 
 	entries, err := Discover(root)

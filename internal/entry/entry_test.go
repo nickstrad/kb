@@ -242,19 +242,23 @@ func TestDiscover(t *testing.T) {
 	}
 	fm := "---\ntitle: T\nsummary: S\ntags: [x]\nupdated: 2026-09-13\n---\n"
 
-	write("thing.md", fm)
-	write("index.md", fm)  // machinery, excluded
-	write("AGENTS.md", fm) // machinery, excluded
-	write("plan.md", fm)   // machinery, excluded
-	write("README.md", fm) // machinery, excluded
-	write("CLAUDE.md", fm) // machinery, excluded
-	write("droplet/README.md", fm)
-	write("droplet/docs/b.md", "b")
-	write("droplet/docs/a.md", "a")
-	write("droplet/scripts/x.sh", "#!/bin/sh\n") // not indexed
-	write("skill/README.md", fm)                 // excluded directory
-	write(".kb/README.md", fm)                   // excluded directory
-	write("nodocs/notes.md", fm)                 // directory without a README.md
+	write("data/thing.md", fm)
+	write("legacy.md", fm)            // sources outside data/ must not be discovered
+	write("kb/README.md", fm)         // module docs are not corpus entries
+	write("data/index.md", fm)        // reserved files are still excluded inside data/
+	write("data/skill/README.md", fm) // reserved directories too
+	write("index.md", fm)             // machinery, excluded
+	write("AGENTS.md", fm)            // machinery, excluded
+	write("plan.md", fm)              // machinery, excluded
+	write("README.md", fm)            // machinery, excluded
+	write("CLAUDE.md", fm)            // machinery, excluded
+	write("data/droplet/README.md", fm)
+	write("data/droplet/docs/b.md", "b")
+	write("data/droplet/docs/a.md", "a")
+	write("data/droplet/scripts/x.sh", "#!/bin/sh\n") // not indexed
+	write("skill/README.md", fm)                      // excluded directory
+	write(".kb/README.md", fm)                        // excluded directory
+	write("data/nodocs/notes.md", fm)                 // directory without a README.md
 
 	entries, err := Discover(root)
 	if err != nil {
@@ -264,7 +268,7 @@ func TestDiscover(t *testing.T) {
 	for _, e := range entries {
 		paths = append(paths, e.Path)
 	}
-	want := []string{"droplet/README.md", "thing.md"}
+	want := []string{"data/droplet/README.md", "data/thing.md"}
 	if len(paths) != len(want) {
 		t.Fatalf("paths = %v, want %v", paths, want)
 	}
@@ -275,13 +279,13 @@ func TestDiscover(t *testing.T) {
 	}
 
 	dir := entries[0]
-	if dir.Kind != KindDir || dir.Dir != "droplet" {
+	if dir.Kind != KindDir || dir.Dir != "data/droplet" {
 		t.Errorf("kind/dir = %q / %q", dir.Kind, dir.Dir)
 	}
 	if dir.Err != nil {
 		t.Errorf("dir.Err = %v, want nil", dir.Err)
 	}
-	wantFiles := []string{"droplet/README.md", "droplet/docs/a.md", "droplet/docs/b.md"}
+	wantFiles := []string{"data/droplet/README.md", "data/droplet/docs/a.md", "data/droplet/docs/b.md"}
 	if len(dir.Files) != len(wantFiles) {
 		t.Fatalf("files = %v, want %v", dir.Files, wantFiles)
 	}
@@ -312,8 +316,8 @@ func TestDiscoverToleratesOneBadEntry(t *testing.T) {
 		}
 	}
 
-	write("good.md", "---\ntitle: Good\nsummary: This one parses fine.\n---\nbody\n")
-	write("bad.md", "---\ntitle: Bad\n---\nbody\n") // missing summary
+	write("data/good.md", "---\ntitle: Good\nsummary: This one parses fine.\n---\nbody\n")
+	write("data/bad.md", "---\ntitle: Bad\n---\nbody\n") // missing summary
 
 	entries, err := Discover(root)
 	if err != nil {
@@ -328,7 +332,7 @@ func TestDiscoverToleratesOneBadEntry(t *testing.T) {
 		byPath[e.Path] = e
 	}
 
-	good, ok := byPath["good.md"]
+	good, ok := byPath["data/good.md"]
 	if !ok {
 		t.Fatal("good.md missing from Discover results")
 	}
@@ -339,7 +343,7 @@ func TestDiscoverToleratesOneBadEntry(t *testing.T) {
 		t.Errorf("good.md: Meta = %+v", good.Meta)
 	}
 
-	bad, ok := byPath["bad.md"]
+	bad, ok := byPath["data/bad.md"]
 	if !ok {
 		t.Fatal("bad.md missing from Discover results")
 	}
@@ -350,8 +354,8 @@ func TestDiscoverToleratesOneBadEntry(t *testing.T) {
 	if !errors.As(bad.Err, &ve) {
 		t.Fatalf("bad.md: Err is %T, not *ValidationError: %v", bad.Err, bad.Err)
 	}
-	if ve.Path != "bad.md" {
-		t.Errorf("bad.md: ValidationError.Path = %q, want %q", ve.Path, "bad.md")
+	if ve.Path != "data/bad.md" {
+		t.Errorf("bad.md: ValidationError.Path = %q, want %q", ve.Path, "data/bad.md")
 	}
 	if bad.Meta.Title != "" || bad.Meta.Summary != "" || bad.Meta.Tags != nil {
 		t.Errorf("bad.md: Meta = %+v, want the zero value since Err is set", bad.Meta)
@@ -372,7 +376,7 @@ func TestDiscoverMatchesRealRepoListing(t *testing.T) {
 	excludedFiles := map[string]bool{"AGENTS.md": true, "CLAUDE.md": true, "index.md": true, "plan.md": true, "README.md": true}
 	excludedDirsHere := map[string]bool{"skill": true, ".kb": true, ".git": true}
 
-	items, err := os.ReadDir(root)
+	items, err := os.ReadDir(filepath.Join(root, "data"))
 	if err != nil {
 		t.Fatalf("ReadDir(%s): %v", root, err)
 	}
@@ -383,13 +387,13 @@ func TestDiscoverMatchesRealRepoListing(t *testing.T) {
 			if excludedDirsHere[name] {
 				continue
 			}
-			if info, err := os.Stat(filepath.Join(root, name, "README.md")); err == nil && !info.IsDir() {
-				want = append(want, name+"/README.md")
+			if info, err := os.Stat(filepath.Join(root, "data", name, "README.md")); err == nil && !info.IsDir() {
+				want = append(want, "data/"+name+"/README.md")
 			}
 			continue
 		}
 		if strings.HasSuffix(name, ".md") && !excludedFiles[name] {
-			want = append(want, name)
+			want = append(want, "data/"+name)
 		}
 	}
 	sort.Strings(want)
@@ -427,8 +431,8 @@ func TestResolve(t *testing.T) {
 		}
 	}
 	fm := "---\ntitle: T\nsummary: S\n---\nbody\n"
-	write("foo.md", fm)
-	write("droplet/README.md", fm)
+	write("data/foo.md", fm)
+	write("data/droplet/README.md", fm)
 
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -439,12 +443,15 @@ func TestResolve(t *testing.T) {
 		arg      string
 		wantPath string
 	}{
-		{"foo.md", "foo.md"},
-		{"droplet", "droplet/README.md"},
-		{"droplet/", "droplet/README.md"},
-		{"droplet/README.md", "droplet/README.md"},
-		{filepath.Join(absRoot, "foo.md"), "foo.md"},
-		{filepath.Join(absRoot, "droplet"), "droplet/README.md"},
+		{"foo.md", "data/foo.md"},
+		{"data/foo.md", "data/foo.md"},
+		{"droplet", "data/droplet/README.md"},
+		{"droplet/README.md", "data/droplet/README.md"},
+		{"data/droplet", "data/droplet/README.md"},
+		{"data/droplet/", "data/droplet/README.md"},
+		{"data/droplet/README.md", "data/droplet/README.md"},
+		{filepath.Join(absRoot, "data/foo.md"), "data/foo.md"},
+		{filepath.Join(absRoot, "data/droplet"), "data/droplet/README.md"},
 	}
 	for _, c := range cases {
 		t.Run(c.arg, func(t *testing.T) {
@@ -458,7 +465,7 @@ func TestResolve(t *testing.T) {
 		})
 	}
 
-	badCases := []string{"nope.md", "nodir", "", "/etc/passwd"}
+	badCases := []string{"nope.md", "nodir", "", "/etc/passwd", filepath.Join(root, "foo.md"), "../foo.md", "data/../foo.md"}
 	for _, arg := range badCases {
 		t.Run("bad:"+arg, func(t *testing.T) {
 			if _, err := Resolve(root, arg); err == nil {
@@ -482,9 +489,9 @@ func TestLoadAndBodyHash(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("droplet/README.md", "---\ntitle: T\nsummary: S\n---\nREADME body\n")
-	write("droplet/docs/a.md", "a content\n")
-	write("droplet/docs/b.md", "b content\n")
+	write("data/droplet/README.md", "---\ntitle: T\nsummary: S\n---\nREADME body\n")
+	write("data/droplet/docs/a.md", "a content\n")
+	write("data/droplet/docs/b.md", "b content\n")
 
 	entries, err := Discover(root)
 	if err != nil {
@@ -502,8 +509,8 @@ func TestLoadAndBodyHash(t *testing.T) {
 	if len(files) != 3 {
 		t.Fatalf("Load returned %d files, want 3: %v", len(files), files)
 	}
-	if string(files["droplet/docs/a.md"]) != "a content\n" {
-		t.Errorf("droplet/docs/a.md = %q", files["droplet/docs/a.md"])
+	if string(files["data/droplet/docs/a.md"]) != "a content\n" {
+		t.Errorf("data/droplet/docs/a.md = %q", files["data/droplet/docs/a.md"])
 	}
 
 	got := BodyHash(files, e.Files)

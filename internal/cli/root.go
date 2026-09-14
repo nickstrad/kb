@@ -122,7 +122,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "kb",
 		Short: "Search and maintain the knowledge repository",
-		Long: "kb indexes every knowledge entry under $KB_ROOT (default " + DefaultRoot + ")\n" +
+		Long: "kb indexes knowledge entries under data/ in $KB_ROOT (default " + DefaultRoot + ")\n" +
 			"into .kb/kb.sqlite and searches it with FTS5 and sqlite-vec at once.",
 		SilenceUsage:  true,
 		SilenceErrors: true,

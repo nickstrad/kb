@@ -1,42 +1,42 @@
 [
   {
     "Ord": 0,
-    "SourceFile": "tmux-daemons-die-at-logout.md",
+    "SourceFile": "data/tmux-daemons-die-at-logout.md",
     "Heading": "",
     "Text": "Daemons started from tmux die when root's last login ends: A daemon launched from a tmux pane stays in root's systemd user manager cgroup and is SIGTERMed when the last root session closes; run long-lived servers as system units instead.",
     "TextHash": "baf8e8ab3e7a90d1b57bc92dc4363193953e39c2d871a84624b9aaf0ab67b70b"
   },
   {
     "Ord": 1,
-    "SourceFile": "tmux-daemons-die-at-logout.md",
+    "SourceFile": "data/tmux-daemons-die-at-logout.md",
     "Heading": "(intro)",
     "Text": "Daemons started from tmux die when root's last login ends › (intro)\n# Daemons started from tmux die when root's last login ends\n\ntmux 3.4 on this droplet puts every pane in its own transient scope under root's systemd user\nmanager: `user.slice/user-0.slice/user@0.service/tmux-spawn-\u003cuuid\u003e.scope`. Forking or\ndaemonizing (for example `pg_ctl start`, `nohup`, `\u0026`) does not leave that cgroup. Root has\n`Linger=no`. When root's last login session goes away, logind stops `user@0.service` (about 10\nseconds later), and systemd sends SIGTERM to everything in its scopes, including daemons that\noutlived their pane. `KillUserProcesses=no` in `logind.conf` does not prevent this.",
     "TextHash": "e130ab9b5a58443fadb121f19bc900026521bcea47bad707976fbbabe5dd1434"
   },
   {
     "Ord": 2,
-    "SourceFile": "tmux-daemons-die-at-logout.md",
+    "SourceFile": "data/tmux-daemons-die-at-logout.md",
     "Heading": "Why it matters / what bites you",
     "Text": "Daemons started from tmux die when root's last login ends › Why it matters / what bites you\nA server works for hours or days, then disappears without a crash. Its own log shows a clean,\nexternally requested shutdown with no clue about the sender. PostgreSQL logs\n`received smart shutdown request`, then later clients get\n`connection to server on socket \"/tmp/.s.PGSQL.5440\" failed: No such file or directory`.\nIt happens when the tmux server exits and no other root SSH session is open, so it looks random.",
     "TextHash": "659933585c1617a851460bd3abbf6d42a446864b4d6639416501ee38968df195"
   },
   {
     "Ord": 3,
-    "SourceFile": "tmux-daemons-die-at-logout.md",
+    "SourceFile": "data/tmux-daemons-die-at-logout.md",
     "Heading": "How to do it",
     "Text": "Daemons started from tmux die when root's last login ends › How to do it\nFind out where a process really lives:\n\n```bash\ncat /proc/\u003cpid\u003e/cgroup                       # user@0.service/tmux-spawn-*.scope = at risk\nloginctl show-user root | grep Linger        # Linger=no on this droplet\n```\n\nMatch a mystery shutdown to a session teardown in the journal (same second as the server's log line):\n\n```bash\njournalctl --since \"\u003ctime-1min\u003e\" --until \"\u003ctime+1min\u003e\" --no-pager -o short-iso \\\n  | grep -E 'Removed session|Stopping user@0.service|tmux-spawn'\n```\n\nSeen output pattern:\n\n```text\nsystemd-logind[808]: Removed session 1309.\nsystemd[1]: Stopping user@0.service - User Manager for UID 0...\nsystemd[1443]: Stopping tmux-spawn-692785d4-...scope - tmux child pane 333062 launched by process 1750...\n```\n\nFix: run the server as a system unit so it sits in `system.slice` and starts at boot. For a\nPostgreSQL cluster, use `Type=notify` with `postgres -D \u003cdatadir\u003e` directly, not `pg_ctl`.\nUbuntu's build links libsystemd. The working unit is `/etc/systemd/system/pglab.service`; see\n[postgres-learner-lab.md](postgres-learner-lab.md).",
     "TextHash": "cf41b9fc62bcdf32da04ba79150421994aaece500e395b7ec4125bc00248ac0b"
   },
   {
     "Ord": 4,
-    "SourceFile": "tmux-daemons-die-at-logout.md",
+    "SourceFile": "data/tmux-daemons-die-at-logout.md",
     "Heading": "Edge cases",
     "Text": "Daemons started from tmux die when root's last login ends › Edge cases\n- `loginctl enable-linger root` keeps `user@0.service` alive and would also protect tmux-spawned\n  jobs. It was not applied here. A system unit is the better fix for a server that must survive\n  reboots. Unverified: behavior with linger enabled on this box.\n- Starting the server again by hand from a tmux pane brings the problem back. Use\n  `systemctl start \u003cunit\u003e`.\n- Claude Code and Codex sessions in tmux panes live in the same kind of scope. They also die if\n  the tmux server and every SSH session end, but that no longer affects system-unit services.",
     "TextHash": "1cd0656a817666da07f25c2d25d0d51e21ccebe8212d3a4d7066a4ced33100da"
   },
   {
     "Ord": 5,
-    "SourceFile": "tmux-daemons-die-at-logout.md",
+    "SourceFile": "data/tmux-daemons-die-at-logout.md",
     "Heading": "Seen in",
     "Text": "Daemons started from tmux die when root's last login ends › Seen in\nOn 2026-09-12 the learner PostgreSQL lab stopped at 19:46:37 and 23:43:30 UTC. Both times were\nexact matches for `Stopping user@0.service`. It had run for 8 days because some root session had\nstayed open throughout.",
     "TextHash": "2d2e2012c7e05fb073f44f0e9b5a972a5bfcac0cf43221348605a13a4d582e52"

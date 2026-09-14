@@ -26,11 +26,11 @@ func TestAddRejectsMissingFrontMatterBeforeCopy(t *testing.T) {
 			root := newTempRoot(t)
 			src := filepath.Join(t.TempDir(), "missing.md")
 			args := []string{"add", src}
-			dest := filepath.Join(root, "missing.md")
+			dest := filepath.Join(root, "data", "missing.md")
 			if dir {
 				src = filepath.Join(t.TempDir(), "missing")
 				args = []string{"add", "--dir", src}
-				dest = filepath.Join(root, "missing")
+				dest = filepath.Join(root, "data", "missing")
 				writeFile(t, filepath.Join(src, "README.md"), "# Missing front matter\n")
 			} else {
 				writeFile(t, src, "# Missing front matter\n")
@@ -58,7 +58,7 @@ func TestAddRollsBackCopiedFilesOnFailure(t *testing.T) {
 				root := newTempRoot(t)
 				sourceRoot := t.TempDir()
 				if inPlace {
-					sourceRoot = root
+					sourceRoot = filepath.Join(root, "data")
 				}
 				name := "outage.md"
 				if dir {
@@ -67,7 +67,7 @@ func TestAddRollsBackCopiedFilesOnFailure(t *testing.T) {
 				src := filepath.Join(sourceRoot, name)
 				front := src
 				args := []string{"add", src}
-				rel := name
+				rel := "data/" + name
 				if dir {
 					front = filepath.Join(src, "README.md")
 					args = []string{"add", "--dir", src}
@@ -82,10 +82,10 @@ func TestAddRollsBackCopiedFilesOnFailure(t *testing.T) {
 					t.Fatalf("source removed: %v", err)
 				}
 				if !inPlace {
-					if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+					if _, err := os.Stat(filepath.Join(root, "data", name)); !os.IsNotExist(err) {
 						t.Fatalf("copy remains: %v", err)
 					}
-					if !strings.Contains(errOut, "removed copied") {
+					if !strings.Contains(errOut, "removed copied data/") {
 						t.Fatalf("missing cleanup notice: %q", errOut)
 					}
 				}
@@ -123,11 +123,11 @@ func TestAddDirectoryCopyPolicy(t *testing.T) {
 		t.Fatalf("not one output line: %q", out)
 	}
 	for _, name := range []string{".git", "nested/.private", "node_modules", "dangling"} {
-		if _, err := os.Lstat(filepath.Join(root, "copy-policy", name)); !os.IsNotExist(err) {
+		if _, err := os.Lstat(filepath.Join(root, "data", "copy-policy", name)); !os.IsNotExist(err) {
 			t.Fatalf("unexpected copied %s: %v", name, err)
 		}
 	}
-	info, err := os.Stat(filepath.Join(root, "copy-policy/scripts/run.sh"))
+	info, err := os.Stat(filepath.Join(root, "data", "copy-policy/scripts/run.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestAddRejectsBinaryCompanionBeforeCopy(t *testing.T) {
 	if code != 1 || !strings.Contains(errOut, "non-text file") {
 		t.Fatalf("%d %q", code, errOut)
 	}
-	if _, err := os.Stat(filepath.Join(root, "binary-topic")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "data", "binary-topic")); !os.IsNotExist(err) {
 		t.Fatalf("copy exists: %v", err)
 	}
 }
@@ -155,19 +155,19 @@ func TestAddDestinationAdvice(t *testing.T) {
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	src := filepath.Join(t.TempDir(), "duplicate.md")
-	dest := filepath.Join(root, "duplicate.md")
+	dest := filepath.Join(root, "data", "duplicate.md")
 	body := validFrontMatter("Duplicate", "Explains recovery.")
 	writeFile(t, src, body)
 	writeFile(t, dest, body)
 	_, errOut, code := run(t, "add", src)
-	if code != 1 || !strings.Contains(errOut, "use kb reindex duplicate.md") {
+	if code != 1 || !strings.Contains(errOut, "use kb reindex data/duplicate.md") {
 		t.Fatalf("%d %q", code, errOut)
 	}
 	if _, errOut, code = run(t, "add", dest); code != 0 {
 		t.Fatalf("%d %q", code, errOut)
 	}
 	_, errOut, code = run(t, "add", src)
-	if code != 1 || !strings.Contains(errOut, "use kb edit duplicate.md") {
+	if code != 1 || !strings.Contains(errOut, "use kb edit data/duplicate.md") {
 		t.Fatalf("%d %q", code, errOut)
 	}
 	if err := os.Remove(dest); err != nil {
@@ -192,24 +192,24 @@ func TestAddSecretPatternsAllowLocationProse(t *testing.T) {
 	}
 }
 
-func TestAddRollbackAfterIndexWriteFailure(t *testing.T) {
+func TestAddDoesNotDependOnMarkdownExport(t *testing.T) {
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	src := filepath.Join(t.TempDir(), "index-failure.md")
-	writeFile(t, src, validFrontMatter("Index failure", "Clean up the copy and database."))
+	writeFile(t, src, validFrontMatter("Index failure", "An unwritable Markdown export does not affect adding an entry."))
 	if err := os.Mkdir(filepath.Join(root, "index.md"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	out, errOut, code := run(t, "add", src)
-	if code != 1 || strings.Contains(out, "added") {
+	if code != 0 || !strings.Contains(out, "added") {
 		t.Fatalf("%d %q %q", code, out, errOut)
 	}
-	if _, err := os.Stat(filepath.Join(root, "index-failure.md")); !os.IsNotExist(err) {
-		t.Fatalf("copy remains: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "data", "index-failure.md")); err != nil {
+		t.Fatalf("copy missing: %v", err)
 	}
 	st := openTestStore(t, root)
-	row, err := st.GetEntryByPath("index-failure.md")
-	if row != nil || err != nil {
+	row, err := st.GetEntryByPath("data/index-failure.md")
+	if row == nil || err != nil {
 		t.Fatalf("row=%v err=%v", row, err)
 	}
 }

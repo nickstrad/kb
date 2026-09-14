@@ -10,7 +10,7 @@ import (
 
 func TestShowChunksReportsDatabaseStatFailure(t *testing.T) {
 	root := newTempRoot(t)
-	writeFile(t, filepath.Join(root, "show-topic.md"), validFrontMatter("Show topic", "Stat errors must surface."))
+	writeFile(t, filepath.Join(root, "data", "show-topic.md"), validFrontMatter("Show topic", "Stat errors must surface."))
 	if err := os.Mkdir(filepath.Join(root, ".kb"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -36,11 +36,11 @@ func TestRmPreservesSourceWhenDatabaseCannotOpen(t *testing.T) {
 		t.Run(map[bool]string{false: "file", true: "dir"}[dir], func(t *testing.T) {
 			root := newTempRoot(t)
 			name := "rm-topic.md"
-			path := filepath.Join(root, name)
+			path := filepath.Join(root, "data", name)
 			args := []string{"rm", name}
 			if dir {
 				name = "rm-topic"
-				path = filepath.Join(root, name, "README.md")
+				path = filepath.Join(root, "data", name, "README.md")
 				args = []string{"rm", name, "--yes"}
 			}
 			writeFile(t, path, validFrontMatter("Rm topic", "Keep source on preflight failure."))
@@ -59,7 +59,7 @@ func TestRmPreservesSourceWhenDatabaseCannotOpen(t *testing.T) {
 func TestEditModelMismatchUsesEditPrefix(t *testing.T) {
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
-	writeFile(t, filepath.Join(root, "edit-topic.md"), validFrontMatter("Edit topic", "Original summary."))
+	writeFile(t, filepath.Join(root, "data", "edit-topic.md"), validFrontMatter("Edit topic", "Original summary."))
 	if _, errOut, code := run(t, "reindex", "--all"); code != 0 {
 		t.Fatalf("%d %q", code, errOut)
 	}

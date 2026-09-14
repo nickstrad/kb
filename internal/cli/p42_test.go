@@ -58,19 +58,22 @@ A second file for the bar/ directory entry, so it has more than one indexed file
 func setupRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "foo.md"), []byte(fooMD), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "data"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "bar"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "data", "foo.md"), []byte(fooMD), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "bar", "README.md"), []byte(barReadmeMD), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "data", "bar"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "bar", "docs"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "data", "bar", "README.md"), []byte(barReadmeMD), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "bar", "docs", "extra.md"), []byte(barExtraMD), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "data", "bar", "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "data", "bar", "docs", "extra.md"), []byte(barExtraMD), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return root
@@ -132,10 +135,10 @@ func TestShowMultiFileEntryHasHeaders(t *testing.T) {
 		t.Fatalf("runShow: %v", err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "==> bar/README.md <==") {
+	if !strings.Contains(got, "==> data/bar/README.md <==") {
 		t.Errorf("expected a header for bar/README.md, got:\n%s", got)
 	}
-	if !strings.Contains(got, "==> bar/docs/extra.md <==") {
+	if !strings.Contains(got, "==> data/bar/docs/extra.md <==") {
 		t.Errorf("expected a header for bar/docs/extra.md, got:\n%s", got)
 	}
 	if !strings.Contains(got, "Extra doc") {
@@ -165,7 +168,7 @@ func TestShowChunksUnindexedFallsBackToSplit(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "not indexed") {
 		t.Errorf("expected the not-indexed note on stderr, got %q", errBuf.String())
 	}
-	if !strings.Contains(out.String(), "--- chunk 0 [foo.md] (summary)") {
+	if !strings.Contains(out.String(), "--- chunk 0 [data/foo.md] (summary)") {
 		t.Errorf("expected a computed summary chunk, got:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "Details") {
@@ -185,7 +188,7 @@ func TestShowChunksIndexedReadsFromDB(t *testing.T) {
 	if strings.Contains(errBuf.String(), "not indexed") {
 		t.Errorf("entry is indexed; should not print the fallback note, got %q", errBuf.String())
 	}
-	if !strings.Contains(out.String(), "--- chunk 0 [foo.md] (summary)") {
+	if !strings.Contains(out.String(), "--- chunk 0 [data/foo.md] (summary)") {
 		t.Errorf("expected the stored summary chunk, got:\n%s", out.String())
 	}
 }
@@ -225,7 +228,7 @@ func TestListShowsBrokenEntryAsError(t *testing.T) {
 	// Front matter with no summary: entry.ParseFrontMatter reports this as a *ValidationError,
 	// which Discover/loadMeta turns into Entry.Err rather than a zero-valued Meta.
 	brokenMD := "---\ntitle: Broken Entry\n---\n\nbody text\n"
-	if err := os.WriteFile(filepath.Join(root, "broken.md"), []byte(brokenMD), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "data", "broken.md"), []byte(brokenMD), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -248,10 +251,10 @@ func TestRmFileRemovesFileAndDBRow(t *testing.T) {
 	if err := runRm(ctx, &out, &errBuf, root, "foo.md", false); err != nil {
 		t.Fatalf("runRm: %v", err)
 	}
-	if !strings.Contains(out.String(), "removed foo.md") {
+	if !strings.Contains(out.String(), "removed data/foo.md") {
 		t.Errorf("expected a removed-foo.md report, got %q", out.String())
 	}
-	if _, err := os.Stat(filepath.Join(root, "foo.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "data", "foo.md")); !os.IsNotExist(err) {
 		t.Errorf("foo.md should no longer exist on disk, stat err = %v", err)
 	}
 
@@ -260,7 +263,7 @@ func TestRmFileRemovesFileAndDBRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	row, err := st.GetEntryByPath("foo.md")
+	row, err := st.GetEntryByPath("data/foo.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,17 +286,17 @@ func TestRmDirRequiresYes(t *testing.T) {
 	if !errors.As(err, &ee) || ee.code != ExitUsage {
 		t.Errorf("expected ExitUsage, got %v", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(root, "bar")); statErr != nil {
+	if _, statErr := os.Stat(filepath.Join(root, "data", "bar")); statErr != nil {
 		t.Errorf("bar/ should still exist after a refused rm: %v", statErr)
 	}
 
 	if err := runRm(ctx, &out, &errBuf, root, "bar", true); err != nil {
 		t.Fatalf("runRm --yes: %v", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(root, "bar")); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(filepath.Join(root, "data", "bar")); !os.IsNotExist(statErr) {
 		t.Errorf("bar/ should be removed after rm --yes")
 	}
-	if !strings.Contains(out.String(), "removed bar/ and") {
+	if !strings.Contains(out.String(), "removed data/bar/ and") {
 		t.Errorf("expected a 'removed bar/ and N files' report, got %q", out.String())
 	}
 
@@ -302,7 +305,7 @@ func TestRmDirRequiresYes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	row, err := st.GetEntryByPath("bar/README.md")
+	row, err := st.GetEntryByPath("data/bar/README.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +336,7 @@ func TestEditReindexesOnChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	row, err := st.GetEntryByPath("foo.md")
+	row, err := st.GetEntryByPath("data/foo.md")
 	if err != nil || row == nil {
 		t.Fatalf("expected an entries row for foo.md, err=%v row=%v", err, row)
 	}
@@ -362,7 +365,7 @@ func TestEditEditorFailureAbortsWithoutTouchingDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := st0.GetEntryByPath("foo.md")
+	before, err := st0.GetEntryByPath("data/foo.md")
 	st0.Close()
 	if err != nil || before == nil {
 		t.Fatalf("setup: expected an indexed foo.md, err=%v", err)
@@ -380,7 +383,7 @@ func TestEditEditorFailureAbortsWithoutTouchingDB(t *testing.T) {
 		t.Errorf("expected ExitUsage, got %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "foo.md"))
+	content, err := os.ReadFile(filepath.Join(root, "data", "foo.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +396,7 @@ func TestEditEditorFailureAbortsWithoutTouchingDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st1.Close()
-	after, err := st1.GetEntryByPath("foo.md")
+	after, err := st1.GetEntryByPath("data/foo.md")
 	if err != nil {
 		t.Fatal(err)
 	}

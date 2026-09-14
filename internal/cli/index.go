@@ -1,6 +1,4 @@
-// `kb index`: regenerate index.md from the entries on disk. P4.3 implements the generator this
-// command drives; P4.4 wires the command up (and the same generator is reused by the hooks in
-// add.go/edit.go/rm.go/reindex.go via regenerateIndex, in setup.go).
+// `kb index`: explicitly export an optional index.md snapshot from the entries on disk.
 package cli
 
 import (
@@ -16,7 +14,7 @@ import (
 func newIndexCmd(stdout, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:           "index",
-		Short:         "Regenerate index.md",
+		Short:         "Export an optional index.md snapshot",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -29,8 +27,7 @@ func newIndexCmd(stdout, stderr io.Writer) *cobra.Command {
 // runIndex discovers every entry, warns on stderr about any whose front matter is broken (they
 // are left out of the table, per discoverGoodEntries), writes index.md from the rest, and reports
 // how many entries it wrote. A broken entry does not stop index.md from being written from the
-// good ones, but it does make the command exit non-zero, so `kb index` in a script (or a hook
-// call from another command) surfaces the problem instead of hiding it.
+// good ones, but it does make the command exit non-zero so scripts can detect the problem.
 func runIndex(stdout, stderr io.Writer, root string) error {
 	good, broken, err := discoverGoodEntries(root, stderr)
 	if err != nil {

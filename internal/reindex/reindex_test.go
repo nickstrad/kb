@@ -24,7 +24,7 @@ const testDim = 768
 // README.md plus a non-Markdown scripts/ directory that must never be indexed). This test copies
 // it into a throwaway directory so it can edit and delete files without touching the checked-in
 // fixture.
-const sourceRepo = "../chunk/testdata/repo"
+const sourceRepo = "../chunk/testdata/repo/data"
 
 // countingEmbedder wraps another Embedder and counts how many times Embed is called (as opposed
 // to how many texts were embedded across those calls), as an independent check on
@@ -44,8 +44,8 @@ func (c *countingEmbedder) Embed(ctx context.Context, texts []string) ([][]float
 func newTestRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	copyFile(t, filepath.Join(sourceRepo, "tmux-daemons-die-at-logout.md"), filepath.Join(root, "tmux-daemons-die-at-logout.md"))
-	copyTree(t, filepath.Join(sourceRepo, "droplet"), filepath.Join(root, "droplet"))
+	copyFile(t, filepath.Join(sourceRepo, "tmux-daemons-die-at-logout.md"), filepath.Join(root, "data", "tmux-daemons-die-at-logout.md"))
+	copyTree(t, filepath.Join(sourceRepo, "droplet"), filepath.Join(root, "data", "droplet"))
 	return root
 }
 
@@ -177,7 +177,7 @@ func TestReindexLifecycle(t *testing.T) {
 
 	// --- Pass 3: edit one section of tmux-daemons-die-at-logout.md; only that entry should
 	// be reindexed, and only the changed chunk should need a fresh embedding. -------------
-	tmuxPath := filepath.Join(root, "tmux-daemons-die-at-logout.md")
+	tmuxPath := filepath.Join(root, "data", "tmux-daemons-die-at-logout.md")
 	appendToSection(t, tmuxPath, "## Edge cases",
 		"- Added by TestReindexLifecycle to prove a targeted edit reindexes only one chunk.")
 
@@ -198,7 +198,7 @@ func TestReindexLifecycle(t *testing.T) {
 
 	// --- Pass 4: add a file entry with no summary; it is warned about and counted Failed,
 	// but the run does not abort. -----------------------------------------------------------
-	brokenPath := filepath.Join(root, "broken.md")
+	brokenPath := filepath.Join(root, "data", "broken.md")
 	broken := "---\ntitle: Missing its summary\n---\n\n# Broken\n\nThis entry has no summary field.\n"
 	if err := os.WriteFile(brokenPath, []byte(broken), 0o644); err != nil {
 		t.Fatalf("write broken.md: %v", err)
@@ -225,7 +225,7 @@ func TestReindexLifecycle(t *testing.T) {
 	}
 
 	// --- Pass 5: delete the droplet/ directory entry; its DB rows must be removed. --------
-	if err := os.RemoveAll(filepath.Join(root, "droplet")); err != nil {
+	if err := os.RemoveAll(filepath.Join(root, "data", "droplet")); err != nil {
 		t.Fatalf("remove droplet/: %v", err)
 	}
 	sum5, err := All(ctx, newOpts())
@@ -238,7 +238,7 @@ func TestReindexLifecycle(t *testing.T) {
 	if sum5.Scanned != 2 { // tmux-daemons-die-at-logout.md, broken.md
 		t.Errorf("pass 5: Scanned = %d, want 2", sum5.Scanned)
 	}
-	if got, err := s.GetEntryByPath("droplet/README.md"); err != nil {
+	if got, err := s.GetEntryByPath("data/droplet/README.md"); err != nil {
 		t.Fatalf("GetEntryByPath(droplet/README.md): %v", err)
 	} else if got != nil {
 		t.Errorf("droplet/README.md is still in the database after its file was deleted")
@@ -276,7 +276,7 @@ func TestResolveOne(t *testing.T) {
 	if sum.Reindexed != 1 || sum.Scanned != 1 {
 		t.Errorf("One: Reindexed=%d Scanned=%d, want 1, 1", sum.Reindexed, sum.Scanned)
 	}
-	if got, err := s.GetEntryByPath("droplet/README.md"); err != nil {
+	if got, err := s.GetEntryByPath("data/droplet/README.md"); err != nil {
 		t.Fatalf("GetEntryByPath: %v", err)
 	} else if got != nil {
 		t.Error("One(tmux) must not index droplet/README.md, which was never discovered")
@@ -346,20 +346,20 @@ func countRows(t *testing.T, s *store.Store, query string) int {
 // it ever reached the second, healthy entry.
 func TestReindexChunkSplitFailureIsPerEntry(t *testing.T) {
 	root := t.TempDir()
-	copyFile(t, filepath.Join(sourceRepo, "tmux-daemons-die-at-logout.md"), filepath.Join(root, "tmux-daemons-die-at-logout.md"))
+	copyFile(t, filepath.Join(sourceRepo, "tmux-daemons-die-at-logout.md"), filepath.Join(root, "data", "tmux-daemons-die-at-logout.md"))
 
 	readme := "---\ntitle: Broken directory entry\nsummary: Its docs/bad.md has an unclosed front matter fence.\n---\n\n" +
 		"# Broken directory entry\n\nSee docs/bad.md.\n"
-	if err := os.MkdirAll(filepath.Join(root, "brokendir", "docs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "data", "brokendir", "docs"), 0o755); err != nil {
 		t.Fatalf("mkdir brokendir/docs: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "brokendir", "README.md"), []byte(readme), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "data", "brokendir", "README.md"), []byte(readme), 0o644); err != nil {
 		t.Fatalf("write brokendir/README.md: %v", err)
 	}
 	// "---" opens a front-matter block that is never closed by a matching "---" line: a plain
 	// structural error from entry.ParseFrontMatter, not a *entry.ValidationError.
 	bad := "---\ntitle: Bad doc\n\nThis front matter fence never closes.\n"
-	if err := os.WriteFile(filepath.Join(root, "brokendir", "docs", "bad.md"), []byte(bad), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "data", "brokendir", "docs", "bad.md"), []byte(bad), 0o644); err != nil {
 		t.Fatalf("write brokendir/docs/bad.md: %v", err)
 	}
 
@@ -387,10 +387,10 @@ func TestReindexChunkSplitFailureIsPerEntry(t *testing.T) {
 	if !strings.Contains(stderr.String(), "warning:") {
 		t.Errorf("stderr = %q, want a warning line", stderr.String())
 	}
-	if got, err := s.GetEntryByPath("tmux-daemons-die-at-logout.md"); err != nil || got == nil {
+	if got, err := s.GetEntryByPath("data/tmux-daemons-die-at-logout.md"); err != nil || got == nil {
 		t.Errorf("the healthy entry must still be indexed: GetEntryByPath = %v, %v", got, err)
 	}
-	if got, err := s.GetEntryByPath("brokendir/README.md"); err != nil {
+	if got, err := s.GetEntryByPath("data/brokendir/README.md"); err != nil {
 		t.Fatalf("GetEntryByPath(brokendir/README.md): %v", err)
 	} else if got != nil {
 		t.Error("brokendir/README.md must not be indexed: its docs/bad.md failed to chunk")

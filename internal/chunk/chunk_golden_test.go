@@ -63,9 +63,9 @@ func TestSplitGolden(t *testing.T) {
 // file name without ".md" for a file entry.
 func goldenName(e entry.Entry) string {
 	if e.Kind == entry.KindDir {
-		return e.Dir
+		return filepath.Base(e.Dir)
 	}
-	return strings.TrimSuffix(e.Path, ".md")
+	return strings.TrimSuffix(filepath.Base(e.Path), ".md")
 }
 
 // checkGolden compares chunks to testdata/golden/<name>.json, or (with -update) rewrites it.

@@ -1,12 +1,11 @@
-// `kb add`: validate front matter, place the file in the repo, chunk and embed it, regenerate
-// index.md. P4.1 implements it.
+// `kb add`: validate front matter, place the file in data/, then chunk and embed it.
 //
 // Both forms (`kb add <file.md>` and `kb add --dir <topic>/`) follow the same shape:
 //  1. validate the name (plan.md: lowercase kebab-case);
 //  2. read and validate front matter, and reject anything that looks like a secret, before
 //     touching the repository or the database at all;
 //  3. work out where the entry belongs (copy in from outside the repo, or index in place when it
-//     is already directly under the repo root);
+//     is already directly under data/);
 //  4. open the database, refuse a path that is already indexed, then copy (if needed) and index.
 //
 // A directory entry's README.md carries the entry's own front matter and is validated like a file
@@ -74,8 +73,8 @@ func newAddCmd(stdout, stderr io.Writer) *cobra.Command {
 		Use:   "add <file.md>",
 		Short: "Add an entry to the repository and index it",
 		Long: "Adds a Markdown file (or, with --dir, a directory entry whose README.md and\n" +
-			"docs/*.md are indexed), then regenerates index.md. A source outside the repo is\n" +
-			"copied to the repo root; a source already inside it is indexed in place.",
+			"docs/*.md are indexed). A source outside data/ is\n" +
+			"copied into data/; a source already directly inside it is indexed in place.",
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -149,6 +148,9 @@ func runAddFile(cmd *cobra.Command, stdout, stderr io.Writer, srcArg string) (re
 		return err
 	}
 	if copyNeeded {
+		if err := os.MkdirAll(entry.DataRoot(root), 0o755); err != nil {
+			return usageErr("kb add: create data directory: %s", err)
+		}
 		// Claim the destination exclusively before arming cleanup; never remove another writer's files.
 		f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
@@ -157,7 +159,7 @@ func runAddFile(cmd *cobra.Command, stdout, stderr io.Writer, srcArg string) (re
 		f.Close()
 		defer func() {
 			if retErr != nil {
-				rollbackAdded(st, root, relPath, destPath, stderr)
+				rollbackAdded(st, relPath, destPath, stderr)
 			}
 		}()
 		if err := writeFileBytes(src, destPath); err != nil {
@@ -193,9 +195,6 @@ func runAddFile(cmd *cobra.Command, stdout, stderr io.Writer, srcArg string) (re
 		return usageErr("kb add: %s: indexing failed; see warnings above", relPath)
 	}
 
-	if err := regenerateIndex(root, stderr); err != nil {
-		return usageErr("kb add: %s", err)
-	}
 	fmt.Fprintf(stdout, "added %s (%d chunks)\n", relPath, sum.Chunks)
 	return nil
 }
@@ -287,13 +286,16 @@ func runAddDir(cmd *cobra.Command, stdout, stderr io.Writer, argPath string) (re
 		return err
 	}
 	if copyNeeded {
+		if err := os.MkdirAll(entry.DataRoot(root), 0o755); err != nil {
+			return usageErr("kb add: create data directory: %s", err)
+		}
 		// Claim the destination exclusively before arming cleanup; never remove another writer's files.
 		if err := os.Mkdir(destDir, 0o755); err != nil {
 			return usageErr("kb add: %s", err)
 		}
 		defer func() {
 			if retErr != nil {
-				rollbackAdded(st, root, relPath, destDir, stderr)
+				rollbackAdded(st, relPath, destDir, stderr)
 			}
 		}()
 		if err := copyTree(files, destDir); err != nil {
@@ -329,9 +331,6 @@ func runAddDir(cmd *cobra.Command, stdout, stderr io.Writer, argPath string) (re
 		return usageErr("kb add: %s: indexing failed; see warnings above", relPath)
 	}
 
-	if err := regenerateIndex(root, stderr); err != nil {
-		return usageErr("kb add --dir: %s", err)
-	}
 	fmt.Fprintf(stdout, "added %s (%d chunks)\n", relPath, sum.Chunks)
 	return nil
 }
@@ -348,11 +347,11 @@ func warnMissingMeta(stderr io.Writer, path string, fm entry.FrontMatter) {
 }
 
 // placeFile decides where a file entry ends up. relPath is the repo-relative path to index
-// ("basename.md"); destPath is where the bytes must live on disk; copyNeeded says whether the
+// ("data/basename.md"); destPath is where the bytes must live on disk; copyNeeded says whether the
 // caller still has to write them there (false when srcPath already IS destPath, i.e. the source
-// was already directly under the repo root).
+// was already directly under data/).
 func placeFile(root, srcPath, basename string) (relPath, destPath string, copyNeeded bool, err error) {
-	absRoot, err := filepath.Abs(root)
+	absRoot, err := filepath.Abs(entry.DataRoot(root))
 	if err != nil {
 		return "", "", false, usageErr("kb add: %s", err)
 	}
@@ -366,19 +365,19 @@ func placeFile(root, srcPath, basename string) (relPath, destPath string, copyNe
 	rel, relErr := filepath.Rel(absRoot, absSrc)
 	if !isInside(rel, relErr) {
 		dest := filepath.Join(absRoot, basename)
-		return basename, dest, true, nil
+		return entry.DataDir + "/" + basename, dest, true, nil
 	}
 
 	rel = filepath.ToSlash(rel)
 	if filepath.ToSlash(filepath.Dir(rel)) != "." {
-		return "", "", false, usageErr("kb add: %s: must be directly under the repository root, not a subdirectory", rel)
+		return "", "", false, usageErr("kb add: %s: must be directly under data/, not a subdirectory", rel)
 	}
-	return rel, absSrc, false, nil
+	return entry.DataDir + "/" + rel, absSrc, false, nil
 }
 
-// placeDir is placeFile's counterpart for `kb add --dir`: relPath is always "<name>/README.md".
+// placeDir is placeFile's counterpart for `kb add --dir`: relPath is always "data/<name>/README.md".
 func placeDir(root, srcDir, name string) (relPath, destDir string, copyNeeded bool, err error) {
-	absRoot, err := filepath.Abs(root)
+	absRoot, err := filepath.Abs(entry.DataRoot(root))
 	if err != nil {
 		return "", "", false, usageErr("kb add --dir: %s", err)
 	}
@@ -392,14 +391,14 @@ func placeDir(root, srcDir, name string) (relPath, destDir string, copyNeeded bo
 	rel, relErr := filepath.Rel(absRoot, absSrc)
 	if !isInside(rel, relErr) {
 		dest := filepath.Join(absRoot, name)
-		return name + "/README.md", dest, true, nil
+		return entry.DataDir + "/" + name + "/README.md", dest, true, nil
 	}
 
 	rel = filepath.ToSlash(rel)
 	if rel != name {
-		return "", "", false, usageErr("kb add --dir: %s: must be directly under the repository root, not a subdirectory", rel)
+		return "", "", false, usageErr("kb add --dir: %s: must be directly under data/, not a subdirectory", rel)
 	}
-	return name + "/README.md", absSrc, false, nil
+	return entry.DataDir + "/" + name + "/README.md", absSrc, false, nil
 }
 
 // isInside reports whether rel (the result of filepath.Rel(root, src)) names a path inside root.
@@ -581,7 +580,7 @@ func checkAddDestination(st *store.Store, rel, dest string, copying bool) error 
 }
 
 // Roll back only paths this invocation created. In-place input is always preserved.
-func rollbackAdded(st *store.Store, root, rel, dest string, stderr io.Writer) {
+func rollbackAdded(st *store.Store, rel, dest string, stderr io.Writer) {
 	if err := os.RemoveAll(dest); err != nil {
 		fmt.Fprintf(stderr, "kb add: cleanup %s failed: %s\n", dest, err)
 		return
@@ -589,8 +588,5 @@ func rollbackAdded(st *store.Store, root, rel, dest string, stderr io.Writer) {
 	fmt.Fprintf(stderr, "kb add: removed copied %s after failure\n", rel)
 	if err := st.DeleteEntry(context.Background(), rel); err != nil {
 		fmt.Fprintf(stderr, "kb add: cleanup index failed: %s; run kb reindex --all\n", err)
-	}
-	if err := regenerateIndex(root, stderr); err != nil {
-		fmt.Fprintf(stderr, "kb add: cleanup: %s\n", err)
 	}
 }

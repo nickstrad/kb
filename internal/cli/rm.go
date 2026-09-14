@@ -1,4 +1,4 @@
-// `kb rm`: remove an entry's files, drop its rows, regenerate index.md. P4.2 implements it.
+// `kb rm`: remove an entry's files, drop its database rows. P4.2 implements it.
 package cli
 
 import (
@@ -84,9 +84,6 @@ func runRm(ctx context.Context, stdout, stderr io.Writer, root, arg string, yes 
 
 	fmt.Fprintln(stdout, removed)
 
-	if err := regenerateIndex(root, stderr); err != nil {
-		return usageErr("kb rm: %s", err)
-	}
 	return nil
 }
 

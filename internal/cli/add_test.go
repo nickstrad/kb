@@ -86,15 +86,15 @@ func TestAddFileOutsideRootIsCopiedAndIndexed(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit = %d, want %d; stdout=%q stderr=%q", code, ExitOK, out, errOut)
 	}
-	if !strings.Contains(out, "added kb-add-outside-test.md") {
+	if !strings.Contains(out, "added data/kb-add-outside-test.md") {
 		t.Errorf("stdout = %q, want an \"added ...\" line", out)
 	}
-	if _, err := os.Stat(filepath.Join(root, "kb-add-outside-test.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "data", "kb-add-outside-test.md")); err != nil {
 		t.Fatalf("file was not copied into the repo: %v", err)
 	}
 
 	st := openTestStore(t, root)
-	e, err := st.GetEntryByPath("kb-add-outside-test.md")
+	e, err := st.GetEntryByPath("data/kb-add-outside-test.md")
 	if err != nil {
 		t.Fatalf("GetEntryByPath: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestAddBadNameIsRejected(t *testing.T) {
 	if !strings.Contains(errOut, "lowercase kebab-case") {
 		t.Errorf("stderr = %q, want it to name the naming rule", errOut)
 	}
-	if _, err := os.Stat(filepath.Join(root, "Bad_Name.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "data", "Bad_Name.md")); !os.IsNotExist(err) {
 		t.Errorf("bad-name file should not have been copied (stat err = %v)", err)
 	}
 }
@@ -143,7 +143,7 @@ func TestAddMissingSummaryIsRejected(t *testing.T) {
 	if !strings.Contains(errOut, "summary") {
 		t.Errorf("stderr = %q, want it to mention summary", errOut)
 	}
-	if _, err := os.Stat(filepath.Join(root, "no-summary.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "data", "no-summary.md")); !os.IsNotExist(err) {
 		t.Errorf("file should not have been copied (stat err = %v)", err)
 	}
 }
@@ -164,7 +164,7 @@ func TestAddSecretPatternIsRejected(t *testing.T) {
 	if !strings.Contains(errOut, "password") {
 		t.Errorf("stderr = %q, want it to name the password pattern", errOut)
 	}
-	if _, err := os.Stat(filepath.Join(root, "has-secret.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "data", "has-secret.md")); !os.IsNotExist(err) {
 		t.Errorf("file with a secret should not have been copied (stat err = %v)", err)
 	}
 }
@@ -173,7 +173,7 @@ func TestAddDuplicateIsRejected(t *testing.T) {
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	// Hand-drafted directly in the repo root: valid, not yet in the DB.
-	dest := filepath.Join(root, "hand-drafted.md")
+	dest := filepath.Join(root, "data", "hand-drafted.md")
 	writeFile(t, dest, validFrontMatter("Hand drafted", "Already sitting in the repo before kb add registers it."))
 
 	if _, errOut, code := run(t, "add", dest); code != ExitOK {
@@ -205,12 +205,12 @@ func TestAddDirWithReadmeAndDocsIsIndexed(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit = %d, want %d; stdout=%q stderr=%q", code, ExitOK, out, errOut)
 	}
-	if !strings.Contains(out, "added sample-topic/README.md") {
+	if !strings.Contains(out, "added data/sample-topic/README.md") {
 		t.Errorf("stdout = %q, want an \"added ...\" line", out)
 	}
 
 	st := openTestStore(t, root)
-	e, err := st.GetEntryByPath("sample-topic/README.md")
+	e, err := st.GetEntryByPath("data/sample-topic/README.md")
 	if err != nil {
 		t.Fatalf("GetEntryByPath: %v", err)
 	}
@@ -220,10 +220,10 @@ func TestAddDirWithReadmeAndDocsIsIndexed(t *testing.T) {
 	if e.Kind != "dir" {
 		t.Errorf("Kind = %q, want \"dir\"", e.Kind)
 	}
-	if _, err := os.Stat(filepath.Join(root, "sample-topic", "scripts", "run.sh")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "data", "sample-topic", "scripts", "run.sh")); err != nil {
 		t.Errorf("scripts/run.sh should have been copied into the repo: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "sample-topic", "docs", "extra.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "data", "sample-topic", "docs", "extra.md")); err != nil {
 		t.Errorf("docs/extra.md should have been copied into the repo: %v", err)
 	}
 }
@@ -247,7 +247,7 @@ func TestAddDirWithoutReadmeIsRejected(t *testing.T) {
 func TestAddFileInsideRootSubdirectoryIsRejected(t *testing.T) {
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
-	nested := filepath.Join(root, "sub", "nested.md")
+	nested := filepath.Join(root, "data", "sub", "nested.md")
 	writeFile(t, nested, validFrontMatter("Nested", "Sits in a subdirectory of the repo root, which is not allowed."))
 
 	_, errOut, code := run(t, "add", nested)

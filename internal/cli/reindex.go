@@ -103,10 +103,6 @@ func runReindex(cmd *cobra.Command, stdout, stderr io.Writer, all bool, args []s
 
 	fmt.Fprintln(stdout, sum.String())
 
-	if err := regenerateIndex(root, stderr); err != nil {
-		return usageErr("kb reindex: %s", err)
-	}
-
 	if sum.Failed > 0 {
 		return usageErr("kb reindex: %d of %d entries failed; see warnings above", sum.Failed, sum.Scanned)
 	}
