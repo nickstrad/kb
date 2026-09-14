@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
+	github.com/marcboeker/go-duckdb/v2 v2.4.3
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/spf13/cobra v1.10.2
 )
@@ -25,7 +26,6 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/marcboeker/go-duckdb/arrowmapping v0.0.21 // indirect
 	github.com/marcboeker/go-duckdb/mapping v0.0.21 // indirect
-	github.com/marcboeker/go-duckdb/v2 v2.4.3 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
