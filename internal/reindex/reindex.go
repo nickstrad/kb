@@ -30,10 +30,10 @@ import (
 	"fmt"
 	"io"
 
-	"knowledge/kb/internal/chunk"
-	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/entry"
-	"knowledge/kb/internal/store"
+	"github.com/nickstrad/kb/internal/chunk"
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // defaultBatchSize is used when Options.BatchSize is not positive: 16 texts per embedder call, per

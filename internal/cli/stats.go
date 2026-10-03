@@ -17,7 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"knowledge/kb/internal/stats"
+	"github.com/nickstrad/kb/internal/stats"
 )
 
 // dayDurationRe matches the plan's "Nd" duration suffix: a whole number of days. Anything else

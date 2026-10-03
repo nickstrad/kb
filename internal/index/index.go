@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"knowledge/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/entry"
 )
 
 // Name is the generated file's name, relative to the repo root.

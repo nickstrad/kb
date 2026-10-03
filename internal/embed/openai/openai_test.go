@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"knowledge/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed"
 )
 
 // server answers POST /embeddings with one vector of length dim per input, in reverse index order

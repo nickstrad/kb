@@ -13,9 +13,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/embed/fake"
-	"knowledge/kb/internal/store"
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // TestClampK pins the documented 1..20 range, including the explicit -k 0 case.

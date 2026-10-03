@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"knowledge/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/entry"
 )
 
 // splitDeadline is far above the microseconds a real entry takes; only a hang or a blow-up trips it.

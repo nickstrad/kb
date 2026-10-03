@@ -3,7 +3,7 @@
 //
 // BUILD TAG: this package, and therefore the kb binary, must be built with -tags fts5:
 //
-//	cd /root/Raw/knowledge/kb && go build -tags fts5 ./...
+//	go build -tags fts5 ./...
 //
 // github.com/mattn/go-sqlite3 compiles FTS5 into its bundled SQLite only under that tag. Without
 // it the schema's chunks_fts virtual table cannot be created, so Open checks

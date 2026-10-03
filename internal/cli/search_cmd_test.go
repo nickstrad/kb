@@ -14,10 +14,10 @@ import (
 	"strings"
 	"testing"
 
-	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/embed/fake"
-	"knowledge/kb/internal/embed/ollama"
-	"knowledge/kb/internal/store"
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/embed/ollama"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // newSearchTestRepo builds a temp repo root with a populated database: one entry, two chunks,

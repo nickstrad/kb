@@ -27,8 +27,21 @@ const (
 	ExitEmbedder = 2
 )
 
-// DefaultRoot is the knowledge repository kb works on when KB_ROOT is unset.
-const DefaultRoot = "/root/Raw/knowledge"
+// defaultRoot is the knowledge repository kb works on when KB_ROOT is unset. scripts/install.sh
+// stamps it from $KB_DEFAULT_ROOT with -ldflags "-X .../internal/cli.defaultRoot=<dir>"; an
+// unstamped build falls back to ~/knowledge.
+var defaultRoot = ""
+
+// DefaultRoot returns the stamped default repository, else ~/knowledge.
+func DefaultRoot() string {
+	if defaultRoot != "" {
+		return defaultRoot
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "knowledge")
+	}
+	return "knowledge"
+}
 
 // Version is printed by `kb version`; the install script stamps it with the repo's short hash.
 var Version = "dev"
@@ -74,7 +87,7 @@ func Root() string {
 	if r := os.Getenv("KB_ROOT"); r != "" {
 		return r
 	}
-	return DefaultRoot
+	return DefaultRoot()
 }
 
 // DBPath is the database file for a repo root: <root>/.kb/kb.sqlite. It only computes the path;
@@ -122,7 +135,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "kb",
 		Short: "Search and maintain the knowledge repository",
-		Long: "kb indexes knowledge entries under data/ in $KB_ROOT (default " + DefaultRoot + ")\n" +
+		Long: "kb indexes knowledge entries under data/ in $KB_ROOT (default " + DefaultRoot() + ")\n" +
 			"into .kb/kb.sqlite and searches it with FTS5 and sqlite-vec at once.\n\n" +
 			"Every search is three steps:\n" +
 			"  kb search \"<query>\" --caller claude   prints \"search N · M hits\" first\n" +

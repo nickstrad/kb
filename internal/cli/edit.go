@@ -13,9 +13,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/entry"
-	"knowledge/kb/internal/reindex"
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/reindex"
 )
 
 // newEditCmd builds `kb edit <entry>`.

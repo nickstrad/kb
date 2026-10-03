@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"knowledge/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/entry"
 )
 
 // maxSummaryWidth keeps the table readable when a summary line is long; the full text is always

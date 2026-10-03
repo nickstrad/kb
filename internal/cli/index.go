@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"knowledge/kb/internal/index"
+	"github.com/nickstrad/kb/internal/index"
 )
 
 // newIndexCmd builds `kb index`.

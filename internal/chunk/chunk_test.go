@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"knowledge/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/entry"
 )
 
 // TestSplitProducesSummaryChunk pins rule 2 and rule 6, and that a missing summary is reported as

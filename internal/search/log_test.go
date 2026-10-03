@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/embed/fake"
-	"knowledge/kb/internal/store"
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // logFixtures are three entries of five chunks each, every chunk containing "widget". A query for

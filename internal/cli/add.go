@@ -30,10 +30,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/entry"
-	"knowledge/kb/internal/reindex"
-	"knowledge/kb/internal/store"
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/reindex"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // addBatchSize matches reindex's own batching (plan.md: "batched, 16 texts per Ollama call").

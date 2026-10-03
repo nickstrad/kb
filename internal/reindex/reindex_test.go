@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/embed/fake"
-	"knowledge/kb/internal/entry"
-	"knowledge/kb/internal/store"
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // testDim matches the vec0 column declared in schema.sql (FLOAT[768]).

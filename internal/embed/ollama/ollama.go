@@ -1,5 +1,4 @@
-// Package ollama implements embed.Embedder against an Ollama server's native API
-// (see the ollama-local-embeddings knowledge entry for the service facts on this droplet).
+// Package ollama implements embed.Embedder against an Ollama server's native API.
 //
 // It calls POST /api/embed with {"model": <model>, "input": [...], "truncate": false} and
 // expects {"embeddings": [[...], ...]}, one vector per input in order. truncate is pinned to
@@ -34,7 +33,7 @@ import (
 	"strings"
 	"time"
 
-	"knowledge/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed"
 )
 
 // Defaults used by New when an argument is empty/zero and the corresponding environment variable

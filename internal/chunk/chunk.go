@@ -28,7 +28,7 @@ import (
 	"fmt"
 	"strings"
 
-	"knowledge/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/entry"
 )
 
 // MaxChunkChars is the size above which a section is split at paragraph boundaries (rule 4).

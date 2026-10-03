@@ -3,9 +3,9 @@ package provider
 import (
 	"testing"
 
-	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/embed/ollama"
-	"knowledge/kb/internal/embed/openai"
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed/ollama"
+	"github.com/nickstrad/kb/internal/embed/openai"
 )
 
 // clearEnv unsets every variable New reads, so the host environment cannot leak into a test.

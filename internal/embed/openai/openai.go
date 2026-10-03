@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	"knowledge/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed"
 )
 
 // maxBatch is the largest number of texts sent in one /embeddings call.

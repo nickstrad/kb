@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"knowledge/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/entry"
 )
 
 // newRmCmd builds `kb rm <entry> [--yes]`.

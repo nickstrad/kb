@@ -3,9 +3,9 @@
 // It must be built with the fts5 build tag, because the SQLite driver only compiles FTS5 in under
 // that tag:
 //
-//	cd /root/Raw/knowledge/kb && go build -tags fts5 ./cmd/kb
+//	go build -tags fts5 ./cmd/kb
 //
-// version is stamped by kb/scripts/install.sh with -ldflags "-X main.version=<git short hash>";
+// version is stamped by scripts/install.sh with -ldflags "-X main.version=<git short hash>";
 // a plain go build leaves it as "dev".
 package main
 
@@ -15,7 +15,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"knowledge/kb/internal/cli"
+	"github.com/nickstrad/kb/internal/cli"
 )
 
 var version = "dev"

@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"knowledge/kb/internal/chunk"
-	"knowledge/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/chunk"
+	"github.com/nickstrad/kb/internal/entry"
 )
 
 // newShowCmd builds `kb show <entry> [--chunks]`.

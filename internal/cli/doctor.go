@@ -17,10 +17,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/entry"
-	"knowledge/kb/internal/index"
-	"knowledge/kb/internal/store"
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/index"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // newDoctorCmd builds `kb doctor`.
@@ -102,7 +102,7 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, stdout io.Writer, root s
 		checkDBVsFiles(d, root, st, goodEntries)
 	}
 	checkIndexMD(d, root, goodEntries)
-	checkBinary(d, root)
+	checkBinary(d)
 
 	fmt.Fprintf(stdout, "doctor: %d failed, %d warnings\n", d.failed, d.warned)
 	if d.failed > 0 {
@@ -292,40 +292,27 @@ func checkIndexMD(d *doctorState, root string, goodEntries []entry.Entry) {
 	d.ok("index.md", "up to date")
 }
 
-// checkBinary is informational only: it warns when /usr/local/bin/kb is not a symlink into
-// <root>/kb/.cache/, which is how kb/scripts/install.sh sets it up.
-func checkBinary(d *doctorState, root string) {
+// checkBinary is informational only: it warns when /usr/local/bin/kb, which scripts/install.sh
+// links to the freshly built binary, does not resolve to the kb that is running now, so a stale
+// or foreign install shows up.
+func checkBinary(d *doctorState) {
 	const linkPath = "/usr/local/bin/kb"
-	fi, err := os.Lstat(linkPath)
+	target, err := filepath.EvalSymlinks(linkPath)
 	if err != nil {
-		d.warn("binary", fmt.Sprintf("%s: %s; run kb/scripts/install.sh", linkPath, err))
+		d.warn("binary", fmt.Sprintf("%s: %s; run scripts/install.sh", linkPath, err))
 		return
 	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		d.warn("binary", fmt.Sprintf("%s is not a symlink; run kb/scripts/install.sh", linkPath))
-		return
+	self, err := os.Executable()
+	if err == nil {
+		self, err = filepath.EvalSymlinks(self)
 	}
-	target, err := os.Readlink(linkPath)
 	if err != nil {
-		d.warn("binary", fmt.Sprintf("%s: readlink: %s", linkPath, err))
+		d.warn("binary", fmt.Sprintf("cannot resolve the running executable: %s", err))
 		return
 	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(linkPath), target)
-	}
-	absTarget, err := filepath.Abs(target)
-	if err != nil {
-		d.warn("binary", fmt.Sprintf("%s: %s", linkPath, err))
+	if target != self {
+		d.warn("binary", fmt.Sprintf("%s -> %s, but this kb is %s; run scripts/install.sh", linkPath, target, self))
 		return
 	}
-	wantDir, err := filepath.Abs(filepath.Join(root, "kb", ".cache"))
-	if err != nil {
-		d.warn("binary", fmt.Sprintf("%s: %s", linkPath, err))
-		return
-	}
-	if absTarget != wantDir && !strings.HasPrefix(absTarget, wantDir+string(filepath.Separator)) {
-		d.warn("binary", fmt.Sprintf("%s -> %s, not inside %s; run kb/scripts/install.sh", linkPath, absTarget, wantDir))
-		return
-	}
-	d.ok("binary", fmt.Sprintf("%s -> %s", linkPath, absTarget))
+	d.ok("binary", fmt.Sprintf("%s -> %s", linkPath, target))
 }

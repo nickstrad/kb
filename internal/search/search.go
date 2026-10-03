@@ -26,7 +26,7 @@ import (
 	// (like cmd/kb before P3.4 wires it) that reaches search without reaching store.
 	_ "github.com/mattn/go-sqlite3"
 
-	"knowledge/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed"
 )
 
 // Modes a search can run in. ModeFTSFallback is recorded when hybrid was asked for but the

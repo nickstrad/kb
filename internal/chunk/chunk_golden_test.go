@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"knowledge/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/entry"
 )
 
 // update regenerates the golden files under testdata/golden from the current Split output. Run

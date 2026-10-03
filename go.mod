@@ -1,4 +1,4 @@
-module knowledge/kb
+module github.com/nickstrad/kb
 
 go 1.26
 

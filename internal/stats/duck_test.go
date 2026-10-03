@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/embed/fake"
-	"knowledge/kb/internal/search"
-	"knowledge/kb/internal/store"
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/search"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // fixture is a real SQLite database (built with store.Open, the entry/chunk write API and

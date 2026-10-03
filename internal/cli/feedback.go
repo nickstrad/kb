@@ -14,8 +14,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"knowledge/kb/internal/search"
-	"knowledge/kb/internal/store"
+	"github.com/nickstrad/kb/internal/search"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // newFeedbackCmd builds

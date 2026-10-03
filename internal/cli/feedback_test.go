@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"knowledge/kb/internal/embed/ollama"
-	"knowledge/kb/internal/store"
+	"github.com/nickstrad/kb/internal/embed/ollama"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // headerID is the search id from the first line of `kb search` human output ("search N · M hits"),

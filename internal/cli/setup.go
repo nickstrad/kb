@@ -8,10 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/embed/provider"
-	"knowledge/kb/internal/entry"
-	"knowledge/kb/internal/store"
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed/provider"
+	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // newEmbedder builds the configured embedder (see internal/embed/provider) from cmd's --embedder

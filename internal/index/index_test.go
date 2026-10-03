@@ -6,13 +6,14 @@ import (
 	"strings"
 	"testing"
 
-	"knowledge/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/entry"
 )
 
-// repoRoot is the knowledge repository this module lives in: kb/internal/index -> ../../..
+// repoRoot is the fixture knowledge repository the chunk tests also use, so this test does not
+// depend on a real corpus next to the module.
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	root, err := filepath.Abs(filepath.Join("..", "chunk", "testdata", "repo"))
 	if err != nil {
 		t.Fatalf("resolve repo root: %v", err)
 	}
@@ -41,7 +42,7 @@ func tableRows(doc, heading string) []string {
 	return rows
 }
 
-// Generate from the real source corpus without requiring a checked-in snapshot.
+// Generate from the fixture corpus without requiring a checked-in snapshot.
 func TestGenerateFromCorpus(t *testing.T) {
 	root := repoRoot(t)
 	entries, err := entry.Discover(root)
