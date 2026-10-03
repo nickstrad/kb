@@ -77,7 +77,9 @@ func statsLongHelp() string {
 	var b strings.Builder
 	b.WriteString("A search is a hit when at least one of its rated results was marked useful. Rates use only\n")
 	b.WriteString("judged searches (searches with at least one feedback row) as the denominator and show\n")
-	b.WriteString("coverage beside every rate, so an unjudged search is unknown, not a failure.\n\n")
+	b.WriteString("coverage beside every rate, so an unjudged search is unknown, not a failure. A whole-search\n")
+	b.WriteString("verdict (kb feedback <id> --none, stored as a rank-0 feedback row) makes a search judged and\n")
+	b.WriteString("never a hit; it is the only way a zero-result search can be judged.\n\n")
 	b.WriteString("--sql runs ad-hoc DuckDB SQL against the loaded tables; DuckDB widens sum() over an INTEGER\n")
 	b.WriteString("column to HUGEINT, which kb stats prints as a string, so prefer count(*) FILTER (WHERE ...) or\n")
 	b.WriteString("CAST(sum(x) AS BIGINT) in ad-hoc queries that need a whole-number sum.\n\n")

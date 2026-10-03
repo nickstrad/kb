@@ -551,6 +551,164 @@ func TestFeedback(t *testing.T) {
 	}
 }
 
+// feedbackRow reads one search_feedback row back; ok is false when the row does not exist.
+func feedbackRow(t *testing.T, db *sql.DB, searchID int64, rank int) (useful int, note sql.NullString, ok bool) {
+	t.Helper()
+	err := db.QueryRow("SELECT useful, note FROM search_feedback WHERE search_id = ? AND rank = ?", searchID, rank).
+		Scan(&useful, &note)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, note, false
+	}
+	if err != nil {
+		t.Fatalf("read feedback (%d, %d): %v", searchID, rank, err)
+	}
+	return useful, note, true
+}
+
+// TestFeedbackNone covers the whole-search verdict: it is the one verdict a zero-result search can
+// take, it is stored as a single rank-0 not-useful row, it upserts, it refuses to contradict a
+// useful verdict, and a later useful verdict withdraws it.
+func TestFeedbackNone(t *testing.T) {
+	s := logSearcher(t)
+	db := s.DB
+	ctx := context.Background()
+
+	// A zero-result search: no fixture chunk contains this token, and fts never embeds.
+	zero, err := s.SearchAndLog(ctx, Request{Query: "nonexistentzebra", Mode: ModeFTS, K: 8, Caller: "test"})
+	if err != nil {
+		t.Fatalf("SearchAndLog zero: %v", err)
+	}
+	if len(zero.Returned) != 0 {
+		t.Fatalf("zero-result fixture returned %d hits", len(zero.Returned))
+	}
+	zeroID := zero.Result.SearchID
+
+	// Its ranks cannot be marked, and the error points at --none.
+	if err := s.Feedback(ctx, zeroID, 1, false, ""); err == nil || !strings.Contains(err.Error(), "--none") {
+		t.Errorf("Feedback on a zero-result search = %v, want an error suggesting --none", err)
+	}
+	if err := s.FeedbackNone(ctx, zeroID, "nothing about zebras"); err != nil {
+		t.Fatalf("FeedbackNone on a zero-result search: %v", err)
+	}
+	useful, note, ok := feedbackRow(t, db, zeroID, WholeSearchRank)
+	if !ok || useful != 0 || note.String != "nothing about zebras" {
+		t.Errorf("rank-0 row = useful %d note %q present %t, want 0 / \"nothing about zebras\" / true", useful, note.String, ok)
+	}
+
+	// A second --none replaces the row (one row, new note; an empty note is NULL), not a PK error.
+	if err := s.FeedbackNone(ctx, zeroID, ""); err != nil {
+		t.Fatalf("FeedbackNone upsert: %v", err)
+	}
+	if got := count(t, db, "SELECT count(*) FROM search_feedback WHERE search_id = ?", zeroID); got != 1 {
+		t.Errorf("feedback rows for the zero-result search = %d, want 1", got)
+	}
+	if _, note, _ := feedbackRow(t, db, zeroID, WholeSearchRank); note.Valid {
+		t.Errorf("note after an empty-note upsert = %q, want NULL", note.String)
+	}
+
+	// A search with hits: --none coexists with not-useful verdicts on individual hits.
+	hits, err := s.SearchAndLog(ctx, Request{Query: "widget", Mode: ModeFTS, K: 8, Caller: "test"})
+	if err != nil {
+		t.Fatalf("SearchAndLog hits: %v", err)
+	}
+	id := hits.Result.SearchID
+	if len(hits.Returned) < 2 {
+		t.Fatalf("hits fixture returned %d hits, want at least 2", len(hits.Returned))
+	}
+	if err := s.Feedback(ctx, id, 1, false, "wrong entry"); err != nil {
+		t.Fatalf("Feedback not-useful: %v", err)
+	}
+	if err := s.FeedbackNone(ctx, id, "none of these"); err != nil {
+		t.Fatalf("FeedbackNone after a not-useful verdict: %v", err)
+	}
+	if _, _, ok := feedbackRow(t, db, id, WholeSearchRank); !ok {
+		t.Error("rank-0 row missing after FeedbackNone")
+	}
+	// A later not-useful verdict leaves the --none row in place: the two agree.
+	if err := s.Feedback(ctx, id, 2, false, ""); err != nil {
+		t.Fatalf("Feedback not-useful rank 2: %v", err)
+	}
+	if _, _, ok := feedbackRow(t, db, id, WholeSearchRank); !ok {
+		t.Error("a not-useful verdict withdrew the --none row")
+	}
+
+	// A later useful verdict withdraws --none: rows (0), (1,false), (2,false) become (1,false),
+	// (2,true).
+	if err := s.Feedback(ctx, id, 2, true, "rank 2 did help"); err != nil {
+		t.Fatalf("Feedback useful: %v", err)
+	}
+	if _, _, ok := feedbackRow(t, db, id, WholeSearchRank); ok {
+		t.Error("the rank-0 row survived a useful verdict")
+	}
+	if got := count(t, db, "SELECT count(*) FROM search_feedback WHERE search_id = ?", id); got != 2 {
+		t.Errorf("feedback rows = %d after the useful verdict, want 2", got)
+	}
+
+	// Now --none contradicts rank 2 and is refused, naming the command that resolves it, and
+	// writes nothing.
+	err = s.FeedbackNone(ctx, id, "")
+	wantFix := fmt.Sprintf("kb feedback %d 2 --not-useful", id)
+	if err == nil || !strings.Contains(err.Error(), wantFix) {
+		t.Errorf("FeedbackNone with a useful verdict = %v, want it to name %q", err, wantFix)
+	}
+	if _, _, ok := feedbackRow(t, db, id, WholeSearchRank); ok {
+		t.Error("a refused FeedbackNone still wrote the rank-0 row")
+	}
+
+	if err := s.FeedbackNone(ctx, id+999, ""); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("no search with id %d", id+999)) {
+		t.Errorf("FeedbackNone on an unknown search = %v, want a no-search error", err)
+	}
+	// The zero-result search's row is untouched by everything above.
+	if got := count(t, db, "SELECT count(*) FROM search_feedback"); got != 3 {
+		t.Errorf("total feedback rows = %d, want 3 (zero:0, hits:1, hits:2)", got)
+	}
+}
+
+// TestLast: the newest search is per caller and by id, and a caller with no search is ErrNoSearch.
+func TestLast(t *testing.T) {
+	s := logSearcher(t)
+	ctx := context.Background()
+
+	var ids []int64
+	for _, req := range []Request{
+		{Query: "widget alpha", Caller: "claude"},
+		{Query: "widget beta", Caller: "codex"},
+		{Query: "widget gamma", Caller: "claude"},
+		{Query: "widget delta", Caller: "codex"},
+	} {
+		req.Mode, req.K = ModeFTS, 8
+		out, err := s.SearchAndLog(ctx, req)
+		if err != nil {
+			t.Fatalf("SearchAndLog %q: %v", req.Query, err)
+		}
+		ids = append(ids, out.Result.SearchID)
+	}
+
+	// claude searched 1st and 3rd, codex 2nd and 4th: each caller's newest is its later search,
+	// even though all four may share one ts second.
+	for _, tc := range []struct {
+		caller string
+		wantID int64
+		wantQ  string
+	}{
+		{"claude", ids[2], "widget gamma"},
+		{"codex", ids[3], "widget delta"},
+	} {
+		got, err := s.Last(ctx, tc.caller)
+		if err != nil {
+			t.Fatalf("Last(%q): %v", tc.caller, err)
+		}
+		if got.ID != tc.wantID || got.Query != tc.wantQ || got.NReturned == 0 || got.TS == "" {
+			t.Errorf("Last(%q) = %+v, want id %d query %q with hits and a ts", tc.caller, got, tc.wantID, tc.wantQ)
+		}
+	}
+
+	_, err := s.Last(ctx, "nobody")
+	if !errors.Is(err, ErrNoSearch) || !strings.Contains(err.Error(), `"nobody"`) {
+		t.Errorf("Last(nobody) = %v, want ErrNoSearch naming the caller", err)
+	}
+}
+
 // TestLogCascadeDelete: deleting a searches row takes its results, candidates and feedback with
 // it, so the log can be pruned with one DELETE. (foreign_keys=ON is a store.Open pragma; this is
 // also what proves it reaches the pooled connections.)

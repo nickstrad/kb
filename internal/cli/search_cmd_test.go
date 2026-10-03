@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -100,10 +102,22 @@ func TestSearchFTSMode(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; stderr=%s", exit, stderr)
 	}
 	// A two-hit block is deliberately checked as one shape: callers who do not use --json can
-	// still rely on the documented human format, including the blank line between hits and footer.
-	human := regexp.MustCompile(`(?s)\A#1  [0-9]+\.[0-9]{4}  widget\.md(?: › Configuration)?\n[^\n]+\n\n#2  [0-9]+\.[0-9]{4}  widget\.md(?: › Configuration)?\n[^\n]+\nsearch_id=[1-9][0-9]*\n\z`)
-	if !human.MatchString(stdout) {
-		t.Errorf("stdout does not match the two-hit human format:\n%s", stdout)
+	// still rely on the documented human format: the id-bearing first line (so `| head` keeps it),
+	// the blank line between hits, the search_id=N footer, and the feedback hint.
+	human := regexp.MustCompile(`(?s)\Asearch ([1-9][0-9]*) · 2 hits\n#1  [0-9]+\.[0-9]{4}  widget\.md(?: › Configuration)?\n[^\n]+\n\n#2  [0-9]+\.[0-9]{4}  widget\.md(?: › Configuration)?\n[^\n]+\nsearch_id=([1-9][0-9]*)\n(→ judge: [^\n]+)\n\z`)
+	m := human.FindStringSubmatch(stdout)
+	if m == nil {
+		t.Fatalf("stdout does not match the two-hit human format:\n%s", stdout)
+	}
+	// Go's regexp has no backreferences, so the three places the id appears are compared here.
+	id := m[1]
+	if m[2] != id {
+		t.Errorf("header id %s and footer search_id=%s differ", id, m[2])
+	}
+	wantHint := "→ judge: kb feedback " + id + " RANK --useful (or --not-useful) · none helped: kb feedback " +
+		id + ` --none --note "why"`
+	if m[3] != wantHint {
+		t.Errorf("hint = %q, want %q", m[3], wantHint)
 	}
 }
 
@@ -118,9 +132,14 @@ func TestSearchJSONMode(t *testing.T) {
 
 	var parsed struct {
 		SearchID int64 `json:"search_id"`
-		Query    string
-		Mode     string
-		Hits     []map[string]any `json:"hits"`
+		Feedback struct {
+			Useful    string `json:"useful"`
+			NotUseful string `json:"not_useful"`
+			None      string `json:"none"`
+		} `json:"feedback"`
+		Query string
+		Mode  string
+		Hits  []map[string]any `json:"hits"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
 		t.Fatalf("json.Unmarshal: %v\nstdout:\n%s", err, stdout)
@@ -133,6 +152,21 @@ func TestSearchJSONMode(t *testing.T) {
 	}
 	if parsed.SearchID == 0 {
 		t.Error("search_id is 0")
+	}
+	// The feedback commands name this search's own id. The placeholder is RANK, not <rank>: a
+	// pasted <rank> is a shell redirection, so the line would fail or create a stray file.
+	id := strconv.FormatInt(parsed.SearchID, 10)
+	if want := "kb feedback " + id + " RANK --useful"; parsed.Feedback.Useful != want {
+		t.Errorf("feedback.useful = %q, want %q", parsed.Feedback.Useful, want)
+	}
+	if want := "kb feedback " + id + ` RANK --not-useful --note "why"`; parsed.Feedback.NotUseful != want {
+		t.Errorf("feedback.not_useful = %q, want %q", parsed.Feedback.NotUseful, want)
+	}
+	if want := "kb feedback " + id + ` --none --note "why"`; parsed.Feedback.None != want {
+		t.Errorf("feedback.none = %q, want %q", parsed.Feedback.None, want)
+	}
+	if want := `"kb feedback ` + id + ` RANK --useful"`; !strings.Contains(stdout, want) {
+		t.Errorf("raw JSON lacks the copyable command %s:\n%s", want, stdout)
 	}
 
 	// Confirm the JSON's top-level shape is an object with a "hits" array, not e.g. null.
@@ -211,8 +245,34 @@ func TestSearchTagFilterAndZeroHits(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("zero-hit search exit = %d, want 0; stderr=%s", exit, stderr)
 	}
-	if !regexp.MustCompile(`\Ano results\nsearch_id=[1-9][0-9]*\n\z`).MatchString(stdout) {
-		t.Errorf("zero-hit output = %q, want no-results format with a search id", stdout)
+	// A zero-result search still leads with its id and ends with a hint, and the hint offers only
+	// --none: there is no rank to mark.
+	m := regexp.MustCompile(`\Asearch ([1-9][0-9]*) · 0 hits\nno results\nsearch_id=([1-9][0-9]*)\n(→ judge: [^\n]+)\n\z`).FindStringSubmatch(stdout)
+	if m == nil {
+		t.Fatalf("zero-hit output = %q, want no-results format with a search id and hint", stdout)
+	}
+	if m[1] != m[2] {
+		t.Errorf("header id %s and footer search_id=%s differ", m[1], m[2])
+	}
+	if want := "→ judge: kb feedback " + m[1] + ` --none --note "what you were looking for"`; m[3] != want {
+		t.Errorf("zero-hit hint = %q, want %q", m[3], want)
+	}
+
+	stdout, stderr, exit = runKB(t, []string{"search", "not-in-the-fixture", "--mode", "fts", "--json"})
+	if exit != 0 {
+		t.Fatalf("zero-hit JSON search exit = %d, want 0; stderr=%s", exit, stderr)
+	}
+	var parsed struct {
+		SearchID int64             `json:"search_id"`
+		Feedback map[string]string `json:"feedback"`
+		Hits     []map[string]any  `json:"hits"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+		t.Fatalf("unmarshal zero-hit JSON: %v\n%s", err, stdout)
+	}
+	want := map[string]string{"none": "kb feedback " + strconv.FormatInt(parsed.SearchID, 10) + ` --none --note "why"`}
+	if !reflect.DeepEqual(parsed.Feedback, want) {
+		t.Errorf("zero-hit JSON feedback = %v, want only %v", parsed.Feedback, want)
 	}
 }
 
@@ -267,8 +327,11 @@ func TestSearchLogFailure(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("human log-failure exit = %d, want 0; stdout=%s stderr=%s", exit, stdout, stderr)
 	}
-	if !strings.HasSuffix(stdout, "search_id=none (not logged)\n") {
-		t.Errorf("human log-failure footer = %q", stdout)
+	if !strings.HasPrefix(stdout, "search not logged · 2 hits\n") || !strings.HasSuffix(stdout, "search_id=none (not logged)\n") {
+		t.Errorf("human log-failure header/footer = %q", stdout)
+	}
+	if strings.Contains(stdout, "kb feedback") {
+		t.Errorf("an unlogged search printed a feedback hint it cannot honour:\n%s", stdout)
 	}
 	if !strings.Contains(stderr, "warning: search not logged:") {
 		t.Errorf("stderr missing log-failure warning: %s", stderr)
@@ -284,6 +347,9 @@ func TestSearchLogFailure(t *testing.T) {
 	}
 	if id, ok := raw["search_id"]; !ok || id != nil {
 		t.Errorf("JSON search_id = %#v (present %t), want present null", id, ok)
+	}
+	if fb, ok := raw["feedback"]; !ok || fb != nil {
+		t.Errorf("JSON feedback = %#v (present %t), want present null", fb, ok)
 	}
 }
 

@@ -10,6 +10,11 @@
 //   - rates are taken over *judged* searches only (searches with at least one feedback row);
 //     an unjudged search is unknown, not a failure, so every rate sits next to its denominator
 //     and a coverage column;
+//   - a whole-search verdict (`kb feedback <id> --none`) is a feedback row at rank 0 with
+//     useful = false (search.WholeSearchRank). The definitions above already treat it right with
+//     no special case: it makes its search judged and never a hit, it is the only way a
+//     zero-result search can be judged, and since no result has rank 0 it joins no search_results
+//     row, so the per-result queries (sources, entries) never see it;
 //   - a missing measurement is NULL, never 0 — an unrated result, a stage that never ran, and an
 //     entry nobody ever saw all have to stay distinguishable from a real zero.
 //
@@ -44,10 +49,13 @@ var Queries = []Query{
 		Summary: "One row per search mode: coverage, hit rate, MRR, zero-result rate and latency.",
 		Help: "One row per mode that actually ran (hybrid, fts, vec, or fts-fallback for a hybrid\n" +
 			"search that lost its embedder). searches is every logged search in that mode; judged is\n" +
-			"how many of them carry at least one feedback row and coverage_pct is judged/searches.\n" +
+			"how many of them carry at least one feedback row — a verdict on a hit, or a whole-search\n" +
+			"`kb feedback <id> --none`, which also covers zero-result searches — and coverage_pct is\n" +
+			"judged/searches.\n" +
 			"hit_rate_pct is the share of judged searches with at least one useful result, and mrr is\n" +
 			"the mean over judged searches of 1/rank of their first useful result (0 for a judged\n" +
-			"search with no useful result); both are NULL when nothing in the mode was judged.\n" +
+			"search with no useful result, which includes every --none search); both are NULL when\n" +
+			"nothing in the mode was judged.\n" +
 			"zero_result_pct is the share of all searches that returned nothing — that one needs no\n" +
 			"feedback, so it is the most trustworthy column when coverage is low. p50_ms and p95_ms\n" +
 			"are continuous quantiles of total_ms, and avg_embed_ms is the mean embedding time, NULL\n" +
@@ -96,7 +104,8 @@ ORDER BY searches DESC, mode`,
 			"carried just one. results counts result rows (not searches) and share_pct is that share\n" +
 			"of every in-scope result row. judged is how many of those rows have a verdict, useful how\n" +
 			"many were marked useful, and useful_rate_pct is useful/judged — NULL when that source was\n" +
-			"never judged, which is the usual reading for fts-only rows nobody bothered to rate.\n" +
+			"never judged, which is the usual reading for fts-only rows nobody bothered to rate. A\n" +
+			"whole-search --none verdict names no result, so it is not counted here.\n" +
 			"avg_rank is the mean display rank of the source's rows, so a high useful_rate_pct at a\n" +
 			"deep avg_rank means the fusion is burying good hits.\n" +
 			"Decision: is the vector list earning its cost; should RRF weighting or vecOverFetch change.",
@@ -189,7 +198,8 @@ ORDER BY week`,
 			"entry was judged and never helped, while NULL means it has never been judged at all.\n" +
 			"avg_rank is its mean display rank and last_returned the timestamp of the most recent\n" +
 			"search that showed it. Only returned results count here, not candidates that lost the\n" +
-			"fusion: a caller can only judge what it was shown.\n" +
+			"fusion: a caller can only judge what it was shown. A whole-search --none verdict names no\n" +
+			"result, so it is attributed to no entry.\n" +
 			"Decision: which entries to rewrite (returned but voted down), which are dead weight or\n" +
 			"invisible (never returned), which carry the store.",
 		SQL: `WITH result_rows AS (
@@ -236,10 +246,11 @@ ORDER BY returned DESC, e.path`,
 		Help: "One row per normalised query text (lower(trim(query))) for which no feedback row anywhere\n" +
 			"in the group says useful. times_asked counts the searches in the group, last_asked is the\n" +
 			"most recent of them, and callers lists the distinct callers that asked. judged and\n" +
-			"not_useful count feedback rows (not searches): judged = 0 means nobody ever rated these\n" +
-			"searches, so the row is unknown rather than failed, while judged = not_useful > 0 means\n" +
-			"the store really was asked and really did not answer. zero_results counts the searches in\n" +
-			"the group that returned nothing at all. top_entry is the rank-1 entry_path of the group's\n" +
+			"not_useful count feedback rows (not searches; a whole-search --none verdict is one row of\n" +
+			"each): judged = 0 means nobody ever rated these searches, so the row is unknown rather\n" +
+			"than failed, while judged = not_useful > 0 means the store really was asked and really\n" +
+			"did not answer. zero_results counts the searches in the group that returned nothing at\n" +
+			"all; they can only be judged with --none. top_entry is the rank-1 entry_path of the group's\n" +
 			"most recent search, and is NULL when that search returned nothing; last_note is the most\n" +
 			"recent non-empty feedback note in the group, which is usually the clearest statement of\n" +
 			"what was missing.\n" +

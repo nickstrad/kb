@@ -123,7 +123,13 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		Use:   "kb",
 		Short: "Search and maintain the knowledge repository",
 		Long: "kb indexes knowledge entries under data/ in $KB_ROOT (default " + DefaultRoot + ")\n" +
-			"into .kb/kb.sqlite and searches it with FTS5 and sqlite-vec at once.",
+			"into .kb/kb.sqlite and searches it with FTS5 and sqlite-vec at once.\n\n" +
+			"Every search is three steps:\n" +
+			"  kb search \"<query>\" --caller claude   prints \"search N · M hits\" first\n" +
+			"  kb show <path>                        reads a hit's entry\n" +
+			"  kb feedback N <rank> --useful         judges it (--not-useful, or N --none when\n" +
+			"                                        nothing helped, zero results included)\n" +
+			"An unjudged search counts as unknown in kb stats; feedback is what gives its numbers meaning.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

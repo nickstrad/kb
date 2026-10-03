@@ -401,6 +401,100 @@ func TestGaps(t *testing.T) {
 		})
 }
 
+// wholeSearchSQL adds two whole-search verdicts (`kb feedback <id> --none`, stored at rank 0 with
+// useful = false) to the fixture: one on zero-result search 5 and one on search 7, which returned
+// three hits nobody had rated. Both searches were unjudged before.
+const wholeSearchSQL = `
+INSERT INTO search_feedback VALUES
+ (5, 0, FALSE, 'nothing on this topic yet',        TIMESTAMP '2026-09-11 13:05:00'),
+ (7, 0, FALSE, 'all about sshd config, not tmux', TIMESTAMP '2026-09-15 10:05:00');
+`
+
+// TestWholeSearchVerdict pins what a rank-0 --none row does to every query, on top of the base
+// fixture whose numbers are worked out in the tests above.
+//
+// overview, hybrid (searches 1, 2, 5, 7, 8): judged was 1, 2, 8 and is now 1, 2, 5, 7, 8 = 5, so
+// coverage = 100*5/5 = 100.0. The rank-0 rows are not useful, so the hits are still 1 and 2 only:
+// hit_rate = 100*2/5 = 40.0. MRR = (1/3 + 1 + 0 + 0 + 0)/5 = 1.33333…/5 = 0.26666… -> 0.267.
+// zero_result_pct, latency and embed columns do not read feedback and stay 20.0, 100.0, 118.0,
+// 40.0. The other modes have no new rows and are unchanged.
+//
+// sources and entries: no search_results row has rank 0, so both are exactly as in TestSources
+// and TestEntries.
+//
+// trend, week of 09-07 (searches 1-5): judged 1, 2, 3, 5 = 4 -> coverage 100*4/5 = 80.0; hits 1, 2
+// -> 100*2/4 = 50.0; MRR = (1/3 + 1 + 0 + 0)/4 = 0.33333… -> 0.333. Week of 09-14 (searches 6-9):
+// judged 6, 7, 8 = 3 -> coverage 100*3/4 = 75.0; hits 6 -> 100*1/3 = 33.333… -> 33.3; MRR =
+// (1/2 + 0 + 0)/3 = 0.16666… -> 0.167.
+//
+// gaps: "zero hits topic" and "ssh daemon dies" each gain one feedback row, not useful, so judged
+// = not_useful = 1 (judged and failed, no longer unknown) and last_note is the --none note.
+// zero_results and top_entry are unchanged (search 5 still returned nothing; search 7's rank 1 is
+// still ssh.md), and the ordering columns did not move.
+func TestWholeSearchVerdict(t *testing.T) {
+	db := openFixture(t)
+	if _, err := db.Exec(wholeSearchSQL); err != nil {
+		t.Fatalf("insert whole-search verdicts: %v", err)
+	}
+
+	checkQuery(t, db, "overview",
+		[]string{"mode", "searches", "judged", "coverage_pct", "hit_rate_pct", "mrr",
+			"zero_result_pct", "p50_ms", "p95_ms", "avg_embed_ms"},
+		[][]any{
+			{"hybrid", int64(5), int64(5), 100.0, 40.0, 0.267, 20.0, 100.0, 118.0, 40.0},
+			{"fts", int64(2), int64(1), 50.0, 0.0, 0.0, 0.0, 25.0, 29.5, nil},
+			{"fts-fallback", int64(1), int64(0), 0.0, nil, nil, 0.0, 200.0, 200.0, 150.0},
+			{"vec", int64(1), int64(1), 100.0, 100.0, 0.5, 0.0, 90.0, 90.0, 45.0},
+		})
+
+	checkQuery(t, db, "sources",
+		[]string{"source", "results", "share_pct", "judged", "useful", "useful_rate_pct", "avg_rank"},
+		[][]any{
+			{"both", int64(4), 36.4, int64(3), int64(1), 33.3, 1.0},
+			{"fts-only", int64(4), 36.4, int64(0), int64(0), nil, 1.75},
+			{"vec-only", int64(3), 27.3, int64(1), int64(1), 100.0, 2.67},
+		})
+
+	checkQuery(t, db, "trend",
+		[]string{"week", "searches", "distinct_queries", "hybrid_pct", "fallback_pct",
+			"coverage_pct", "hit_rate_pct", "mrr", "p50_ms"},
+		[][]any{
+			{at(7, 0, 0), int64(5), int64(4), 60.0, 20.0, 80.0, 50.0, 0.333, 100.0},
+			{at(14, 0, 0), int64(4), int64(4), 50.0, 0.0, 75.0, 33.3, 0.167, 92.5},
+		})
+
+	checkQuery(t, db, "entries",
+		[]string{"path", "returned", "searches", "useful", "not_useful", "useful_rate_pct",
+			"avg_rank", "last_returned"},
+		[][]any{
+			{"droplet.md", int64(5), int64(5), int64(0), int64(1), 0.0, 1.8, at(17, 12, 0)},
+			{"duckdb.md", int64(3), int64(3), int64(1), int64(2), 33.3, 1.33, at(16, 11, 0)},
+			{"postgres-tuning.md", int64(2), int64(2), int64(1), int64(0), 100.0, 2.5, at(8, 10, 0)},
+			{"postgres.md", int64(2), int64(2), int64(1), int64(1), 50.0, 1.0, at(8, 10, 0)},
+			{"ollama.md", int64(1), int64(1), int64(0), int64(0), nil, 1.0, at(10, 12, 0)},
+			{"ssh.md", int64(1), int64(1), int64(0), int64(0), nil, 1.0, at(15, 10, 0)},
+			{"systemd.md", int64(1), int64(1), int64(0), int64(0), nil, 3.0, at(15, 10, 0)},
+			{"vector.md", int64(1), int64(1), int64(0), int64(0), nil, 1.0, at(14, 9, 0)},
+			{"orphan.md", int64(0), int64(0), int64(0), int64(0), nil, nil, nil},
+		})
+
+	checkQuery(t, db, "gaps",
+		[]string{"query", "times_asked", "last_asked", "callers", "judged", "not_useful",
+			"zero_results", "top_entry", "last_note"},
+		[][]any{
+			{"duckdb appender", int64(2), at(16, 11, 0), "claude,codex", int64(3), int64(3),
+				int64(0), "duckdb.md", "still not the appender docs"},
+			{"nothing written yet", int64(1), at(17, 12, 0), "claude", int64(0), int64(0),
+				int64(0), "droplet.md", nil},
+			{"ssh daemon dies", int64(1), at(15, 10, 0), "codex", int64(1), int64(1),
+				int64(0), "ssh.md", "all about sshd config, not tmux"},
+			{"zero hits topic", int64(1), at(11, 13, 0), "claude", int64(1), int64(1),
+				int64(1), nil, "nothing on this topic yet"},
+			{"ollama offline", int64(1), at(10, 12, 0), "codex", int64(0), int64(0),
+				int64(0), "ollama.md", nil},
+		})
+}
+
 // TestLookup checks the registry itself: the five names in display order, a populated Summary and
 // Help on each, a Help paragraph that ends in the "Decision:" sentence the plan requires, and a
 // miss for a name nobody defined (which is what the CLI turns into a usage error).
