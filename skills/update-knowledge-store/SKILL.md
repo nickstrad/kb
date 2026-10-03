@@ -33,10 +33,24 @@ read relevant hits with `kb show <entry>` and prefer updating an existing findin
 a duplicate. `kb list` helps when the right search terms are unclear. Use `--json` on search
 when structured results help.
 
-If a search misses, vary the query, use `kb list`, or run `kb doctor`. When the embedding
-service (Ollama) is unavailable, `kb search --mode fts "<query>" --caller claude` still searches
-the indexed text. Hybrid fallback prints usable FTS results but exits 2; distinguish that from a
-search that returns no results.
+If a search misses, vary the query, use `kb list`, or run `kb doctor`. When the embedder is
+unavailable, `kb search --mode fts "<query>" --caller claude` still searches the indexed text.
+Hybrid fallback prints usable FTS results but exits 2; distinguish that from a search that
+returns no results.
+
+## Embedder setup
+
+`kb doctor` names the embedder in effect. It is chosen per project by environment:
+
+- `OPENROUTER_API_KEY` (or `KB_OPENROUTER_API_KEY`) set: OpenRouter with
+  `openai/text-embedding-3-small`.
+- Otherwise: a local Ollama server (`KB_OLLAMA_URL`, default `http://127.0.0.1:11434`).
+- `KB_EMBEDDER=none`: no embeddings; indexing and search use full-text search only.
+- `KB_EMBEDDER` (or `--embedder`) forces `ollama`, `openrouter`, `openai` or `none`;
+  `KB_EMBED_MODEL` (or `--embed-model`) overrides the model.
+
+Keep the embedder and model fixed for a store: changing either makes `kb` refuse to mix vectors
+until `kb reindex --all` rebuilds the index. Do not switch embedders unless the user asks.
 
 Judge every search before moving on, including one that returned nothing. The first line of
 `kb search` output is `search N · M hits`, where N is the `search_id` (it survives `| head`);
