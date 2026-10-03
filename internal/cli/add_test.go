@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"knowledge/kb/internal/embed"
 	"knowledge/kb/internal/embed/fake"
 	"knowledge/kb/internal/store"
@@ -19,7 +21,7 @@ import (
 func useFakeEmbedder(t *testing.T) {
 	t.Helper()
 	orig := newEmbedder
-	newEmbedder = func() embed.Embedder { return fake.New("fake-add-test", store.VecDim) }
+	newEmbedder = func(*cobra.Command) (embed.Embedder, error) { return fake.New("fake-add-test", store.VecDim), nil }
 	t.Cleanup(func() { newEmbedder = orig })
 }
 

@@ -6,16 +6,31 @@ import (
 	"io"
 	"os"
 
+	"github.com/spf13/cobra"
+
 	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/embed/ollama"
+	"knowledge/kb/internal/embed/provider"
 	"knowledge/kb/internal/entry"
 	"knowledge/kb/internal/store"
 )
 
-// newEmbedder builds the embedder used to reindex a changed entry. It is a variable rather than a
-// plain function so tests can substitute a fake embedder without touching the real Ollama service.
-var newEmbedder = func() embed.Embedder {
-	return ollama.New("", "", 0)
+// newEmbedder builds the configured embedder (see internal/embed/provider) from cmd's --embedder
+// and --embed-model flags and the environment. It is a variable rather than a plain function so
+// tests can substitute a fake embedder without touching a real embedding service.
+var newEmbedder = func(cmd *cobra.Command) (embed.Embedder, error) {
+	e, _, err := provider.New(embedderOptions(cmd))
+	return e, err
+}
+
+// embedderOptions reads the root command's persistent --embedder and --embed-model flags.
+func embedderOptions(cmd *cobra.Command) provider.Options {
+	var o provider.Options
+	if cmd == nil {
+		return o
+	}
+	o.Embedder, _ = cmd.Flags().GetString("embedder")
+	o.Model, _ = cmd.Flags().GetString("embed-model")
+	return o
 }
 
 // openStoreForWrite opens the store at root, creating .kb/ and the database file first if

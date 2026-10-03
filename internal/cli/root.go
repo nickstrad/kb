@@ -129,7 +129,12 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 			"  kb show <path>                        reads a hit's entry\n" +
 			"  kb feedback N <rank> --useful         judges it (--not-useful, or N --none when\n" +
 			"                                        nothing helped, zero results included)\n" +
-			"An unjudged search counts as unknown in kb stats; feedback is what gives its numbers meaning.",
+			"An unjudged search counts as unknown in kb stats; feedback is what gives its numbers meaning.\n\n" +
+			"Embeddings come from Ollama by default, or from OpenRouter when OPENROUTER_API_KEY (or\n" +
+			"KB_OPENROUTER_API_KEY) is set. --embedder / KB_EMBEDDER picks one explicitly\n" +
+			"(ollama, openrouter, openai, none); none indexes and searches with FTS only.\n" +
+			"--embed-model / KB_EMBED_MODEL overrides the model. Changing either on an existing\n" +
+			"index needs kb reindex --all.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -137,6 +142,8 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd.SetErr(stderr)
 	// Flag parse failures are usage errors; wrap them so the exit code is ours.
 	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageErr("kb: %s", err.Error()) })
+	cmd.PersistentFlags().String("embedder", "", "ollama, openrouter, openai or none (default $KB_EMBEDDER, else openrouter when an OpenRouter key is set, else ollama)")
+	cmd.PersistentFlags().String("embed-model", "", "embedding model (default $KB_EMBED_MODEL, else the embedder's default)")
 
 	cmd.AddCommand(
 		newAddCmd(stdout, stderr),

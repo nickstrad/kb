@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/embed/ollama"
 	"knowledge/kb/internal/entry"
 	"knowledge/kb/internal/reindex"
 	"knowledge/kb/internal/store"
@@ -63,7 +62,10 @@ func runReindex(cmd *cobra.Command, stdout, stderr io.Writer, all bool, args []s
 	// The default per-call budget (BaseTimeout 30s + PerTextTimeout*n) already gives a 16-text
 	// batch 190s (30s + 10s*16), well above the 16-39s this box has measured for one such batch,
 	// so it is left at New's defaults rather than raised.
-	embedder := newEmbedder()
+	embedder, err := newEmbedder(cmd)
+	if err != nil {
+		return usageErr("kb reindex: %s", err)
+	}
 	ctx := cmd.Context()
 
 	force, err := ensureEmbedMetaForReindex(ctx, st, embedder, all, stderr)
@@ -92,10 +94,9 @@ func runReindex(cmd *cobra.Command, stdout, stderr io.Writer, all bool, args []s
 		sum, err = reindex.One(ctx, opts, e)
 	}
 	if err != nil {
-		// reindex never imports the ollama package (see internal/reindex's doc); it just
-		// propagates the embedder's error wrapped with %w, so the sentinel this CLI package
-		// already knows about (because it built the embedder) is still reachable here.
-		if errors.Is(err, ollama.ErrUnavailable) {
+		// reindex propagates the embedder's error wrapped with %w, so the shared sentinel is
+		// still reachable here whichever embedder is configured.
+		if errors.Is(err, embed.ErrUnavailable) {
 			return embedderErr("kb reindex: %s", err)
 		}
 		return usageErr("kb reindex: %s", err)
@@ -131,7 +132,7 @@ func runReindex(cmd *cobra.Command, stdout, stderr io.Writer, all bool, args []s
 // is shared with `kb edit` (internal/cli/setup*.go's newEmbedder hook returns the interface so
 // tests can substitute a fake); Ping is not part of embed.Embedder, so it is reached with an
 // optional-interface type assertion (the pinger type below) rather than a parameter type change.
-// In production embedder is always the concrete *ollama.Client, which does implement it. Only the
+// In production the Ollama and OpenAI-style clients implement it; embed.None does not need to. Only the
 // all=true, mismatch path below ever calls Ping, and that is also the only path that is
 // destructive enough to warrant it.
 //
@@ -166,7 +167,7 @@ func ensureEmbedMetaForReindex(ctx context.Context, st *store.Store, embedder em
 	return true, nil
 }
 
-// pinger is satisfied by *ollama.Client (see ensureEmbedMetaForReindex's doc): an embedder that
+// pinger is satisfied by the Ollama and OpenAI-style clients (see ensureEmbedMetaForReindex's doc): an embedder that
 // can check, before any destructive work, whether it is actually reachable and usable.
 type pinger interface {
 	Ping(ctx context.Context) error

@@ -13,7 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"knowledge/kb/internal/embed/ollama"
+	"knowledge/kb/internal/embed"
 	"knowledge/kb/internal/entry"
 	"knowledge/kb/internal/reindex"
 )
@@ -27,7 +27,7 @@ func newEditCmd(stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runEdit(cmd.Context(), stdout, stderr, Root(), args[0])
+			return runEdit(cmd.Context(), cmd, stdout, stderr, Root(), args[0])
 		},
 	}
 }
@@ -36,7 +36,7 @@ func newEditCmd(stdout, stderr io.Writer) *cobra.Command {
 // the editor exits 0 and the entry's content actually changed — reindexes it via reindex.One.
 // Front matter that is now invalid is reported and left un-reindexed; the database is never
 // touched unless the reindex itself runs.
-func runEdit(ctx context.Context, stdout, stderr io.Writer, root, arg string) error {
+func runEdit(ctx context.Context, cmd *cobra.Command, stdout, stderr io.Writer, root, arg string) error {
 	e, err := entry.Resolve(root, arg)
 	if err != nil {
 		return usageErr("kb edit: %s", err)
@@ -47,6 +47,13 @@ func runEdit(ctx context.Context, stdout, stderr io.Writer, root, arg string) er
 		return usageErr("kb edit: %s", err)
 	}
 	beforeHash := entry.BodyHash(before, e.Files)
+
+	// Resolve the embedder before the editor runs, so a configuration mistake is reported before
+	// the file changes rather than leaving an edited, unindexed entry behind.
+	embedder, err := newEmbedder(cmd)
+	if err != nil {
+		return usageErr("kb edit: %s", err)
+	}
 
 	if err := runEditor(ctx, root, e.Path); err != nil {
 		return usageErr("kb edit: %s", err)
@@ -83,7 +90,6 @@ func runEdit(ctx context.Context, stdout, stderr io.Writer, root, arg string) er
 	}
 	defer st.Close()
 
-	embedder := newEmbedder()
 	// all=false: a single `kb edit` cannot recover from an embed_meta mismatch on its own (see
 	// ensureEmbedMetaForReindex's doc in reindex.go) — that path already returns a usage error
 	// telling the user to run `kb reindex --all`.
@@ -103,7 +109,7 @@ func runEdit(ctx context.Context, stdout, stderr io.Writer, root, arg string) er
 	}
 	sum, err := reindex.One(ctx, opts, e2)
 	if err != nil {
-		if errors.Is(err, ollama.ErrUnavailable) {
+		if errors.Is(err, embed.ErrUnavailable) {
 			return embedderErr("kb edit: %s", err)
 		}
 		return usageErr("kb edit: %s", err)

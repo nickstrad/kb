@@ -18,7 +18,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/embed/ollama"
 	"knowledge/kb/internal/entry"
 	"knowledge/kb/internal/index"
 	"knowledge/kb/internal/store"
@@ -33,7 +32,7 @@ func newDoctorCmd(stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(cmd.Context(), stdout, Root())
+			return runDoctor(cmd.Context(), cmd, stdout, Root())
 		},
 	}
 }
@@ -62,7 +61,7 @@ func (d *doctorState) warn(check, detail string) {
 
 // runDoctor runs every check in turn and prints the final "doctor: N failed, M warnings" line.
 // It returns a non-nil error (ExitUsage) only when at least one check FAILed.
-func runDoctor(ctx context.Context, stdout io.Writer, root string) error {
+func runDoctor(ctx context.Context, cmd *cobra.Command, stdout io.Writer, root string) error {
 	d := &doctorState{stdout: stdout}
 
 	dbPath := DBPath(root)
@@ -89,12 +88,15 @@ func runDoctor(ctx context.Context, stdout io.Writer, root string) error {
 		}
 	}
 
-	embedder := newEmbedder()
-
-	if st != nil {
-		checkEmbedMeta(d, st, embedder)
+	embedder, err := newEmbedder(cmd)
+	if err != nil {
+		d.fail("embedder", err.Error())
+	} else {
+		if st != nil {
+			checkEmbedMeta(d, st, embedder)
+		}
+		checkEmbedder(ctx, d, embedder)
 	}
-	checkOllama(ctx, d, embedder)
 	checkEntries(d, entries)
 	if st != nil {
 		checkDBVsFiles(d, root, st, goodEntries)
@@ -165,7 +167,8 @@ func checkEmbedMeta(d *doctorState, st *store.Store, embedder embed.Embedder) {
 		d.fail("embed_meta", "not set (empty database); run kb reindex --all")
 		return
 	}
-	if model != embedder.Model() || dim != embedder.Dim() || dim != store.VecDim {
+	storable := dim == store.VecDim || (model == store.FTSOnlyModel && dim == 0)
+	if model != embedder.Model() || dim != embedder.Dim() || !storable {
 		d.fail("embed_meta", fmt.Sprintf(
 			"database has %s (%d dims), configured embedder is %s (%d dims); run kb reindex --all",
 			model, dim, embedder.Model(), embedder.Dim()))
@@ -174,30 +177,29 @@ func checkEmbedMeta(d *doctorState, st *store.Store, embedder embed.Embedder) {
 	d.ok("embed_meta", fmt.Sprintf("model=%s dim=%d", model, dim))
 }
 
-// checkOllama pings the concrete embedder when it supports it (the pinger interface, defined in
-// reindex.go, is satisfied by *ollama.Client). A test embedder (internal/embed/fake) does not
-// implement Ping, so it is reported as a warning rather than skipped silently or faked as ok.
-func checkOllama(ctx context.Context, d *doctorState, embedder embed.Embedder) {
+// checkEmbedder pings the configured embedder when it supports it (the pinger interface, defined
+// in reindex.go, is satisfied by the Ollama and OpenAI-style clients). The none embedder has
+// nothing to reach. A test embedder (internal/embed/fake) does not implement Ping, so it is
+// reported as a warning rather than skipped silently or faked as ok.
+func checkEmbedder(ctx context.Context, d *doctorState, embedder embed.Embedder) {
+	if embed.IsNone(embedder) {
+		d.ok("embedder", "none: FTS-only index and search")
+		return
+	}
 	p, isPinger := embedder.(pinger)
 	if !isPinger {
-		d.warn("ollama", "not checked (test embedder)")
+		d.warn("embedder", "not checked (test embedder)")
 		return
 	}
 	if err := p.Ping(ctx); err != nil {
-		d.fail("ollama", err.Error())
+		d.fail("embedder", err.Error())
 		return
 	}
-	d.ok("ollama", fmt.Sprintf("reachable at %s, model %s", ollamaBaseURL(), embedder.Model()))
-}
-
-// ollamaBaseURL mirrors ollama.New's own precedence (argument, then KB_OLLAMA_URL, then the
-// package default) for display purposes only; the CLI always calls ollama.New("", "", 0), so this
-// is the base URL actually in effect.
-func ollamaBaseURL() string {
-	if u := os.Getenv("KB_OLLAMA_URL"); u != "" {
-		return u
+	where := ""
+	if u, ok := embedder.(interface{ BaseURL() string }); ok {
+		where = " at " + u.BaseURL()
 	}
-	return ollama.DefaultBaseURL
+	d.ok("embedder", fmt.Sprintf("reachable%s, model %s", where, embedder.Model()))
 }
 
 // checkEntries reports every entry whose front matter failed to parse or validate as a FAIL, and

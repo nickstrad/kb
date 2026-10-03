@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"knowledge/kb/internal/embed"
-	"knowledge/kb/internal/embed/ollama"
 	"knowledge/kb/internal/search"
 	"knowledge/kb/internal/store"
 )
@@ -75,7 +74,8 @@ type searchOpts struct {
 }
 
 // runSearch validates the flags, opens the database read-only-in-spirit (it never creates one),
-// builds the embedder only when the mode needs it, runs the search and prints the result.
+// builds the embedder only when the mode needs it, runs the search and prints the result. With
+// the none embedder a hybrid search runs as plain fts.
 //
 // Exit codes (plan.md's "CLI" section):
 //   - 1 (ExitUsage): bad flags, no database, or an embed_meta/embedder mismatch.
@@ -105,23 +105,33 @@ func runSearch(cmd *cobra.Command, stdout, stderr io.Writer, opts searchOpts) er
 	}
 	defer st.Close()
 
-	needEmbedder := opts.mode == search.ModeHybrid || opts.mode == search.ModeVec
-
+	mode := opts.mode
 	var embedder embed.Embedder
 	var isUnavailable func(error) bool
-	if needEmbedder {
-		client := ollama.New("", "", 0)
-		if storedModel, storedDim, ok, err := st.EmbedMeta(); err != nil {
+	if mode == search.ModeHybrid || mode == search.ModeVec {
+		client, err := newEmbedder(cmd)
+		if err != nil {
 			return usageErr("kb search: %s", err)
-		} else if ok && (storedModel != client.Model() || storedDim != client.Dim()) {
-			mismatch := &store.EmbedMetaMismatchError{
-				StoredModel: storedModel, StoredDim: storedDim,
-				WantModel: client.Model(), WantDim: client.Dim(),
-			}
-			return usageErr("%s", mismatch.Error())
 		}
-		embedder = client
-		isUnavailable = func(err error) bool { return errors.Is(err, ollama.ErrUnavailable) }
+		if embed.IsNone(client) {
+			// KB_EMBEDDER=none: FTS is the whole search, not a fallback, so it exits 0.
+			if mode == search.ModeVec {
+				return usageErr("kb search: --mode vec needs an embedder, but the embedder is none")
+			}
+			mode = search.ModeFTS
+		} else {
+			if storedModel, storedDim, ok, err := st.EmbedMeta(); err != nil {
+				return usageErr("kb search: %s", err)
+			} else if ok && (storedModel != client.Model() || storedDim != client.Dim()) {
+				mismatch := &store.EmbedMetaMismatchError{
+					StoredModel: storedModel, StoredDim: storedDim,
+					WantModel: client.Model(), WantDim: client.Dim(),
+				}
+				return usageErr("%s", mismatch.Error())
+			}
+			embedder = client
+			isUnavailable = func(err error) bool { return errors.Is(err, embed.ErrUnavailable) }
+		}
 	}
 
 	searcher := &search.Searcher{
@@ -133,7 +143,7 @@ func runSearch(cmd *cobra.Command, stdout, stderr io.Writer, opts searchOpts) er
 
 	req := search.Request{
 		Query:  opts.query,
-		Mode:   opts.mode,
+		Mode:   mode,
 		K:      search.ClampK(opts.k),
 		Tag:    opts.tag,
 		Caller: Caller(opts.caller),

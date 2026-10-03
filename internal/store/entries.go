@@ -38,6 +38,10 @@ import (
 // refuses it up front rather than letting every insert fail deep inside a transaction.
 const VecDim = 768
 
+// FTSOnlyModel is the embed_meta model of an index built with no embedder (KB_EMBEDDER=none). Its
+// dim is 0, its chunks have no vectors, and only FTS can search it. It matches embed.NoneModel.
+const FTSOnlyModel = "none"
+
 // ErrEmbedMetaMismatch is returned by EnsureEmbedMeta when the database was built with a
 // different embedding model or dimension than the one configured now. Match it with errors.Is;
 // the concrete value is an *EmbedMetaMismatchError, which carries both sides.
@@ -120,7 +124,11 @@ func (s *Store) EnsureEmbedMeta(model string, dim int) error {
 	if model == "" {
 		return errors.New("embed_meta: model must not be empty")
 	}
-	if dim != VecDim {
+	if model == FTSOnlyModel {
+		if dim != 0 {
+			return fmt.Errorf("embed_meta: model %s is FTS only and must have 0 dimensions, got %d", model, dim)
+		}
+	} else if dim != VecDim {
 		return fmt.Errorf("embed_meta: this build's chunks_vec column is FLOAT[%d]; model %s reports %d dimensions, so its vectors cannot be stored",
 			VecDim, model, dim)
 	}
@@ -292,7 +300,8 @@ func (s *Store) ExistingEmbeddings(ctx context.Context, entryID int64) (map[stri
 // index half-rewritten.
 //
 // Every chunk must carry an embedding of exactly the dimension recorded in embed_meta, which must
-// already exist (call EnsureEmbedMeta first).
+// already exist (call EnsureEmbedMeta first). An FTS-only index (embed_meta dim 0) is the
+// exception: its chunks carry no embedding and nothing is written to chunks_vec.
 func (s *Store) ReplaceEntryChunks(ctx context.Context, e EntryInput, chunks []ChunkInput) (entryID int64, err error) {
 	if e.Path == "" {
 		return 0, errors.New("replace entry: path must not be empty")
@@ -306,6 +315,12 @@ func (s *Store) ReplaceEntryChunks(ctx context.Context, e EntryInput, chunks []C
 		return 0, errors.New("replace entry: embed_meta is not set; call EnsureEmbedMeta before indexing")
 	}
 	for i, c := range chunks {
+		if dim == 0 {
+			if c.Embedding != nil {
+				return 0, fmt.Errorf("replace entry %s: chunk %d (ord %d) has an embedding but this index is FTS only", e.Path, i, c.Ord)
+			}
+			continue
+		}
 		if c.Embedding == nil {
 			return 0, fmt.Errorf("replace entry %s: chunk %d (ord %d) has no embedding", e.Path, i, c.Ord)
 		}
@@ -378,6 +393,9 @@ func (s *Store) ReplaceEntryChunks(ctx context.Context, e EntryInput, chunks []C
 		}
 		if _, err := insertFTS.ExecContext(ctx, chunkID, c.Text, c.Heading, e.Title); err != nil {
 			return 0, fmt.Errorf("index chunk %d of %s for FTS: %w", c.Ord, e.Path, err)
+		}
+		if dim == 0 {
+			continue
 		}
 		blob, err := sqlite_vec.SerializeFloat32(c.Embedding)
 		if err != nil {

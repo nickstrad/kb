@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"knowledge/kb/internal/embed"
 	"knowledge/kb/internal/embed/fake"
 	"knowledge/kb/internal/entry"
@@ -84,7 +86,7 @@ func setupRepo(t *testing.T) string {
 func withFakeEmbedder(t *testing.T) {
 	t.Helper()
 	orig := newEmbedder
-	newEmbedder = func() embed.Embedder { return fake.New("test-model", store.VecDim) }
+	newEmbedder = func(*cobra.Command) (embed.Embedder, error) { return fake.New("test-model", store.VecDim), nil }
 	t.Cleanup(func() { newEmbedder = orig })
 }
 
@@ -324,7 +326,7 @@ func TestEditReindexesOnChange(t *testing.T) {
 	t.Setenv("EDITOR", `sh -c 'printf "\n## Added\n\nnew text\n" >> "$1"' --`)
 
 	var out, errBuf bytes.Buffer
-	if err := runEdit(ctx, &out, &errBuf, root, "foo.md"); err != nil {
+	if err := runEdit(ctx, nil, &out, &errBuf, root, "foo.md"); err != nil {
 		t.Fatalf("runEdit: %v (stderr=%s)", err, errBuf.String())
 	}
 	if strings.Contains(out.String(), "unchanged") {
@@ -374,7 +376,7 @@ func TestEditEditorFailureAbortsWithoutTouchingDB(t *testing.T) {
 	t.Setenv("EDITOR", "false")
 
 	var out, errBuf bytes.Buffer
-	err = runEdit(ctx, &out, &errBuf, root, "foo.md")
+	err = runEdit(ctx, nil, &out, &errBuf, root, "foo.md")
 	if err == nil {
 		t.Fatal("expected an error when $EDITOR exits non-zero")
 	}
@@ -414,7 +416,7 @@ func TestEditNoopIsUnchanged(t *testing.T) {
 	t.Setenv("EDITOR", "true")
 
 	var out, errBuf bytes.Buffer
-	if err := runEdit(ctx, &out, &errBuf, root, "foo.md"); err != nil {
+	if err := runEdit(ctx, nil, &out, &errBuf, root, "foo.md"); err != nil {
 		t.Fatalf("runEdit: %v (stderr=%s)", err, errBuf.String())
 	}
 	if strings.TrimSpace(out.String()) != "unchanged" {

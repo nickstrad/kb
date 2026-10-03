@@ -30,7 +30,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"knowledge/kb/internal/embed/ollama"
+	"knowledge/kb/internal/embed"
 	"knowledge/kb/internal/entry"
 	"knowledge/kb/internal/reindex"
 	"knowledge/kb/internal/store"
@@ -138,7 +138,10 @@ func runAddFile(cmd *cobra.Command, stdout, stderr io.Writer, srcArg string) (re
 	}
 	defer st.Close()
 
-	embedder := newEmbedder()
+	embedder, err := newEmbedder(cmd)
+	if err != nil {
+		return usageErr("kb add: %s", err)
+	}
 	force, err := ensureEmbedMetaForReindex(cmd.Context(), st, embedder, false, stderr)
 	if err != nil {
 		return usageErr("kb add: %s", strings.TrimPrefix(err.Error(), "kb reindex: "))
@@ -185,7 +188,7 @@ func runAddFile(cmd *cobra.Command, stdout, stderr io.Writer, srcArg string) (re
 		Force:     force,
 	}, e)
 	if err != nil {
-		if errors.Is(err, ollama.ErrUnavailable) {
+		if errors.Is(err, embed.ErrUnavailable) {
 			return embedderErr("kb add: %s", err)
 		}
 		return usageErr("kb add: %s", err)
@@ -276,7 +279,10 @@ func runAddDir(cmd *cobra.Command, stdout, stderr io.Writer, argPath string) (re
 	}
 	defer st.Close()
 
-	embedder := newEmbedder()
+	embedder, err := newEmbedder(cmd)
+	if err != nil {
+		return usageErr("kb add: %s", err)
+	}
 	force, err := ensureEmbedMetaForReindex(cmd.Context(), st, embedder, false, stderr)
 	if err != nil {
 		return usageErr("kb add: %s", strings.TrimPrefix(err.Error(), "kb reindex: "))
@@ -321,7 +327,7 @@ func runAddDir(cmd *cobra.Command, stdout, stderr io.Writer, argPath string) (re
 		Force:     force,
 	}, e)
 	if err != nil {
-		if errors.Is(err, ollama.ErrUnavailable) {
+		if errors.Is(err, embed.ErrUnavailable) {
 			return embedderErr("kb add --dir: %s", err)
 		}
 		return usageErr("kb add --dir: %s", err)

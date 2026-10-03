@@ -682,7 +682,7 @@ func (s *Searcher) Search(ctx context.Context, req Request) (*Outcome, error) {
 	return out, nil
 }
 
-// embedQuery embeds the query with the search_query prefix nomic-embed-text expects, timing the
+// embedQuery embeds the query with the embedder's query prefix (embed.QueryText), timing the
 // call on its own because it is by far the slowest stage (~0.4 s warm) and the log separates it
 // from the two SQLite stages. A nil Embedder is reported as ErrEmbedderUnavailable so callers
 // need only one check.
@@ -691,7 +691,7 @@ func (s *Searcher) embedQuery(ctx context.Context, query string) ([]float32, int
 		return nil, 0, fmt.Errorf("no embedder is configured: %w", ErrEmbedderUnavailable)
 	}
 	start := time.Now()
-	vecs, err := s.Embedder.Embed(ctx, []string{embed.QueryPrefix + query})
+	vecs, err := s.Embedder.Embed(ctx, []string{embed.QueryText(s.Embedder, query)})
 	ms := time.Since(start).Milliseconds()
 	if err != nil {
 		return nil, ms, fmt.Errorf("embed query: %w", err)

@@ -20,7 +20,7 @@
 // embed.Embedder interface — so it has no way to distinguish "embedder unreachable" from any other
 // embedder error by type. It simply returns the error from embed.Embedder.Embed wrapped with
 // %w, which preserves the chain: a caller that constructed the embedder (kb reindex, in
-// internal/cli/reindex.go) can still recognise the concrete sentinel (ollama.ErrUnavailable) with
+// internal/cli/reindex.go) can still recognise the shared sentinel (embed.ErrUnavailable) with
 // errors.Is on the error this package returns, and map that to exit code 2 per plan.md's CLI exit
 // codes. Everything else maps to exit code 1.
 package reindex
@@ -201,6 +201,7 @@ func reindexOne(ctx context.Context, o Options, e entry.Entry, sum *Summary) err
 	inputs := make([]store.ChunkInput, len(chunks))
 	var pendingIdx []int
 	var pendingText []string
+	ftsOnly := embed.IsNone(o.Embedder)
 	for i, c := range chunks {
 		inputs[i] = store.ChunkInput{
 			Ord:        c.Ord,
@@ -209,12 +210,15 @@ func reindexOne(ctx context.Context, o Options, e entry.Entry, sum *Summary) err
 			Text:       c.Text,
 			TextHash:   c.TextHash,
 		}
+		if ftsOnly {
+			continue
+		}
 		if vec, ok := reusable[c.TextHash]; ok {
 			inputs[i].Embedding = vec
 			continue
 		}
 		pendingIdx = append(pendingIdx, i)
-		pendingText = append(pendingText, embed.DocPrefix+c.Text)
+		pendingText = append(pendingText, embed.DocText(o.Embedder, c.Text))
 	}
 
 	batchSize := o.BatchSize
