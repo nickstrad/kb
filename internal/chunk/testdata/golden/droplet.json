@@ -1,0 +1,58 @@
+[
+  {
+    "Ord": 0,
+    "SourceFile": "data/droplet/README.md",
+    "Heading": "",
+    "Text": "This droplet at a glance: Hardware, OS, network shape, and installed toolchain of the DigitalOcean droplet everything here runs on.",
+    "TextHash": "dadfa62c4113ffb03eddd48dbf48af9550761091716cc796d4d0a94a35978961"
+  },
+  {
+    "Ord": 1,
+    "SourceFile": "data/droplet/README.md",
+    "Heading": "(intro)",
+    "Text": "This droplet at a glance › (intro)\n# This droplet at a glance\n\nThe machine all of this knowledge is about. Re-run `scripts/droplet-facts.sh` to refresh these\nnumbers; they drift as packages update and volumes get resized.",
+    "TextHash": "d67b5c1a36f3eb0c1b52add894d1c3ccf85fed719e87f96be70313b13e76c554"
+  },
+  {
+    "Ord": 2,
+    "SourceFile": "data/droplet/README.md",
+    "Heading": "Identity and hardware",
+    "Text": "This droplet at a glance › Identity and hardware\n| | |\n| --- | --- |\n| Provider | DigitalOcean (`/sys/class/dmi/id/sys_vendor` reports `DigitalOcean`, product `Droplet`) |\n| Hostname | `ubuntu-PostgreSQL-practice` |\n| OS | Ubuntu 24.04.4 LTS (noble), kernel 6.8.0, `x86_64` |\n| CPU | 4 vCPU, reported as `DO-Regular` — a shared-CPU droplet, not dedicated |\n| Memory | 7.8 GiB, **no swap configured** |\n| Root disk | 24 GB on `/dev/vda1` |\n| Timezone | `Etc/UTC`. All logs and timestamps are UTC; never assume local time. |\n\n**No swap is the one to remember.** A process that overruns RAM is killed by the OOM killer\ninstead of slowing down. Large builds, `pg_restore`, and parallel test runs fail abruptly rather\nthan degrading. Check `dmesg -T | grep -i oom` before blaming the program.\n\nConfirm the provider rather than guessing — DigitalOcean-specific facts only apply on a box where:\n\n```bash\ncat /sys/class/dmi/id/sys_vendor   # -\u003e DigitalOcean\nls /etc/cloud/digitalocean.info\n```",
+    "TextHash": "84eba1105357c47840c8d5fc498bde3a0971ec7cf66771cf284d7a9a8457c3bc"
+  },
+  {
+    "Ord": 3,
+    "SourceFile": "data/droplet/README.md",
+    "Heading": "Network shape",
+    "Text": "This droplet at a glance › Network shape\nThree real interfaces, which matters when a service binds an address:\n\n- `eth0` — carries **both** the public IPv4 and a 10.10.0.0/16 address.\n- `eth1` — DigitalOcean VPC private networking, 10.136.0.0/16.\n- `docker0` — 172.17.0.0/16, the default Docker bridge.\n\nSo `0.0.0.0` exposes a service to the public internet. Bind `127.0.0.1` for anything local-only,\nand the `eth1` address for droplet-to-droplet traffic inside the VPC.\n\n```bash\nip -4 -o addr show | awk '{print $2, $4}'   # current addresses\nss -tlnp                                    # what is listening, and on which address\n```",
+    "TextHash": "5e72027d4ed8685b67f04c1820a44d7102c79a00eaaebecc144d6a98f4fa8983"
+  },
+  {
+    "Ord": 4,
+    "SourceFile": "data/droplet/README.md",
+    "Heading": "DigitalOcean agents that are always running",
+    "Text": "This droplet at a glance › DigitalOcean agents that are always running\n`do-agent.service` (metrics for the DO control panel) and `droplet-agent.service` (the browser\nconsole / DO SSH key delivery) run by default. They are not something you installed, and killing\nthem only breaks DO panel features — leave them alone when auditing `systemctl` output.\n\n`unattended-upgrades.service` is also on, so package versions move on their own. That is why\nentries in this repo carry a `verified` date.",
+    "TextHash": "f00e7d2d68dbb9ac896b548e9130cec4d7c326efdf6ab439984c62725b9451d5"
+  },
+  {
+    "Ord": 5,
+    "SourceFile": "data/droplet/README.md",
+    "Heading": "Installed toolchain",
+    "Text": "This droplet at a glance › Installed toolchain\nVersions as of the `verified` date above:\n\n| Tool | Version | Note |\n| --- | --- | --- |\n| PostgreSQL | 16.15 (Ubuntu build) | server + `psql`; see the Postgres entries |\n| SQLite | 3.53.4 | `sqlite3` CLI on `PATH` |\n| Node.js | 22.23.2 | |\n| Python | 3.12.3 | system Python; no venv active by default |\n| Go | 1.26.8 | |\n| Git | 2.43.0 | |\n| Docker | running (`docker.service` + `containerd.service`) | |",
+    "TextHash": "81874a767ec17d9a4f530f59ca200f988dbc6e72d020e6d4fcdbe6b2383966c4"
+  },
+  {
+    "Ord": 6,
+    "SourceFile": "data/droplet/README.md",
+    "Heading": "Where things live",
+    "Text": "This droplet at a glance › Where things live\n| Path | What it is |\n| --- | --- |\n| `/root/Raw/knowledge` | this knowledge store |\n| `/root/Software/skills-tools` | agent skills and the tutor/curriculum tooling |\n| `/root/Research` | per-topic research working directories |\n| `/root/README.md` | the user's own scratch cheat-sheet, predates this repo |",
+    "TextHash": "615d63a17ffb03482ffa7e8e5e0574c99bf4e81eb67c3209b8824b63de32258d"
+  },
+  {
+    "Ord": 7,
+    "SourceFile": "data/droplet/README.md",
+    "Heading": "Scripts",
+    "Text": "This droplet at a glance › Scripts\n- `scripts/droplet-facts.sh` — prints every value in this doc, read live. Run it before trusting\n  anything above.",
+    "TextHash": "7a53379cc1a1a12d4dab52c7cd8878751ff9aec9a64e5a754a2fdd5fdc41fe47"
+  }
+]
