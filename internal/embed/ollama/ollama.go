@@ -1,5 +1,5 @@
-// Package ollama implements embed.Embedder against a local Ollama server
-// (see /root/Raw/knowledge/ollama-local-embeddings.md for the service facts on this droplet).
+// Package ollama implements embed.Embedder against an Ollama server's native API
+// (see the ollama-local-embeddings knowledge entry for the service facts on this droplet).
 //
 // It calls POST /api/embed with {"model": <model>, "input": [...], "truncate": false} and
 // expects {"embeddings": [[...], ...]}, one vector per input in order. truncate is pinned to
@@ -33,6 +33,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"knowledge/kb/internal/embed"
 )
 
 // Defaults used by New when an argument is empty/zero and the corresponding environment variable
@@ -61,7 +63,9 @@ const (
 // section). It does NOT cover the caller's own ctx being cancelled or already expired (that
 // wraps ctx.Err() instead, since the caller controls it and knows why) or a 4xx response with an
 // Ollama error body (e.g. model not found), since retrying or falling back would not help either.
-var ErrUnavailable = errors.New("embedder unavailable")
+// It is the shared embed.ErrUnavailable, so callers that do not know which embedder is
+// configured can match it the same way.
+var ErrUnavailable = embed.ErrUnavailable
 
 // ErrModelMissing marks a Ping failure where Ollama is reachable but the configured model is not
 // present. Callers use errors.Is(err, ErrModelMissing) instead of matching the message text.
@@ -79,6 +83,11 @@ type Client struct {
 	// constants; a caller such as the reindexer may raise them before a large or slow run.
 	BaseTimeout    time.Duration
 	PerTextTimeout time.Duration
+
+	// DocPrefix and QueryPrefix are prepended to documents and queries (see embed.Prefixer).
+	// New sets them to nomic-embed-text's embed.DocPrefix and embed.QueryPrefix.
+	DocPrefix   string
+	QueryPrefix string
 }
 
 // New returns a Client configured from its arguments, then environment variables, then defaults.
@@ -106,8 +115,16 @@ func New(baseURL, model string, dim int) *Client {
 		http:           &http.Client{},
 		BaseTimeout:    DefaultBaseTimeout,
 		PerTextTimeout: DefaultPerTextTimeout,
+		DocPrefix:      embed.DocPrefix,
+		QueryPrefix:    embed.QueryPrefix,
 	}
 }
+
+// Prefixes implements embed.Prefixer.
+func (c *Client) Prefixes() (doc, query string) { return c.DocPrefix, c.QueryPrefix }
+
+// BaseURL reports the server address in effect.
+func (c *Client) BaseURL() string { return c.baseURL }
 
 // Model reports the configured model name.
 func (c *Client) Model() string { return c.model }
