@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	// sqlite-vec's cgo package compiles sqlite-vec.c, which calls sqlite3_malloc,
@@ -172,37 +173,73 @@ type chunkMeta struct {
 	Text      string
 }
 
-// ftsSyntaxChars are the characters that make FTS5 read a token as syntax rather than as text:
-// phrase quotes, the prefix star, column filters, parentheses, the NEAR/column-weight sigils and
-// the initial-token operators. A raw user query containing any of them is a syntax error, not a
-// bad result, so they are removed outright rather than escaped.
-const ftsSyntaxChars = `"*():^-+{}`
+// ftsBaseRune reports whether r can carry a token on its own: a letter, number, private-use or
+// unassigned code point (unicode61 keeps unassigned ones, such as U+0378, inside tokens). A field
+// with none of these, like `&&`, `...` or a lone combining mark, tokenizes to nothing; quoted, it
+// becomes a phrase with no tokens, which matches nothing and so empties the whole AND query.
+func ftsBaseRune(r rune) bool {
+	if unicode.Is(ftsSkewNotToken, r) {
+		return false
+	}
+	return unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.Is(unicode.Co, r) || unicode.Is(unicode.Cn, r)
+}
 
-// ftsOperatorWords are the bare words FTS5 treats as operators. They are dropped so that a query
-// like `NOT a` searches for "a" instead of failing to parse.
+// ftsSkewNotToken lists the code points Go's Unicode 15 tables call letters but the unicode61
+// tokenizer of the bundled SQLite (3.53.4) does not: New Tai Lue vowel signs and two Vedic signs
+// that were combining marks in older Unicode. A field made only of them tokenizes to nothing.
+// TestBaseRuneMatchesSQLite recomputes the list against the linked SQLite, so an upgrade that
+// changes it fails there.
+var ftsSkewNotToken = &unicode.RangeTable{
+	R16: []unicode.Range16{
+		{Lo: 0x19B0, Hi: 0x19C0, Stride: 1},
+		{Lo: 0x19C8, Hi: 0x19C9, Stride: 1},
+		{Lo: 0x1CF2, Hi: 0x1CF3, Stride: 1},
+	},
+}
+
+// ftsOperatorWords are the bare words FTS5 treats as operators. Quoted they would parse as plain
+// words, but a field that is only one of them is dropped anyway, like a stopword, so that `NOT a`
+// searches for "a" rather than also requiring the literal word "not".
 var ftsOperatorWords = map[string]bool{"and": true, "or": true, "not": true, "near": true}
 
-// SanitizeFTS turns a raw user query into two FTS5 MATCH expressions: every surviving token
-// quoted, joined with AND for the precise attempt and with OR for the retry. Both are "" when no
-// token survives, which the caller reads as "run no FTS list at all".
+// SanitizeFTS turns a raw user query into two FTS5 MATCH expressions: every surviving
+// whitespace-separated field quoted as one phrase, joined with AND for the precise attempt and
+// with OR for the retry. Both are "" when no field survives, which the caller reads as "run no
+// FTS list at all".
 //
-// The rules are deliberately blunt — strip the syntax characters, drop the operator words,
-// lower-case, quote — because the alternative is handing user text to a parser that rejects
-// `set -e`, `foo:bar` and anything containing a quote.
+// Inside a quoted FTS5 string every character but the quote itself is plain text, and FTS5 splits
+// it with the same unicode61 tokenizer that indexed the documents. So the sanitiser leaves the
+// tokenizing to FTS5 rather than copying its rules: `draw-visual` becomes the phrase
+// "draw-visual", which matches the adjacent tokens draw and visual exactly as the document was
+// split, case is folded the same way on both sides, and syntax such as `set -e` or `foo:bar`
+// cannot reach the query parser. Copies of those rules in Go went wrong three ways: deleting the
+// hyphen searched for the nonexistent token "drawvisual", Go's ToLower folds letters SQLite's
+// older tables do not (WYNN, DCHE), and Go's newer tables call U+061D punctuation where SQLite
+// keeps it inside a token.
+//
+// What the sanitiser still does: a double quote or NUL becomes a space (one would end the string,
+// the other truncates it); the prefix star is deleted, so `post*gres` reads as postgres; and a
+// field is dropped when it is a bare operator word or holds no base rune.
 func SanitizeFTS(q string) (andQuery, orQuery string) {
 	var tokens []string
 	for _, field := range strings.Fields(q) {
-		tok := strings.Map(func(r rune) rune {
-			if strings.ContainsRune(ftsSyntaxChars, r) {
+		cleaned := strings.TrimSpace(strings.Map(func(r rune) rune {
+			switch r {
+			case '*':
 				return -1
+			case '"', 0:
+				return ' '
 			}
 			return r
-		}, field)
-		tok = strings.ToLower(strings.TrimSpace(tok))
-		if tok == "" || ftsOperatorWords[tok] {
+		}, field))
+		if !strings.ContainsFunc(cleaned, ftsBaseRune) {
 			continue
 		}
-		tokens = append(tokens, `"`+tok+`"`)
+		words := strings.FieldsFunc(cleaned, func(r rune) bool { return !ftsBaseRune(r) && !unicode.IsMark(r) })
+		if len(words) == 1 && ftsOperatorWords[strings.ToLower(words[0])] {
+			continue
+		}
+		tokens = append(tokens, `"`+cleaned+`"`)
 	}
 	if len(tokens) == 0 {
 		return "", ""

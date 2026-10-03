@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 
 	"knowledge/kb/internal/embed"
 	"knowledge/kb/internal/embed/fake"
@@ -48,14 +50,14 @@ func TestSanitizeFTS(t *testing.T) {
 		{
 			name:    "plain sentence",
 			in:      "daemon dies when I log out of ssh",
-			wantAnd: `"daemon" AND "dies" AND "when" AND "i" AND "log" AND "out" AND "of" AND "ssh"`,
-			wantOr:  `"daemon" OR "dies" OR "when" OR "i" OR "log" OR "out" OR "of" OR "ssh"`,
+			wantAnd: `"daemon" AND "dies" AND "when" AND "I" AND "log" AND "out" AND "of" AND "ssh"`,
+			wantOr:  `"daemon" OR "dies" OR "when" OR "I" OR "log" OR "out" OR "of" OR "ssh"`,
 		},
 		{
 			name:    "leading dash flag",
 			in:      "set -e loop counter exits",
-			wantAnd: `"set" AND "e" AND "loop" AND "counter" AND "exits"`,
-			wantOr:  `"set" OR "e" OR "loop" OR "counter" OR "exits"`,
+			wantAnd: `"set" AND "-e" AND "loop" AND "counter" AND "exits"`,
+			wantOr:  `"set" OR "-e" OR "loop" OR "counter" OR "exits"`,
 		},
 		{
 			name:    "embedded quotes and a bare NOT",
@@ -66,8 +68,38 @@ func TestSanitizeFTS(t *testing.T) {
 		{
 			name:    "colon and parentheses",
 			in:      "foo:bar (baz)",
-			wantAnd: `"foobar" AND "baz"`,
-			wantOr:  `"foobar" OR "baz"`,
+			wantAnd: `"foo:bar" AND "(baz)"`,
+			wantOr:  `"foo:bar" OR "(baz)"`,
+		},
+		{
+			name:    "hyphenated name stays one phrase",
+			in:      "draw-visual go-build",
+			wantAnd: `"draw-visual" AND "go-build"`,
+			wantOr:  `"draw-visual" OR "go-build"`,
+		},
+		{
+			name:    "punctuation-only fields are dropped, not left as empty phrases",
+			in:      "quokka ... && — widget",
+			wantAnd: `"quokka" AND "widget"`,
+			wantOr:  `"quokka" OR "widget"`,
+		},
+		{
+			name:    "letters SQLite does not tokenize are dropped like punctuation",
+			in:      "quokka ᳳ ᦳ",
+			wantAnd: `"quokka"`,
+			wantOr:  `"quokka"`,
+		},
+		{
+			name:    "NUL byte breaks the word",
+			in:      "a\x00b",
+			wantAnd: `"a b"`,
+			wantOr:  `"a b"`,
+		},
+		{
+			name:    "operator word inside a hyphenated name is kept",
+			in:      "not-found",
+			wantAnd: `"not-found"`,
+			wantOr:  `"not-found"`,
 		},
 		{
 			name:    "operator word alone",
@@ -127,6 +159,9 @@ func TestSanitizeFTSAcceptedBySQLite(t *testing.T) {
 		"set -e loop counter exits",
 		`grpcurl says "server does not support reflection"`,
 		"foo:bar (baz)",
+		"draw-visual not-found",
+		"quokka ... && — widget",
+		"a\x00b c",
 		"NOT a",
 		"widget^2",
 		"a AND b NEAR c",
@@ -382,7 +417,7 @@ func fixtures() []testEntry {
 
 // testSearcher builds a temp database, indexes the fixtures with the prefix-blind fake embedder,
 // and returns a Searcher wired to it plus the fixtures with their entry ids filled in.
-func testSearcher(t *testing.T) (*Searcher, []testEntry) {
+func testSearcher(t testing.TB) (*Searcher, []testEntry) {
 	t.Helper()
 
 	emb := prefixBlindEmbedder{fake.New("fake-embed", 768)}
@@ -755,6 +790,117 @@ func TestSearchUnsanitisableQueryStillRunsVec(t *testing.T) {
 	}
 	if out.Mode != ModeHybrid {
 		t.Errorf("mode = %s, want %s", out.Mode, ModeHybrid)
+	}
+}
+
+// TestBaseRuneMatchesSQLite checks ftsBaseRune against the linked SQLite for every assigned code
+// point it accepts: each one, alone in a document, must give the unicode61 tokenizer at least one
+// token. A failure lists code points to add to ftsSkewNotToken, typically after a SQLite upgrade.
+func TestBaseRuneMatchesSQLite(t *testing.T) {
+	s, _ := testSearcher(t)
+	ctx := context.Background()
+	conn, err := s.DB.Conn(ctx)
+	if err != nil {
+		t.Fatalf("dedicated connection: %v", err)
+	}
+	defer conn.Close()
+	for _, stmt := range []string{
+		`CREATE VIRTUAL TABLE temp.base_doc USING fts5(x, tokenize='porter unicode61')`,
+		`CREATE VIRTUAL TABLE temp.base_vocab USING fts5vocab(temp, base_doc, instance)`,
+		`BEGIN`,
+	} {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	checked := 0
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if !utf8.ValidRune(r) || unicode.Is(unicode.Cn, r) || !ftsBaseRune(r) {
+			continue
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO temp.base_doc(rowid, x) VALUES (?, ?)`, int64(r), string(r)); err != nil {
+			t.Fatalf("insert U+%04X: %v", r, err)
+		}
+		checked++
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	rows, err := conn.QueryContext(ctx,
+		`SELECT rowid FROM temp.base_doc WHERE rowid NOT IN (SELECT doc FROM temp.base_vocab) ORDER BY rowid`)
+	if err != nil {
+		t.Fatalf("find untokenized: %v", err)
+	}
+	defer rows.Close()
+	var bad []string
+	for rows.Next() {
+		var r int64
+		if err := rows.Scan(&r); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		bad = append(bad, fmt.Sprintf("U+%04X", r))
+	}
+	if checked < 100000 {
+		t.Fatalf("checked only %d code points; the enumeration is broken", checked)
+	}
+	if len(bad) > 0 {
+		t.Errorf("ftsBaseRune accepts %d code points SQLite does not tokenize: %v", len(bad), bad)
+	}
+}
+
+// TestQuotedPunctuationMatchesLikeSplitWords backs the TestSanitizeFTS expectations that keep
+// punctuation inside a phrase ("foo:bar", "(baz)", "-e"): FTS5 must tokenize such a phrase into
+// the same adjacent words, so each pair below has to match exactly the same rows.
+func TestQuotedPunctuationMatchesLikeSplitWords(t *testing.T) {
+	s, _ := testSearcher(t)
+	ctx := context.Background()
+	match := func(q string) []int64 {
+		rows, err := s.runFTS(ctx,
+			"SELECT rowid, bm25(chunks_fts, 1.0, 2.0, 3.0) AS s FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY rowid",
+			[]any{q})
+		if err != nil {
+			t.Fatalf("match %s: %v", q, err)
+		}
+		ids := make([]int64, len(rows))
+		for i, r := range rows {
+			ids[i] = r.ChunkID
+		}
+		return ids
+	}
+	for _, pair := range [][2]string{
+		{`"zebracorn-widget"`, `"zebracorn widget"`},
+		{`"zebracorn:widget"`, `"zebracorn widget"`},
+		{`"(quokka)"`, `"quokka"`},
+		{`"-quokka"`, `"quokka"`},
+		{`"Zebracorn-WIDGET"`, `"zebracorn widget"`},
+	} {
+		got, want := match(pair[0]), match(pair[1])
+		if len(want) == 0 {
+			t.Fatalf("%s matched nothing; the pair proves nothing", pair[1])
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%s matched %v, %s matched %v; want the same rows", pair[0], got, pair[1], want)
+		}
+	}
+}
+
+// TestSearchHyphenatedQuery: unicode61 indexes "zebracorn widget" as two tokens, so a hyphenated
+// query must match them as an adjacent pair. Deleting the hyphen used to search for the single
+// token "zebracornwidget" and return nothing. The mixed case checks that FTS5, not the sanitiser,
+// folds case.
+func TestSearchHyphenatedQuery(t *testing.T) {
+	s, entries := testSearcher(t)
+	out, err := s.Search(context.Background(), Request{Query: "Zebracorn-WIDGET", Mode: ModeFTS, K: 8})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(out.Result.Hits) == 0 {
+		t.Fatal("hyphenated query returned no hits")
+	}
+	for _, h := range out.Result.Hits {
+		if h.Path != entries[0].path {
+			t.Errorf("hit from %s, want only %s", h.Path, entries[0].path)
+		}
 	}
 }
 
