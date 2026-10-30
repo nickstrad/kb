@@ -17,11 +17,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/index"
 	"github.com/nickstrad/kb/internal/store"
 	"github.com/nickstrad/kb/internal/store/sqlite"
+	"github.com/nickstrad/kb/internal/workspace"
 )
 
 // newDoctorCmd builds `kb doctor`.
@@ -37,7 +39,7 @@ func newDoctorCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runDoctor(cmd.Context(), cmd, d, stdout, ws.Root)
+			return runDoctor(cmd.Context(), cmd, d, stdout, ws)
 		},
 	}
 }
@@ -66,10 +68,22 @@ func (d *doctorState) warn(check, detail string) {
 
 // runDoctor runs every check in turn and prints the final "doctor: N failed, M warnings" line.
 // It returns a non-nil error (ExitUsage) only when at least one check FAILed.
-func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writer, root string) error {
+func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writer, ws *workspace.Workspace) error {
 	d := &doctorState{stdout: stdout}
+	root, dbPath := ws.Root, ws.DBPath
 
-	dbPath := DBPath(root)
+	// A broken config is a FAIL, not an abort: the other checks still say what is wrong, run with
+	// the defaults.
+	cfg, err := dp.loadConfig(cmd, ws)
+	if err != nil {
+		d.fail("config", err.Error())
+		cfg = config.Default()
+	} else if _, statErr := os.Stat(ws.ConfigPath); statErr != nil {
+		d.ok("config", fmt.Sprintf("none at %s; defaults apply", ws.ConfigPath))
+	} else {
+		d.ok("config", ws.ConfigPath)
+	}
+
 	var st store.Store
 	if _, statErr := os.Stat(dbPath); statErr != nil {
 		d.fail("database", fmt.Sprintf("none at %s; run kb reindex --all", dbPath))
@@ -93,7 +107,7 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 		}
 	}
 
-	embedder, err := dp.newEmbedder(cmd)
+	embedder, err := dp.newEmbedder(cmd, cfg.Embed)
 	if err != nil {
 		d.fail("embedder", err.Error())
 	} else {

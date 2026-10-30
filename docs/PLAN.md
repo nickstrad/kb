@@ -24,9 +24,12 @@ Branch: `main` (the v2 rework replaces the old app). The orchestrator commits an
 | D1 | Scope is per-project, per-machine (`--global`), and many projects on one machine (cross-store search). | Keeps kb a file-local tool. |
 | D2 | Embedding is in-process via `github.com/rostamlabs/rembed` v0.3.0 (pure Go, Apache-2.0). Default model `BAAI/bge-small-en-v1.5` (384-d, CLS pooling, ~67 MB; listed in rembed's validated table). Model2Vec-in-repo is the fallback if the spike (0.1) fails. | No Ollama/API key. kb must add query/doc prefixes itself (per-model table, §2.4). go.mod moves to `go 1.26.1`. |
 | D3 | Delete `internal/embed/{ollama,openai,provider}`. Keep `embed.Embedder`, `embed.None`, `embed/fake`. | Others can be added later behind the same interface. |
-| D4 | Remove all `KB_*` / `OPENROUTER_API_KEY` env vars. Replace them with root discovery, `--root`, `--global` and `.kb/config.toml`. `$EDITOR` stays. | `HF_TOKEN` (read by rembed itself) is not kb's variable and keeps working. |
+| D4 | Remove all `KB_*` / `OPENROUTER_API_KEY` env vars. Replace them with root discovery, `--root`, `--global` and config files (the store's `config.toml`, D9). `$EDITOR` stays. | `HF_TOKEN` (read by rembed itself) is not kb's variable and keeps working. |
 | D5 | Remove DuckDB. `kb stats` runs on SQLite, with percentiles computed in Go. Add narrow store interfaces with `internal/store/sqlite` as the only implementation. | Drops ~20 indirect deps (arrow, duckdb bindings). A future DuckDB/libSQL backend implements the same 3 interfaces. |
 | D6 | Remove `skills/update-knowledge-store`. A README snippet plus `kb help` become the source of truth. Feedback is optional. `kb show <path>` of a recent hit is logged as an implicit "opened" signal. | Agents skip bookkeeping and the log still gets signal. |
+| D8 | No existing users before v1. Breaking changes are free until v1 ships; schema migrations matter again after v1 (owner, 2026-10-30). | Legacy layouts, adoption paths and old-user notes (§4) are dropped. The migration framework stays (1.8), because v1 stores in the owner's projects will need it. |
+| D9 | Named stores: a *location* (`<root>/.kb/`, marker `.kb/kb.toml`) holds *n* named stores, each under `.kb/stores/<name>/{config.toml,kb.sqlite}` with its own sources, embedder and search log (owner, 2026-10-30; design: `docs/design/named-stores.md`). | `kb init [--name]`, `--store REF`, `kb stores`; refs `NAME`, alias, `global`, `NAME@LOC`; cross-store search covers stores in the same location and in other locations. Items 1.7a/1.7b. |
+| D10 | Migrations are first-class: every versioned artefact (store index DB, embedding cache, store config, location file) implements `migrate.Artefact`. Durable artefacts migrate only through `kb migrate up` (with an automatic backup); the disposable embedding cache migrates on open (owner, 2026-10-30; design: `docs/design/migrations.md`). | Commands refuse an older store with "run kb migrate up". Items 1.8a/1.8b. |
 | D7 | Item agents never commit. The orchestrator commits and pushes `main` after each wave-end pass, once vet, tests and staticcheck are green (owner, 2026-10-30). | `main` tracks progress wave by wave; agents stay out of git. |
 
 ### Planner decisions (can be changed; see Open questions)
@@ -35,7 +38,7 @@ Branch: `main` (the v2 rework replaces the old app). The orchestrator commits an
   - The lazy vector width (owner listed it under Phase 1). The default 384-d model cannot be stored in today's `FLOAT[768]` `chunks_vec`.
   - Removing `KB_ROOT` waits for root discovery (1.1). Every other env var goes in Phase 0.
 - **`searches.kb_version`** is renamed to `corpus_rev` (historic rows keep their meaning). A new `kb_version` stores the binary version. Recording the corpus rev is opt-in (`log.corpus_rev = true`), so there is no git shell-out per search by default.
-- **The global store and machine config are one thing.** The global root is `$XDG_DATA_HOME/kb` (default `~/.local/share/kb` on both OSes). Its `.kb/config.toml` holds machine-level `[stores]` aliases. There is no separate machine config file.
+- **The global location and machine config are one thing.** The global root is `$XDG_DATA_HOME/kb` (default `~/.local/share/kb` on both OSes). Its `.kb/kb.toml` holds machine-level `[aliases]` (D9). There is no separate machine config file.
 - **Release builds use native GitHub runners for cgo:** `macos-14` (arm64) builds darwin/arm64 natively and darwin/amd64 with `CC="clang -arch x86_64" GOARCH=amd64`. `ubuntu-latest` builds linux/amd64 and `ubuntu-24.04-arm` builds linux/arm64, both natively. Tests run only on the developer's Mac and in a macOS-only CI job. Fallback if a Linux runner is unavailable: `CC="zig cc -target <arch>-linux-gnu"` from the macOS job.
 - **Search never downloads a model.** `kb init`, `kb model pull`, `kb reindex` and `kb add` may download. If the model is missing at search time, hybrid search degrades to `fts-fallback` (exit 2, as today) with the hint `kb model pull`.
 
@@ -46,7 +49,8 @@ Branch: `main` (the v2 rework replaces the old app). The orchestrator commits an
 ### 2.1 Package layout (after Phase 1)
 ```
 cmd/kb/main.go                version from runtime/debug.ReadBuildInfo (ldflag override for releases)
-internal/workspace/           root discovery, --root/--global, paths (DB, config, models dir, cache dir)
+internal/workspace/           location discovery (.kb/kb.toml), --root/--global/--store, store refs, paths (DB, config, models dir, cache dir)
+internal/migrate/             Artefact interface, Steps[T], runner (lock, backup, apply, verify) (1.8)
 internal/config/              TOML schema, defaults, validation, --set overrides, effective-settings JSON
 internal/store/               interfaces + row/value types only (no SQL)
 internal/store/sqlite/        Open/migrations/schema.sql, Index+Retriever+SearchLog impl, FTS5 quoting
@@ -148,9 +152,19 @@ Rules:
 - `stats` keeps SQLite-dialect SQL. A future backend would supply its own SQL map; there is no further abstraction now.
 
 ### 2.3 Config file
-Lookup: the store's `.kb/config.toml`. Store aliases are also read from the global store's config. A missing key means the default. Unknown keys are an error (BurntSushi `MetaData.Undecoded`).
+Two files (D9). The **location file** `.kb/kb.toml` marks the location, names the default store and holds aliases. The **store config** `.kb/stores/<name>/config.toml` holds everything else. In a store config, a missing key means the default, and unknown keys are an error (BurntSushi `MetaData.Undecoded`). Aliases are read from the current location's `kb.toml`, then from the global location's.
 
-Example `.kb/config.toml`:
+Example `.kb/kb.toml` (1.7b):
+```toml
+version = 1
+default_store = "default"
+
+[aliases]                          # store refs: NAME | NAME@LOC | PATH (a location's default store)
+notes = "~/knowledge"
+adr   = "adr@~/src/proj"
+```
+
+Example `.kb/stores/default/config.toml`:
 ```toml
 version = 1                        # config schema version
 
@@ -161,7 +175,8 @@ int8    = false                    # rembed.WithInt8 (weight-only); part of the 
 workers = 0                        # 0 = rembed default
 batch   = 16                       # texts per Embed call (reindex.defaultBatchSize today)
 
-# Sources. With no [[sources]] the default is the legacy entries layout under data/.
+# Sources: explicit, written by kb init (default store: path = "data"; a named store: "data-<name>").
+# Paths are relative to the location root. No [[sources]] = nothing indexed (doctor warns).
 [[sources]]
 path   = "data"
 layout = "entries"                 # *.md + <dir>/README.md + docs/*.md, strict front matter (today's rules)
@@ -185,7 +200,7 @@ exact_list      = true             # Phase 4
 synonyms        = ""               # Phase 5; "" = .kb/synonyms.txt, then the global store's
 spell           = true             # Phase 5; only when FTS returns < 3 rows
 supersede_penalty = 0.5            # Phase 5
-stores          = []               # Phase 3; default extra stores, e.g. ["global"]
+stores          = []               # Phase 3; default extra store refs, e.g. ["global", "adr"]
 
 [output]
 budget = 0                         # tokens for kb search; 0 = unlimited (Phase 4)
@@ -209,9 +224,6 @@ min_judged     = 50
 half_life_days = 90
 max_boost      = 0.2
 query_memory   = false
-
-[stores]                           # aliases (meaningful mostly in the global store's config)
-notes = "~/knowledge"
 ```
 
 ### 2.4 Embedding model table (`internal/embed/local/models.go`)
@@ -236,19 +248,32 @@ notes = "~/knowledge"
 - `Embedder.Close()` exists. kb's `embed.Embedder` gains an optional `io.Closer` check in the CLI.
 
 ### 2.5 Schema migrations (append-only)
-Today `store.go:migrations` has 1 element (`schema.sql`), so user_version is 1. Each migration below is appended in `internal/store/sqlite/migrations.go` and never edits `schema.sql`. Every one preserves `searches`, `search_results`, `search_candidates` and `search_feedback`.
+Each migration below is appended in `internal/store/sqlite/migrations.go` and never edits `schema.sql`. Every one preserves `searches`, `search_results`, `search_candidates` and `search_feedback`. From 1.8a each is a `migrate.Step` with a stable ID `index/000N-<slug>` and an Effect: v3 = `reembed`, v7 = `reindex`, the others `none`. The "Reindex?" column is that Effect. From 1.8b, migrations run only through `kb migrate up`, which backs up first (D10, `docs/design/migrations.md`). At the v1 tag, all pre-v1 steps are squashed into one baseline (D8).
 
 | v→ | Phase | Statements | Reindex? |
 |---|---|---|---|
 | 1→2 | 0.6 | `ALTER TABLE searches RENAME COLUMN kb_version TO corpus_rev; ALTER TABLE searches ADD COLUMN kb_version TEXT;` `CREATE TABLE search_opens(search_id INTEGER NOT NULL REFERENCES searches(id) ON DELETE CASCADE, entry_path TEXT NOT NULL, ts TEXT NOT NULL, PRIMARY KEY(search_id, entry_path));` | no |
 | 2→3 | 0.5 | `DROP TABLE chunks_vec; DELETE FROM embed_meta; UPDATE entries SET body_hash = '';`. The vector table is then created by `EnsureEmbedMeta` as `CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(chunk_id INTEGER PRIMARY KEY, embedding FLOAT[%d] distance_metric=cosine)` with the recorded dim. FTS keeps working before the reindex. | **yes**: plain `kb reindex` re-embeds everything (body_hash cleared) |
 | 3→4 | 2.5 | `ALTER TABLE searches ADD COLUMN settings TEXT; ADD COLUMN settings_hash TEXT; ADD COLUMN fts_query TEXT;` | no |
-| 4→5 | 3.2 | `ALTER TABLE search_results ADD COLUMN store TEXT; ALTER TABLE search_candidates ADD COLUMN store TEXT;` (NULL = primary) | no |
+| 4→5 | 3.2 | `ALTER TABLE search_results ADD COLUMN store TEXT; ALTER TABLE search_candidates ADD COLUMN store TEXT;` (NULL = primary; otherwise the canonical ref `NAME@ABSROOT`, D9) | no |
 | 5→6 | 4.5 | `CREATE VIRTUAL TABLE chunks_exact USING fts5(text, heading, content='', contentless_delete=1, tokenize="unicode61 remove_diacritics 0 tokenchars '_-.:/'");` backfilled with `INSERT INTO chunks_exact(rowid,text,heading) SELECT id,text,heading FROM chunks;`. Add `exact_rank INTEGER, exact_score REAL` to `search_results` and `search_candidates`. | no (backfill from `chunks`) |
 | 6→7 | 5.2 | `CREATE TABLE edges(src_entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE, dst_path TEXT NOT NULL, dst_entry_id INTEGER, rel TEXT NOT NULL, PRIMARY KEY(src_entry_id,dst_path,rel));` `CREATE INDEX edges_dst ON edges(dst_entry_id);` `CREATE TABLE entry_tags(entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE, tag TEXT NOT NULL, PRIMARY KEY(entry_id,tag));` backfilled via `json_each(entries.tags)` lowercased. `ALTER TABLE entries ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]'; UPDATE entries SET body_hash='';` | **yes**: plain `kb reindex` (edges/aliases); embeddings are reused by text_hash, so it is cheap |
 | 7→8 | 6.2 | `ALTER TABLE search_results ADD COLUMN prior REAL; ALTER TABLE search_candidates ADD COLUMN prior REAL;` | no |
 
 Contentless FTS tables can be repopulated from `chunks` + `entries.title`, so tokenizer changes never need re-embedding.
+
+### 2.6 Containers (C4 sketch, after D9/D10)
+```
+[ kb CLI process ]  workspace: Location (.kb/kb.toml) -> Store(name); migrate: Artefact per versioned file
+   +--rw--> <root>/.kb/stores/<primary>/{config.toml, kb.sqlite}   index + search log (the log is written here only)
+   +--ro--> <root>/.kb/stores/<other>/kb.sqlite                    same-location stores    } cross-store
+   +--ro--> <other-root>/.kb/stores/<name>/kb.sqlite               aliases / NAME@LOC      } fan-out (3.x)
+   +--ro--> $XDG_DATA_HOME/kb/.kb/{kb.toml [aliases], stores/default/}  global location
+   +--> store.Store per store (sqlite today; a backend key later, through the seam)
+   +--> embed/local: one loaded model per distinct store model --> <user cache>/kb/models
+   +--> embed cache keyed (model, dim, hash) --> <user cache>/kb/embed-cache.sqlite (shared; migrates on open)
+```
+Before D9: one store per root (`<root>/.kb/{config.toml, kb.sqlite}`), and every open migrated automatically.
 
 ---
 
@@ -390,7 +415,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **1.1 Workspace: root discovery, `--root`, `--global`; drop KB_ROOT**
 - Carried from W3 pass: `cli.incidentLogPath` (report.go) finds `<root>/.kb` through the env-reading `Root()`; once discovery resolves the root, pass it through `deps` (or the resolved workspace) so an incident lands in the store the command ran on, and an incident before discovery succeeds goes to the user cache dir. `Root()`, `Caller()` (KB_CALLER) and `runEditor` ($EDITOR) are the last env reads in cli; route the root through deps here and leave KB_CALLER/EDITOR to 1.3.
 - Model: Sonnet (well-specified; many mechanical call-site edits); review: Opus via error-handling-pass
-- Status: done (W4)
+- Status: done (W4). Partly superseded by D8/D9: the legacy `.kb/kb.sqlite` marker and the interim creation by `add`/`reindex` (DEFAULTS #110/#111) are removed in 1.7b, and the marker becomes `.kb/kb.toml`.
 - Files: new `internal/workspace/workspace.go`. Edit `cli/root.go` (delete `Root`, `DefaultRoot`, `defaultRoot`, `KB_ROOT`, `Caller`'s env read), every `Root()` call site (add.go, edit.go, rm.go, show.go, list.go, index.go, search.go, feedback.go, stats.go, doctor.go, reindex.go) and `cli/setup.go`.
 - Steps:
   1. `workspace.Resolve(rootFlag string, global bool) (*Workspace, error)`:
@@ -429,6 +454,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Carried from W4 pass: `cli.DBPath(root)` and `EnsureDBDir(root)` (root.go) still compute `<root>/.kb/kb.sqlite` beside `workspace.Workspace.DBPath`/`KBDir`; search.go, doctor.go and setup.go use the cli helpers. When setup.go is rewritten, pass the `*workspace.Workspace` (not a root string) to `openForWrite`/`openForRead` and delete the duplicates. `ws.ConfigPath` is where `Load` reads from.
 - Carried from W3 pass: (a) `reindex.preconditions` asserts that embed_meta read back from the database equals the embedder (TESTING §3.5, the documented exception to "no assertions on DB contents"). Another kb process with a different `--embed-model` can change embed_meta between `EnsureEmbedMeta` and that read, which would panic (exit 3) instead of a Conflict. Once the embedder comes from config (one model per store), the race needs two configs on one store; decide then whether the check stays an assertion or becomes a Conflict error. (b) `KB_CALLER` and `$EDITOR` are read with os.Getenv in cli; config/deps should carry them.
 - Carried from the adversarial harness (W2): a store indexed with `--embedder none` makes a plain `kb search` exit 1 unless the flag is passed every time. The config must record the embedder so commands pick it up (DEFAULTS #66).
+- Status: done (W5). Wired keys: embed.model, embed.batch, search.k, log.open_window (default 30m), agent.caller, edit.editor. Every other key is reserved and range-checked. embed.dim≠0, embed.int8 and [[sources]] are rejected until wired. KB_CALLER is gone. `kb config [--path|--json|--set]` exists. Named-stores prep done in 1.3: every path comes from `*workspace.Workspace` (`cli.DBPath`/`EnsureDBDir` deleted), `[stores]`/`MergeStores` and the global-config read are removed, there is no embed_meta fallback (a missing config means the defaults), and Config has no location keys. The W5 pass reads config `version` before the strict decode (1.8b checks it).
 - Model: Sonnet (new self-contained package with clear tests); review: Sonnet via error-handling-pass
 - Files: new `internal/config/{config.go,defaults.go,override.go}`. Edit `cli/setup.go` (embedder from config; the `--embedder`/`--embed-model` flags are deleted) and add `cli/config_cmd.go`.
 - Steps:
@@ -436,37 +462,45 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
   2. `Apply(cfg, "search.rrf_k=30")` handles `--set` (used by eval).
   3. `EffectiveJSON()` gives a canonical, sorted JSON of `[search]`+`[embed]`, plus a sha256 as `settings_hash`.
   4. `kb config` prints the effective TOML; `kb config --path` prints the file location.
-  5. The global store's `[stores]` is merged under the project's.
+  5. ~~The global store's `[stores]` is merged under the project's.~~ Dropped in 1.3 (D9): aliases live in `kb.toml [aliases]` (1.7b, 3.1).
 - Tests: defaults round-trip; unknown key error; `--set` on nested map keys (`search.bm25.title=4`); bad types.
 - Accept: `kb config | grep rrf_k` shows `rrf_k = 60`.
 - Deps: 1.1.
 - Risk: none.
 
-**1.4 `kb init` and `kb model pull`**
-- Carried from the W4 pass decision (DEFAULTS #121): `kb init` and `--root` store creation refuse `$HOME` and `/` unless `--force`, so a stray ancestor store can't capture discovery (H28). Add a harness row for it.
-- Carried from W4 pass: (a) `workspace.Workspace.ModelsDir` (`os.UserCacheDir()/kb/models`) is computed but unused; `local.DefaultCacheDir` derives the same path on its own. `kb model pull|path` should take it from the workspace so there is one rule. (b) `--root DIR add` creates a legacy `.kb/kb.sqlite` store anywhere, which then captures discovery for every directory below it (a stray `~/.kb`, H28); once `kb init` exists, decide whether `add`/`reindex` on a `--root` with no `.kb` should still create one or refuse with "run kb init". (c) `kb init` should be the only command that writes `.kb/config.toml`; the harness `workspace-discovery` scenario then gains an init row.
+**1.4 `kb init [--name]` and `kb model pull`**
+- Changed by D8/D9 (`docs/design/named-stores.md`): `kb init` creates a *location* and a *named store*. There is no legacy adoption.
+- Carried from the W4 pass decision (DEFAULTS #121): creating a **location** (`.kb/kb.toml`) at `$HOME` or `/` is refused unless `--force`, so a stray ancestor location can't capture discovery (H28). Add a harness row for it. After 1.7b, only `kb init` creates locations or stores, which settles W4 note (b): `add`/`reindex` on a `--root` with no location refuse with "run kb init".
+- Carried from W4 pass: (a) `workspace.Workspace.ModelsDir` (`os.UserCacheDir()/kb/models`) is computed but unused; `local.DefaultCacheDir` derives the same path on its own. `kb model pull|path` should take it from the workspace so there is one rule. (c) `kb init` is the only command that writes `kb.toml` or a store `config.toml`; the harness `workspace-discovery` scenario gains init rows.
 - Carried from W2 pass: `reindex.All` reads a missing `data/` as an empty corpus via a local `discover` wrapper (Q23). Step 5 (Discover tolerates a missing source dir) should absorb it: move the rule into `entry.Discover` and delete the wrapper. Keep the doctor warning.
-- Model: Sonnet (commands from spec); review: Opus via testing-standards-pass (legacy adoption keeps log)
-- Files: new `cli/init.go` and `cli/model.go`.
+- Model: Sonnet (commands from spec); review: Opus via testing-standards-pass
+- Files: new `cli/init.go` and `cli/model.go`; `cli/doctor.go`; `entry/entry.go` (Discover tolerance).
 - Steps:
-  1. `kb init [--global] [--model ID|none] [--source GLOB]...` creates:
-     - `.kb/config.toml` (commented defaults; sources = data entries unless `--source` was given);
-     - `.kb/.gitignore` containing `kb.sqlite*` and `eval/` (eval baselines stay local; see Open questions);
-     - `data/` only when the entries source is configured.
-  2. Then it opens the DB (migrations), runs `EnsureEmbedMeta`, and pulls the model, with progress on stderr.
-  3. Idempotent: an existing config is left alone ("already initialised"). An existing legacy `.kb/kb.sqlite` with no config gets a config written (adoption path for `~/knowledge`).
+  1. `kb init [--global] [--name NAME] [--model ID|none] [--source GLOB]... [--force]`:
+     - if no location exists at the target (cwd, `--root` or `--global`), create `.kb/kb.toml` (`version = 1`, `default_store` = this store's name) and `.kb/.gitignore` (`stores/*/kb.sqlite*`, `stores/*/eval/`, `*.bak-v*`);
+     - create `.kb/stores/<NAME>/config.toml` (NAME defaults to `default`; `workspace.ValidName`). It holds commented defaults and **explicit** `[[sources]]`: `--source` globs, else an entries source at `data` (default store) or `data-<NAME>` (named store);
+     - create the entries directory when an entries source is configured.
+  2. Then it opens the DB (fresh create at the target schema), runs `EnsureEmbedMeta` and pulls the model, with progress on stderr.
+  3. Idempotent: an existing store is "already initialised" (exit 0, nothing written). A second `kb init --name adr` in an existing location adds the store and leaves `default_store` alone.
   4. `kb model pull|path|ls` covers model management.
   5. Make `entry.Discover` tolerate a missing source dir (empty list plus a doctor warning). This fixes `kb list` on an empty dir.
-  6. Doctor gains checks: `config` (parses), `model` (cached + loads + embeds "ping", with timing), `embed_meta` vs config. The "database missing" check becomes a single "not initialised: run kb init".
-- Tests: init on an empty dir, then `kb list` → "no entries" with exit 0; init twice; init over a legacy store keeps `searches` rows; `--global` writes under a temp `XDG_DATA_HOME`.
-- Accept: `mkdir /tmp/p && cd /tmp/p && kb init --model none && kb list && kb doctor` all exit 0.
-- Deps: 1.1, 1.3.
+  6. Doctor gains checks: `config` (parses), `model` (cached + loads + embeds "ping", with timing), `embed_meta` vs config, `sources` (none configured → warning). "Database missing" becomes "not indexed: run kb reindex"; no location becomes "not initialised: run kb init".
+- Tests:
+  - decision table for init: {no location, location without this store, store exists} × {`--name` given, not} × {target is `$HOME`/`/`, other} × {`--force`};
+  - init on an empty dir, then `kb list` → "no entries", exit 0;
+  - init twice;
+  - `kb init --name adr` in an initialised location keeps `default_store`;
+  - an invalid name (`../x`, `A`, `global`, 33 chars, empty) gives Usage;
+  - `--global` writes under a temp `XDG_DATA_HOME`.
+- Accept: `mkdir /tmp/p && cd /tmp/p && kb init --model none && kb init --name adr --model none && kb stores && kb list && kb --store adr list && kb doctor` all exit 0.
+- Deps: 1.3, 1.7b.
 - Risk: none.
 
 **1.5 In-place sources with optional front matter**
 - Carried from W3 pass: Q31 (entry returns plain fmt errors; every cli call site wraps them as Usage). When `Discover`/`Resolve`/`Load` are rewritten here, return `*errs.Error` at the entry boundary (NotFound for "no such entry", Usage with the path for front matter) and drop the `usageErr("%s", err)` wrappers in add/edit/rm/show/reindex.
 - Carried from W2 pass: `reindex.All` prunes only rows that neither the first Discover nor a second Discover run after `ListEntries` found (Q22; concurrent `kb add` writes the file before committing the row). When `Discover(root, []config.Source)` replaces it, keep that two-discovery rule and `TestAllKeepsEntryAddedDuringRun`. Front-matter title/summary now have caps and a control-character rule (`entry.MaxTitleRunes` 200, `MaxSummaryRunes` 1000, Q20); `fallbackMeta` must produce values that pass `checkText` (truncate the fallback summary to 200 runes already does; also strip control characters from a humanised filename).
 - Carried from the adversarial harness (W2): a symlink under `data/` that points outside the root is followed and indexed today. Discovery must skip such links with a warning, and doctor must report them (DEFAULTS #65). Add the harness scenario to the acceptance checks.
+- Changed by D9: source paths and globs are relative to the **location root**, not the store directory. Sources are always explicit (`kb init` writes them), and a store config with no `[[sources]]` indexes nothing (doctor warns). Overlap inside one store is a config error (step 5); overlap **across stores is allowed** (same corpus under another model, or a subset). `kb add --store REF` copies into that store's single `entries` source; none or several is Usage. The `files` layout also always skips `.kb/**` (already in step 2), which covers every store directory.
 - Model: Opus (touches entry/chunk/reindex/cli/index; goldens must hold); review: Sonnet via testing-standards-pass
 - Files: `internal/entry/entry.go` (`Discover(root, []config.Source)`, `Resolve`, new `fallbackMeta`), `internal/chunk/chunk.go:Split` (empty-summary case), `reindex.All`, `cli/add.go` and `cli/rm.go` (refuse non-`entries` sources), `index` (entries source only).
 - Steps:
@@ -483,10 +517,11 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
   - fallback precedence table;
   - glob + exclude;
   - files without front matter get indexed;
-  - legacy layout golden tests (`chunk/testdata/golden`) unchanged;
+  - entries layout golden tests (`chunk/testdata/golden`) unchanged;
+  - two stores in one location with overlapping globs both index the shared file;
   - removing a file → `reindex.All` removes the entry.
-- Accept: in this repo, `kb init --model none --source 'README.md'` → `kb reindex` → `kb search install` returns `README.md`.
-- Deps: 1.3, 1.4.
+- Accept: in this repo, `kb init --model none --source 'README.md'` → `kb reindex` → `kb search install` returns `README.md`; `kb init --name docs --model none --source 'docs/*.md'` → `kb --store docs reindex` → `kb --store docs search plan` returns `docs/PLAN.md`.
+- Deps: 1.3, 1.4, 1.7b.
 - Risk: H1 handling. Most docs use `#` title + `##` sections, which works. Docs with only `#` sections become one large intro chunk split at 1500 chars. That is acceptable; note it in the README.
 
 **1.6 Install story: go install, mac CI, multi-platform release builds ∥**
@@ -519,9 +554,85 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Deps: 0.2 (macOS tests), 0.4.
 - Risk: `ubuntu-24.04-arm` availability (the zig fallback covers it). Linux binaries are built but never tested, so a Linux-only runtime bug would only surface in user reports. The `kb version` smoke check catches only link/startup failures.
 
+**1.7a Named stores: workspace location and store resolution (new files only)**
+- Design: `docs/design/named-stores.md` (D9). 1.3 already did its prep (see 1.3 Status), so nothing from 1.3 carries over.
+- Model: Sonnet (pure resolution with a clear spec); review: Opus via testing-standards-pass (path boundary)
+- Files: new `internal/workspace/location.go` and `location_test.go`. `workspace.go` stays untouched until 1.7b.
+- Steps:
+  1. `ResolveLocation(rootFlag string, global bool, env Env) (*Location, error)`: `--root` > `--global` > walk up for `.kb/kb.toml` (a regular file). `Location{Root, KBDir, FilePath}`. Errors as in 1.1.
+  2. `ValidName(name) error`: `^[a-z0-9][a-z0-9_-]{0,31}$`; `global` is reserved.
+  3. `(*Location).Store(name) (*Workspace, error)`: `Workspace` gains `Location *Location`, `Store string`, `StoreDir` (`<KBDir>/stores/<name>`). `DBPath` and `ConfigPath` sit inside `StoreDir`. A missing store gives NotFound naming the existing stores.
+  4. `(*Location).Stores() ([]string, error)`: the names whose `config.toml` is a regular file, sorted. Directories with an invalid name are skipped and reported in a second return value (doctor shows them).
+- Tests:
+  - `TestResolveLocation`, one row per branch outcome (as `TestResolve`);
+  - a `ValidName` boundary table: 0, 1, 32 and 33 chars; leading `-`/`_`; uppercase; `/`, `@`, `:`, `..`; `global`;
+  - `FuzzValidName` with the property "valid ⇒ `StoreDir` is a direct child of `<KBDir>/stores`";
+  - `Stores()` with a file named like a store, a dir without config, a symlinked config, an invalid name.
+- Accept: `go test -tags fts5 ./internal/workspace/` green; mutation run on `location.go` with no non-equivalent survivors.
+- Deps: 1.1.
+- Risk: none (no caller yet).
+
+**1.7b Named stores: CLI on location + store, `--store`, `kb stores`**
+- Carried from W5 pass: `Config.Search.Stores` and `CheckModel(src, …)` take a source label. If the location file adds a second config layer, pass the right source (Q50).
+- Model: Sonnet (mechanical cli switch plus one new command); review: Opus via error-handling-pass
+- Files: `internal/workspace/workspace.go` (delete `Resolve`, `discover`, `isStore` and the legacy marker; keep `Env`/`OSEnv`); new `internal/workspace/refs.go` (local NAME | `global` only; 3.1 adds aliases and `NAME@LOC`); new `internal/config/location.go` (`Location{Version, DefaultStore, Aliases}`, `ReadLocation`, `Validate`; aliases are parsed and validated but resolved in 3.1); `cli/root.go` (`--store` persistent flag, `deps.workspace` = location, then store), `cli/setup.go` (`openStoreForWrite` no longer creates `.kb/`; a missing store is NotFound "run kb init"), new `cli/stores.go`; `cli/report.go` (the incident log goes to `<KBDir>`). The `AddCommand` line is added by the orchestrator.
+- Steps:
+  1. Resolution: location (1.7a), then store = `--store` (a local NAME or `global`) or `kb.toml default_store`. A store missing from the location is NotFound; so is a `default_store` that names no store (the error names `kb.toml`).
+  2. Remove the interim creation (DEFAULTS #111): `add`/`reindex` never create a location or store.
+  3. `kb stores [--json]`: name, `*` for the default, model, entry count, DB size or "not indexed".
+  4. The `--debug` store line (DEFAULTS #118) prints `location <root> store <name> (--root | --global | discovered from <cwd>)`.
+  5. Update cli test helpers (`newTempRoot` writes `kb.toml` + `stores/default/config.toml`) and the harness `--root` setup.
+- Tests:
+  - decision table for resolution: {`--root`, `--global`, discovered} × {`--store` absent, a valid existing name, a missing name, an invalid name, `global`} × {`default_store` valid, missing};
+  - `kb stores` golden output, text and JSON;
+  - add/reindex on a bare `--root` refuse;
+  - harness `stores-layout` scenario (init default + named, list, unknown store, missing default_store).
+- Accept: every existing cli test is green on the new layout; `kb --store nope list` exits 1 with the stores listed; `grep -rn 'kb.sqlite\|config.toml' internal/cli` finds only help text.
+- Deps: 1.7a, 1.3.
+- Risk: it touches every cli test helper. This is mechanical. Coordinate with 2.1, which owns `cli/search.go` in W6: 1.7b does not edit it beyond what compiles.
+
+**1.8a Migration framework: `internal/migrate` and the existing artefacts (no behaviour change)**
+- Design: `docs/design/migrations.md` (D10).
+- Model: Opus (cross-package interface, concurrency and atomicity rules); review: Opus via testing-standards-pass + error-handling-pass
+- Files: new `internal/migrate/{doc.go,migrate.go,run.go}` + tests; `internal/store/sqlite/migrations.go` (steps become `migrate.Steps[execer]` with IDs `index/0001-baseline`, `index/0002-log-provenance`, `index/0003-vec-width` (Effect reembed)); `internal/store/sqlite/sqlite.go` (`Status`, `Backup` via `VACUUM INTO`, `Verify`: `integrity_check` + `foreign_key_check` + the schema compared with a fresh database at the same version); new `internal/store/sqlite/artefact.go`; `internal/embed/cache/cache.go` (its schema becomes `cache/0001-baseline`) + new `cache/artefact.go`; new `internal/store/sqlite/testdata/mkfixture` and per-version SQL fixtures.
+- Steps:
+  1. `migrate.Info{From, ID, Desc, Effect}`, `Step[T]`, `Steps[T]` (`Target`, `Pending`, `Check`), `Status`, the `Artefact{Status, Backup, Apply}` interface, the `Verifier` interface, and `Run(ctx, arts, Options{DryRun, NoBackup, LockWait, Now})` with an advisory `flock` on a sibling `migrate.lock`, backup naming `<file>.bak-v<N>-<YYYYMMDD-HHMMSS>` and pruning to the newest 3.
+  2. Move the sqlite index steps and the cache schema onto `Steps`. `Open` behaviour is unchanged in this item (it still migrates automatically).
+  3. A replay test per artefact: stepwise from 0 equals creation at the target (normalised `sqlite_schema`), and every fixture upgraded to the target passes `Verify`.
+  4. Write the authoring rules (design §2.5) as the text for CODING_STYLE §6 ("Migrations") and TESTING ("Migration tests: fixture per step, replay, effect table"). The orchestrator applies them to those docs.
+- Tests:
+  - `Steps.Check` table (gap, duplicate ID, bad ID shape, From ≠ index);
+  - `Run` decision table: {nothing pending, pending, newer} × {DryRun, NoBackup} × {lock free, held then released, held past LockWait} × {backup fails, apply fails, verify fails}. Each row asserts the files on disk (backup present or absent, version unchanged on failure);
+  - a cancel during apply (fault driver) leaves the starting version and the backup;
+  - backup pruning keeps exactly 3;
+  - `-race` with two `Run` on one file: one applies, the other is a no-op.
+- Accept: `go test -tags fts5 ./internal/migrate/ ./internal/store/sqlite/ ./internal/embed/cache/` green; the existing migrate3 and readonly tests unchanged and green; coverage of `internal/migrate` ≥ 90%.
+- Deps: 1.2, 3.3a.
+- Risk: the flock is advisory and POSIX-only. That is fine (macOS-only development; Windows is a non-goal).
+
+**1.8b `kb migrate` and explicit migration for durable artefacts**
+- Carried from W5 pass: `config.Parse` already emits the older-version Conflict "run kb migrate up" through `checkVersion`. Add the config migration step, plus a test at current+1 once `config.SchemaVersion` is 2.
+- Model: Sonnet (command and wiring from spec); review: Opus via testing-standards-pass
+- Files: `internal/store/sqlite/sqlite.go` (`Options.Create`: only a version-0 file is migrated on open; an older one is Conflict "store … is at schema vN; this kb needs vM. Run: kb migrate up"); new `internal/config/migrate.go` (config and location artefacts: `Steps[map[string]any]`, temp-file + rename, `config.Save`); new `cli/migrate_cmd.go`; `cli/init.go` (`Options.Create`). The `AddCommand` line is added by the orchestrator. It does not edit `cli/setup.go` (3.3b owns it in W7). The refusal comes from `sqlite.Open`, and `report` already maps Conflict to exit 1.
+- Steps:
+  1. `kb migrate status [--store REF | --all] [--json]` exits 1 when anything is pending or newer. `kb migrate up [...] [--dry-run] [--no-backup]` ends with the combined effects ("needs: kb reindex"). `kb migrate verify`.
+  2. Scope: by default the resolved store plus the location file; `--all` adds every store of the location and the global location. The embedding cache is shown but never needs `up`; it keeps migrating on open.
+  3. Exempt from the refusal: `kb migrate`, `kb doctor` (which reports the pending steps), `kb stores`, `kb config --path`, `kb version`.
+  4. Check that the W5 pass's config `version`-first ordering is there (Parse reads `version` before the strict decode). If it is missing, add it.
+  5. README: an upgrade section with the one-liner for many projects.
+- Tests:
+  - decision table of commands × store state {current, older, newer, missing}, asserting exit code and message;
+  - golden `kb migrate status` output;
+  - `up --dry-run` writes nothing;
+  - harness scenarios `migrate-refusal` (v3 fixture: `kb search` exit 1 with the hint; `kb migrate up`; search works; the backup exists), `migrate-concurrent` (two `up` processes) and `migrate-interrupt` (SIGINT mid-apply, then a rerun).
+- Accept: on a v3 fixture store, `kb search x` exits 1 with "run kb migrate up", `kb migrate up` prints the backup path and "needs: kb reindex" where an Effect asks for it, and `kb search x` then exits 0.
+- Deps: 1.8a, 1.7b.
+- Risk: users forget to migrate after an upgrade. The message names the exact command, and doctor shows it too.
+
 ### Phase 2: Measurement, then config-driven weights
 
 **2.1 Search trace plumbing**
+- Carried from W5 pass: `settings_hash` (`config.EffectiveJSON`) covers `[embed]` and `[search]` only. If a new key changes results, add it there with a hash-changes row in `TestEffectiveJSON`. Wiring a reserved key: delete its rejection in `Validate`, add a boundary row, update the wired/reserved list in `doc.go`; `TestDefaultsGolden` forces a reviewed golden change.
 - Model: Opus (fusion params/trace; defaults must stay bit-identical); review: Sonnet via testing-standards-pass
 - Files: `internal/search/search.go`, `internal/store/sqlite/retrieve.go`.
 - Steps:
@@ -615,27 +726,32 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 
 **3.1 Store registry and read-only open**
 - Model: Sonnet (resolution order and warnings, clear spec); review: Sonnet via error-handling-pass
-- Files: `internal/workspace/stores.go`, `sqlite.Open(..ReadOnly)` (from 1.2).
+- Changed by D9: refs instead of names; aliases live in `kb.toml [aliases]`.
+- Files: `internal/workspace/refs.go` (extends 1.7b's), `sqlite.Open(..ReadOnly)` (from 1.2).
 - Steps:
-  1. Resolve names: `global`, aliases from `[stores]` (project, then global config), or a literal path (dir containing `.kb/`).
+  1. Resolve refs: `NAME` (a store of the current location) → alias (`[aliases]` of the current location, then of the global location) → `global` (the global location's default store) → `NAME@LOC` (LOC is `global` or a path) → PATH (a location's default store). Warn when a local name shadows an alias. `--stores all` means every store of the current location. `--store` accepts the same grammar (an alias or `NAME@LOC` together with `--root`/`--global` is Usage). Each resolved store gets a canonical ref `NAME@ABSROOT`. `kb stores` gains the alias rows.
   2. Every other store opens read-only. A schema-version mismatch or a missing DB is a warning and that store is skipped.
   3. Read each store's embed_meta.
-- Tests: alias resolution order; missing store warns; newer schema warns.
-- Accept: `kb search q --stores global,notes` with a nonexistent `notes` prints a warning and still returns primary hits.
-- Deps: 1.1, 1.3.
+- Tests:
+  - decision table for ref resolution (each grammar branch, plus shadowing, an unknown ref, a `NAME@LOC` whose location or store is missing, `~` expansion, a relative PATH);
+  - `FuzzParseRef` (never panics; a parsed ref re-renders to the same canonical form);
+  - a missing store warns; a newer schema warns; an older schema warns "run kb migrate up there" (D10);
+  - harness `stores-alias`.
+- Accept: `kb search q --stores global,notes` with a nonexistent `notes` prints a warning and still returns primary hits; `kb search q --stores adr` finds the `adr` store of the same location.
+- Deps: 1.7b, 1.3.
 - Risk: none.
 
 **3.2 Merge and log**
 - Model: Opus (cross-store fusion, per-store models, migration, logging); review: Opus via testing-standards-pass
 - Files: `search/multi.go`, migration 4→5, `sqlite/log.go`, `cli/search.go` (`--stores a,b`; default `search.stores`; `--stores ''` disables).
 - Steps:
-  1. Run the normal per-store search, using the *primary's* search settings and each store's own embed model. Embed the query once per distinct (model, prefix).
-  2. Merge with RRF over the per-store returned ranks (`1/(rrf_k + rank)`). Tie-break: primary first, then store order.
-  3. Apply the per-entry cap on `(store, path)`, then k.
+  1. Run the normal per-store search, using the *primary's* search settings and each store's own embed model. Embed the query once per distinct (model, prefix). At most 8 extra stores (Usage above that); warn when more than 2 distinct models load.
+  2. Merge with RRF over the per-store returned ranks (`1/(rrf_k + rank)`); scores are never compared across stores, so any backend or paradigm that returns an ordered hit list can join. Hit identity is `(location root, path, ord)`: stores in the **same location** that index the same file add their RRF terms (an ensemble), and the hit is tagged with the best-ranked store. Stores in different locations never merge. Tie-break: primary first, then store order.
+  3. Apply the per-entry cap on `(location root, path)`, then k.
   4. Hits carry `Store string` (empty = primary), shown as `[notes] data/x.md › H`.
-  5. Log only in the primary, with the `store` column set.
-  6. `kb show notes:data/x.md` resolves a store-qualified path. The open is recorded in the primary log.
-- Tests: two temp stores with the fake embedder; merged order; logging columns; same path in two stores is not capped together.
+  5. Log only in the primary, with the `store` column set to the canonical ref `NAME@ABSROOT`.
+  6. `kb show REF:data/x.md` (REF is a name, an alias or `global`) resolves a store-qualified path. The open is recorded in the primary log.
+- Tests: two temp stores with the fake embedder; merged order; logging columns; the same path in two *locations* is not capped together; the same path in two stores of *one* location sums its RRF terms; a table over {same location, different location} × {same model, different model, `none`}; harness `stores-fanout`.
 - Accept: `kb search "x" --stores global` shows tagged global hits, and `select store from search_results` has them.
 - Deps: 3.1, 2.1.
 - Risk: different models across stores. This is handled by per-store query embedding, and the shared cache keeps it cheap.
@@ -854,6 +970,8 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 
 ## 4. Breaking changes / migration notes
 
+**Obsolete (D8):** there are no users before v1, so nothing below needs a migration path or a user note. The table is kept for history only. Its layout rows (`.kb/kb.sqlite`, `~/knowledge` adoption, `[stores]`) are superseded by D9. After v1, upgrades go through `kb migrate` (D10).
+
 | Change | Who is affected | What to do |
 |---|---|---|
 | All `KB_*` env vars and `OPENROUTER_API_KEY` are ignored (`KB_ROOT`, `KB_CALLER`, `KB_EMBEDDER`, `KB_EMBED_MODEL/URL/DIM/API_KEY/...`, `KB_OLLAMA_URL`, `KB_OPENROUTER_API_KEY`) | everyone | Run kb inside the store (it walks up to `.kb/`), or pass `--root DIR` / `--global`. Pass `--caller` explicitly. |
@@ -913,17 +1031,21 @@ Who builds each item, what runs at the same time, and in what order. Model choic
 | 0.7 | Optional feedback + opens | Sonnet | 0.6 | cli/show.go, search/log.go, cli/search.go, stats/queries.go | W2 |
 | 1.1 | Workspace / root discovery | Sonnet | 0.5 | root.go, cli/setup.go, every cli/*.go `Root()` site, cli tests | W4 |
 | 1.2 | Store seam | Opus | (all of Phase 0) | store/*, search/search.go, search/log.go, reindex, cli imports | W3 |
-| 1.3 | Config + `kb config` | Sonnet | 1.1 | cli/setup.go, root.go flags | W5 |
-| 1.4 | `kb init`, `kb model` | Sonnet | 1.1, 1.3 | cli/doctor.go, entry/entry.go (Discover) | W6 |
-| 1.5 | In-place sources | Opus | 1.3, 1.4 | entry/entry.go, chunk/chunk.go, reindex, cli/add.go, cli/rm.go, index | W7 |
+| 1.3 | Config + `kb config` | Sonnet | 1.1 | cli/setup.go, root.go flags | done (W5) |
+| 1.4 | `kb init [--name]`, `kb model` | Sonnet | 1.3, 1.7b | cli/init.go, model.go, doctor.go, entry/entry.go (Discover) | W6 (lane A, after 1.7b) |
+| 1.5 | In-place sources | Opus | 1.3, 1.4, 1.7b | entry/entry.go, chunk/chunk.go, reindex, cli/add.go, cli/rm.go, index | W7 |
 | 1.6 | CI + release + install.sh | Sonnet | 0.2, 0.4 | .github/*, scripts/install.sh, README Install | W1 |
+| 1.7a | Named stores: location + store resolution | Sonnet | 1.1 | workspace/location.go (new) | W6 (lane A, first) |
+| 1.7b | Named stores: cli switch, `--store`, `kb stores` | Sonnet | 1.7a, 1.3 | workspace/workspace.go, workspace/refs.go (new), config/location.go (new), cli/root.go, cli/setup.go, cli/report.go, cli/stores.go (new), cli test helpers | W6 (lane A, second) |
+| 1.8a | Migration framework + existing artefacts | Opus | 1.2, 3.3a | migrate/ (new), sqlite/sqlite.go, sqlite/migrations.go, sqlite/artefact.go (new), embed/cache/cache.go | W6 (lane C) |
+| 1.8b | `kb migrate`; explicit migration | Sonnet | 1.8a, 1.7b | sqlite/sqlite.go, config/migrate.go (new), cli/migrate_cmd.go (new), cli/init.go, README upgrade section | W7 (lane, before 2.5) |
 | 2.1 | Search trace plumbing | Opus | 1.2, 1.3 | search/search.go, sqlite/retrieve.go, store/types.go, cli/search.go | W6 |
 | 2.2 | `kb explain` | Sonnet | 2.1 | new files only | W7 |
 | 2.3 | `kb eval` core | Opus | 2.1, 0.7 | eval/*, cli/eval.go, new sqlite/judged.go | W8 |
 | 2.4 | Baselines/variants | Sonnet | 2.3 | eval/*, cli/eval.go | W9 |
-| 2.5 | Log effective settings | Sonnet | 1.3, 2.1 | **mig v4**, sqlite/log.go, search/search.go, store/types.go, stats/queries.go | W7 |
+| 2.5 | Log effective settings | Sonnet | 1.3, 2.1, 1.8b | **mig v4**, sqlite/log.go, search/search.go, store/types.go, stats/queries.go | W7 |
 | 2.6 | `kb eval --sweep` | Opus | 2.4 | eval/sweep.go, cli/eval.go | W10 |
-| 3.1 | Store registry | Sonnet | 1.1, 1.3 | workspace/stores.go (new) | W6 |
+| 3.1 | Store refs and registry | Sonnet | 1.7b, 1.3 | workspace/refs.go, cli/root.go (`--store` grammar), cli/stores.go (alias rows) | W7 |
 | 3.2 | Cross-store merge + log | Opus | 3.1, 2.1, (v4 landed) | **mig v5**, sqlite/log.go, cli/search.go, store/types.go, search/multi.go | W8 |
 | 3.3 | Embedding cache | Opus | 0.5 | 3.3a: new embed/cache/, embed/cached.go; 3.3b: cli/setup.go wiring | W2 (3.3a), W7 (3.3b) |
 | 4.1 | Compact render + budget | Sonnet | 2.1 | cli/search.go, render/ (new) | W7 |
@@ -943,7 +1065,7 @@ Who builds each item, what runs at the same time, and in what order. Model choic
 | 6.3 | Query memory list | Sonnet | 6.1 | search/search.go, search/memory.go | W12 (after 6.2) |
 | 6.4 | Validate prior with eval | Opus | 6.2, 6.3, 2.6 | eval/replay.go | W13 |
 
-Counts: Opus 13, Sonnet 21, Haiku 4 (38 items).
+Counts: Opus 14, Sonnet 24, Haiku 4 (42 items).
 
 ### 6.2 Waves
 A wave starts when every item of the previous wave is merged and its review passes are clean. Every wave ends with the wave-end standards pass (6.4 rule 4): `testing-standards-pass` and `error-handling-pass` over the wave's diff, then fixes, before the next wave starts. A "lane" is one agent; an arrow inside a lane means the items run one after the other in that lane.
@@ -961,15 +1083,17 @@ A wave starts when every item of the previous wave is merged and its review pass
   - → wave-end standards pass (6.4 rule 4).
 - **W3 (done):** 1.2 alone. It moves store/search/log SQL and rewrites imports across cli, so it collides with everything except 1.6 and 3.3a (which may still be finishing). Move-only commit first, then narrowing.
 - **W4 (done):** 1.1 (owns all of `internal/cli/*`, root.go, setup.go) ∥ 5.1 (links/ new + `entry.ParseFrontMatter`; pulled forward, see 6.5).
-- **W5:** 1.3 (config/ new, setup.go, root.go flags, cli/config_cmd.go) ∥ 5.1 if still running.
+- **W5 (done):** 1.3 (config/ new, setup.go, root.go flags, cli/config_cmd.go), including the named-stores prep (D9). The W5 pass adds the config `version`-first ordering.
 - **W6:**
-  - 1.4: init.go, model.go, doctor.go, entry.Discover. 5.1 must be merged first, because both edit entry.go.
-  - 2.1: search.go, sqlite/retrieve.go, store/types.go, cli/search.go. It also adds the retrieval-side fields that later items need (see 6.5).
-  - 3.1: workspace/stores.go (new file).
+  - lane A: 1.7a → 1.7b → 1.4. 1.7a: workspace/location.go (new). 1.7b: workspace.go, refs.go, config/location.go, cli/root.go, setup.go, report.go, stores.go, cli test helpers. 1.4: init.go, model.go, doctor.go, entry.Discover (5.1 must be merged first, because both edit entry.go).
+  - lane B: 2.1: search.go, sqlite/retrieve.go, store/types.go, cli/search.go. It also adds the retrieval-side fields that later items need (see 6.5). 1.7b may touch cli/search.go only where it must to compile, and coordinates with 2.1.
+  - lane C: 1.8a: migrate/ (new), sqlite/sqlite.go, sqlite/migrations.go, sqlite/artefact.go, embed/cache/. No overlap with 2.1 (retrieve.go) or lane A.
+  - 3.1 moves to W7: it needs 1.7b's location file and refs.
 - **W7:**
   - 1.5: entry, chunk, reindex, add.go, rm.go, index.
   - 2.2: explain new files only.
-  - 2.5: mig v4, sqlite/log.go, search.go, store/types.go, stats/queries.go.
+  - lane 1.8b → 2.5. 1.8b: sqlite/sqlite.go, config/migrate.go, cli/migrate_cmd.go, cli/init.go. 2.5: mig v4 (written as a `migrate.Step`), sqlite/log.go, migrations.go, search.go, store/types.go, stats/queries.go.
+  - 3.1: workspace/refs.go, cli/root.go, cli/stores.go.
   - 4.1: render/ new, cli/search.go.
   - 3.3b: setup.go wiring.
 - **W8:** 3.2 (mig v5, sqlite/log.go, store/types.go, cli/search.go, search/multi.go) ∥ 2.3 (eval/, cli/eval.go, new `sqlite/judged.go` + `store/judged.go` to stay out of log.go/types.go).
@@ -991,7 +1115,7 @@ A wave starts when every item of the previous wave is merged and its review pass
 - Migrations must land in number order (v4 → v8).
 - `search/search.go` has several writers: 2.1, 2.5, 4.5, 5.5/5.6, 5.3, 6.2/6.3 and 4.6.
 
-**Critical path:** 0.6 → 0.5b → 1.2 → 1.1 → 1.3 → 2.1 → 2.5 (v4) → 3.2 (v5) → 4.5 (v6) → 5.2 (v7) → 5.3 → 6.2/6.3 (v8) → 6.4. That is 13 waves after W0.
+**Critical path:** 0.6 → 0.5b → 1.2 → 1.1 → 1.3 → 2.1 / 1.8a → 1.8b → 2.5 (v4) → 3.2 (v5) → 4.5 (v6) → 5.2 (v7) → 5.3 → 6.2/6.3 (v8) → 6.4. That is 13 waves after W0.
 
 ### 6.3 Migration numbers (pre-assigned, fixed)
 | version | item | wave | lands after |
@@ -1007,6 +1131,7 @@ A wave starts when every item of the previous wave is merged and its review pass
 - The migrations list is positional, so items merge in version order even when they are built in parallel.
 - If a lower-numbered item stalls, the orchestrator decides whether to swap numbers. Any swap updates §2.5 and this table in the same change.
 - No agent adds a migration that is not in this table.
+- From 1.8a, every step is a `migrate.Step` with an ID `index/000N-<slug>` and an Effect (§2.5). From 1.8b, steps run only through `kb migrate up` (D10). The embedding cache (`cache/000N-…`) and the config/location files (`config/…`, `location/…`) number their steps independently of this table.
 
 ### 6.4 Orchestration rules
 1. **One owner per hotspot file per wave.** The hotspots are:

@@ -35,9 +35,6 @@ import (
 	"github.com/nickstrad/kb/internal/store"
 )
 
-// addBatchSize matches reindex's batching: 16 texts per embedder call.
-const addBatchSize = 16
-
 // fileNameRe and dirNameRe are the naming rule for a new entry: lowercase kebab-case.
 var (
 	fileNameRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*\.md$`)
@@ -89,7 +86,7 @@ func newAddCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 
 // runAddFile implements `kb add <file.md>`.
 func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg string) (retErr error) {
-	ws, err := d.workspace(cmd)
+	ws, cfg, err := d.workspaceConfig(cmd)
 	if err != nil {
 		return err
 	}
@@ -131,13 +128,13 @@ func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg st
 	}
 
 	// Like `kb edit`, `kb add` cannot recover from an embed_meta mismatch (all=false below).
-	st, err := d.openStoreForWrite(cmd.Context(), root)
+	st, err := d.openStoreForWrite(cmd.Context(), ws)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 
-	embedder, err := d.newEmbedder(cmd)
+	embedder, err := d.newEmbedder(cmd, cfg.Embed)
 	if err != nil {
 		return err
 	}
@@ -191,7 +188,7 @@ func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg st
 		Root:      root,
 		Store:     st,
 		Embedder:  embedder,
-		BatchSize: addBatchSize,
+		BatchSize: cfg.Embed.Batch,
 		Stdout:    io.Discard,
 		Stderr:    stderr,
 		Force:     force,
@@ -210,7 +207,7 @@ func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg st
 
 // runAddDir implements `kb add --dir <topic>/`.
 func runAddDir(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, argPath string) (retErr error) {
-	ws, err := d.workspace(cmd)
+	ws, cfg, err := d.workspaceConfig(cmd)
 	if err != nil {
 		return err
 	}
@@ -283,13 +280,13 @@ func runAddDir(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, argPath st
 		return err
 	}
 
-	st, err := d.openStoreForWrite(cmd.Context(), root)
+	st, err := d.openStoreForWrite(cmd.Context(), ws)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 
-	embedder, err := d.newEmbedder(cmd)
+	embedder, err := d.newEmbedder(cmd, cfg.Embed)
 	if err != nil {
 		return err
 	}
@@ -339,7 +336,7 @@ func runAddDir(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, argPath st
 		Root:      root,
 		Store:     st,
 		Embedder:  embedder,
-		BatchSize: addBatchSize,
+		BatchSize: cfg.Embed.Batch,
 		Stdout:    io.Discard,
 		Stderr:    stderr,
 		Force:     force,

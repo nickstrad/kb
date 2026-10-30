@@ -12,7 +12,7 @@ import (
 // intact, no chunks_vec and no embed_meta.
 func dropVectorsCLI(t *testing.T, root string) {
 	t.Helper()
-	db, err := sql.Open("sqlite3", DBPath(root))
+	db, err := sql.Open("sqlite3", testDBPath(root))
 	if err != nil {
 		t.Fatal(err)
 	}

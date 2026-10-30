@@ -33,8 +33,8 @@ func newFeedbackCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"Marking the same hit twice replaces the earlier verdict. A later --useful withdraws an\n" +
 			"earlier --none; --none is refused while a hit is marked useful (re-mark it --not-useful\n" +
 			"first).\n\n" +
-			"--last targets the newest search logged for the caller (--caller, else $KB_CALLER, the\n" +
-			"same resolution kb search uses); it refuses an unset or \"unknown\" caller. The log has no\n" +
+			"--last targets the newest search logged for the caller (--caller, else [agent] caller\n" +
+			"in the config, the same resolution kb search uses); it refuses an unset or \"unknown\" caller. The log has no\n" +
 			"notion of a session, so two sessions searching under the same caller name at once can\n" +
 			"pick up each other's searches: --last prints the query it judged, and an explicit\n" +
 			"search_id is the safe form whenever searches may overlap.",
@@ -54,7 +54,7 @@ func newFeedbackCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&opts.notUseful, "not-useful", false, "the hit at <rank> did not answer the question")
 	cmd.Flags().BoolVar(&opts.none, "none", false, "nothing in the search helped (whole search; no rank)")
 	cmd.Flags().BoolVar(&opts.last, "last", false, "judge the caller's newest search instead of naming a search_id")
-	cmd.Flags().StringVar(&opts.caller, "caller", "", "whose newest search --last means (default $KB_CALLER)")
+	cmd.Flags().StringVar(&opts.caller, "caller", "", "whose newest search --last means (default [agent] caller)")
 	cmd.Flags().StringVar(&opts.note, "note", "", "free-text note stored with the feedback")
 	return cmd
 }
@@ -123,19 +123,18 @@ func runFeedback(cmd *cobra.Command, d *deps, stdout io.Writer, opts feedbackOpt
 		}
 		rank = r
 	}
-	caller := Caller(opts.caller)
-	if opts.last && caller == "unknown" {
-		// "unknown" is also what every caller-less search was logged as, so its newest search could
-		// belong to anyone; refuse it rather than guess.
-		return usageErr("--last needs to know who searched; pass --caller (claude, codex) or set KB_CALLER, as for kb search")
-	}
-
 	// Check for the file before opening: opening read-write creates an empty database, which
 	// would turn "you never indexed anything" into "no search with id N".
 	ctx := cmd.Context()
-	ws, err := d.workspace(cmd)
+	ws, cfg, err := d.workspaceConfig(cmd)
 	if err != nil {
 		return err
+	}
+	caller := callerFor(opts.caller, cfg)
+	if opts.last && caller == "unknown" {
+		// "unknown" is also what every caller-less search was logged as, so its newest search could
+		// belong to anyone; refuse it rather than guess.
+		return usageErr("--last needs to know who searched; pass --caller (claude, codex) or set [agent] caller in the config, as for kb search")
 	}
 	dbPath := ws.DBPath
 	if _, err := os.Stat(dbPath); err != nil {

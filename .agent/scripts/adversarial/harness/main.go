@@ -168,6 +168,10 @@ func printOutcome(w io.Writer, o outcome) {
 
 func indent(s string) string { return strings.ReplaceAll(s, "\n", "\n       ") }
 
+// defaultModelScenarios start with no config (the default model, which is not installed) and
+// set their own.
+var defaultModelScenarios = map[string]bool{"exit-codes": true, "no-model-search": true, "no-model-index": true}
+
 func runScenario(ctx context.Context, s scenario, bin, dir string) (o outcome) {
 	h := &H{ctx: ctx, bin: bin, dir: dir,
 		root: filepath.Join(dir, "root"), home: filepath.Join(dir, "home"), outside: filepath.Join(dir, "outside")}
@@ -183,6 +187,9 @@ func runScenario(ctx context.Context, s scenario, bin, dir string) (o outcome) {
 				h.fail("scenario panicked: %v", r)
 			}
 		}()
+		if !defaultModelScenarios[s.Name] {
+			h.useNone() // most scenarios run on FTS only; the rest write their own config
+		}
 		s.Run(h)
 	}()
 	h.checkNoDownload()
@@ -231,7 +238,6 @@ func (h *H) env() []string {
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + h.home,
 		"TMPDIR=" + filepath.Join(h.dir, "tmp"),
-		"KB_CALLER=harness",
 		"REMBED_CACHE=" + filepath.Join(h.home, "rembed"),
 		"HF_HOME=" + filepath.Join(h.home, "hf"),
 		"HTTPS_PROXY=" + deadProxy, "HTTP_PROXY=" + deadProxy, "ALL_PROXY=" + deadProxy,

@@ -42,10 +42,11 @@ API key is involved. Models are downloaded once per machine to `~/Library/Caches
 `kb show` and `kb doctor` never download; without the model, search falls back to full-text
 search (exit 2) and says to run `kb model pull`.
 
-- `kb model list` shows the supported models (pick one with `--embed-model <id>`) and which are
-  downloaded.
-- `--embedder none` indexes and searches with full-text search only.
-- Changing the model or embedder on an existing index needs `kb reindex --all`.
+- `kb model list` shows the supported models and which are downloaded. The model is the `[embed]`
+  `model` key of the store's config file (`kb config --path` says where; `kb config` shows the
+  effective settings).
+- `model = "none"` in `[embed]` indexes and searches with full-text search only.
+- Changing the model on an existing index needs `kb reindex --all`.
 - The old `KB_EMBEDDER`, `KB_EMBED_*`, `KB_OLLAMA_URL` and OpenRouter variables are gone and
   ignored.
 

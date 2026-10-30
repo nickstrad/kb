@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/nickstrad/kb/internal/store"
 )
 
 func openTestDB(t *testing.T) *Store {
@@ -64,8 +62,11 @@ func openedSearches(t *testing.T, st *Store, entryPath string) []int64 {
 	return ids
 }
 
-// TestRecordOpenWindow pins the edges of store.OpenWindow: a search exactly window old still counts,
+// TestRecordOpenWindow pins the edges of openWindow: a search exactly window old still counts,
 // one second older does not.
+// openWindow is the window the tests pass; the CLI takes it from config ([log] open_window, default 30m).
+const openWindow = 30 * time.Minute
+
 func TestRecordOpenWindow(t *testing.T) {
 	now := time.Date(2026, time.October, 29, 12, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -74,15 +75,15 @@ func TestRecordOpenWindow(t *testing.T) {
 		want bool
 	}{
 		{"just now", 0, true},
-		{"just inside the window", store.OpenWindow - time.Second, true},
-		{"exactly at the window", store.OpenWindow, true},
-		{"just outside the window", store.OpenWindow + time.Second, false},
+		{"just inside the window", openWindow - time.Second, true},
+		{"exactly at the window", openWindow, true},
+		{"just outside the window", openWindow + time.Second, false},
 		{"long ago", 24 * time.Hour, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := openTestDB(t)
 			id := addSearch(t, db, now.Add(-tc.age), []string{"data/a.md"}, "")
-			got, err := db.RecordOpen(context.Background(), "data/a.md", now, store.OpenWindow)
+			got, err := db.RecordOpen(context.Background(), "data/a.md", now, openWindow)
 			if err != nil {
 				t.Fatalf("RecordOpen: %v", err)
 			}
@@ -106,7 +107,7 @@ func TestRecordOpenSelection(t *testing.T) {
 
 	t.Run("no searches at all", func(t *testing.T) {
 		db := openTestDB(t)
-		if got, err := db.RecordOpen(ctx, "data/a.md", now, store.OpenWindow); err != nil || got {
+		if got, err := db.RecordOpen(ctx, "data/a.md", now, openWindow); err != nil || got {
 			t.Errorf("RecordOpen = %t, %v; want false, nil", got, err)
 		}
 	})
@@ -114,7 +115,7 @@ func TestRecordOpenSelection(t *testing.T) {
 	t.Run("entry not returned by the recent search", func(t *testing.T) {
 		db := openTestDB(t)
 		addSearch(t, db, now, []string{"data/b.md"}, "")
-		if got, err := db.RecordOpen(ctx, "data/a.md", now, store.OpenWindow); err != nil || got {
+		if got, err := db.RecordOpen(ctx, "data/a.md", now, openWindow); err != nil || got {
 			t.Errorf("RecordOpen = %t, %v; want false, nil", got, err)
 		}
 	})
@@ -122,7 +123,7 @@ func TestRecordOpenSelection(t *testing.T) {
 	t.Run("a candidate that lost the fusion does not count", func(t *testing.T) {
 		db := openTestDB(t)
 		addSearch(t, db, now, []string{"data/b.md"}, "data/a.md")
-		if got, err := db.RecordOpen(ctx, "data/a.md", now, store.OpenWindow); err != nil || got {
+		if got, err := db.RecordOpen(ctx, "data/a.md", now, openWindow); err != nil || got {
 			t.Errorf("RecordOpen = %t, %v; want false, nil", got, err)
 		}
 	})
@@ -132,7 +133,7 @@ func TestRecordOpenSelection(t *testing.T) {
 		addSearch(t, db, now.Add(-10*time.Minute), []string{"data/a.md"}, "")
 		newest := addSearch(t, db, now.Add(-5*time.Minute), []string{"data/a.md"}, "")
 		addSearch(t, db, now.Add(-time.Minute), []string{"data/b.md"}, "") // newer, but not a hit
-		if got, err := db.RecordOpen(ctx, "data/a.md", now, store.OpenWindow); err != nil || !got {
+		if got, err := db.RecordOpen(ctx, "data/a.md", now, openWindow); err != nil || !got {
 			t.Fatalf("RecordOpen = %t, %v; want true, nil", got, err)
 		}
 		if ids := openedSearches(t, db, "data/a.md"); len(ids) != 1 || ids[0] != newest {
@@ -143,10 +144,10 @@ func TestRecordOpenSelection(t *testing.T) {
 	t.Run("repeated open is a no-op", func(t *testing.T) {
 		db := openTestDB(t)
 		addSearch(t, db, now, []string{"data/a.md"}, "")
-		if got, _ := db.RecordOpen(ctx, "data/a.md", now, store.OpenWindow); !got {
+		if got, _ := db.RecordOpen(ctx, "data/a.md", now, openWindow); !got {
 			t.Fatal("first open not recorded")
 		}
-		if got, err := db.RecordOpen(ctx, "data/a.md", now.Add(time.Minute), store.OpenWindow); err != nil || got {
+		if got, err := db.RecordOpen(ctx, "data/a.md", now.Add(time.Minute), openWindow); err != nil || got {
 			t.Errorf("second RecordOpen = %t, %v; want false, nil", got, err)
 		}
 		if ids := openedSearches(t, db, "data/a.md"); len(ids) != 1 {
@@ -160,16 +161,7 @@ func TestRecordOpenErrors(t *testing.T) {
 	if _, err := db.DB().Exec("DROP TABLE search_opens"); err != nil {
 		t.Fatal(err)
 	}
-	if recorded, err := db.RecordOpen(context.Background(), "data/a.md", time.Now(), store.OpenWindow); err == nil || recorded {
+	if recorded, err := db.RecordOpen(context.Background(), "data/a.md", time.Now(), openWindow); err == nil || recorded {
 		t.Errorf("missing table: recorded, err = %v, %v; want false and an error", recorded, err)
-	}
-}
-
-// TestOpenWindowContract pins the window once: `kb show --help` and the README promise "the last
-// 30 minutes", and every other test uses the symbol (ADVERSARIAL_TESTING §3.1, symbol-relative
-// constant that is a contract).
-func TestOpenWindowContract(t *testing.T) {
-	if store.OpenWindow != 30*time.Minute {
-		t.Errorf("store.OpenWindow = %s; the documented window is 30m", store.OpenWindow)
 	}
 }

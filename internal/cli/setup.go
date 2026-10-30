@@ -9,32 +9,66 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/local"
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/workspace"
 )
 
-// Embedder names accepted by --embedder.
-const (
-	embedderLocal = "local"
-	embedderNone  = "none"
-)
-
-// newEmbedder builds the embedder named by cmd's --embedder and --embed-model flags, unless
-// d.embedder replaces it. `kb reindex` and `kb add` download a missing model first (a one-line
-// note on stderr); every other command only loads what is cached, so a search with no model falls
-// back to FTS with a `kb model pull` hint.
-func (d *deps) newEmbedder(cmd *cobra.Command) (embed.Embedder, error) {
-	if d.embedder != nil {
-		return d.embedder(cmd)
-	}
-	name, spec, err := embedderChoice(cmd)
+// workspaceConfig resolves the store this command runs on and loads its configuration: the
+// store's config file over the defaults. The model is checked against the supported table, so an unknown model fails here,
+// naming the file and the key, before any work starts.
+//
+// A store with no config.toml (add/reindex on a fresh --root, until kb init) gets the defaults.
+// The model recorded in the index plays no part: the config is the one source, and a mismatch
+// with the index is reported with the fix (kb reindex --all).
+func (d *deps) workspaceConfig(cmd *cobra.Command) (*workspace.Workspace, config.Config, error) {
+	ws, err := d.workspace(cmd)
 	if err != nil {
-		return nil, err
+		return nil, config.Config{}, err
 	}
-	if name == embedderNone {
+	cfg, err := d.loadConfig(cmd, ws)
+	if err != nil {
+		return nil, config.Config{}, err
+	}
+	return ws, cfg, nil
+}
+
+// loadConfig is workspaceConfig for an already resolved workspace. It is the only place the
+// config file is read.
+func (d *deps) loadConfig(cmd *cobra.Command, ws *workspace.Workspace) (config.Config, error) {
+	cfg, _, err := config.Read(ws.ConfigPath)
+	if err != nil {
+		return config.Config{}, err
+	}
+	if err := cfg.CheckModel(ws.ConfigPath, knownModel); err != nil {
+		return config.Config{}, err
+	}
+	return cfg, nil
+}
+
+// knownModel is config.CheckModel's lookup into the supported embedding models.
+func knownModel(id string) error {
+	_, err := local.Lookup(id)
+	return err
+}
+
+// newEmbedder builds the embedder [embed] describes, unless d.embedder replaces it. `kb reindex`
+// and `kb add` download a missing model first (a one-line note on stderr); every other command
+// only loads what is cached, so a search with no model falls back to FTS with a `kb model pull`
+// hint. cmd may be nil when d.embedder is set.
+func (d *deps) newEmbedder(cmd *cobra.Command, ecfg config.Embed) (embed.Embedder, error) {
+	if d.embedder != nil {
+		return d.embedder(ecfg)
+	}
+	if ecfg.Model == config.ModelNone {
 		return embed.None{}, nil
+	}
+	spec, err := local.Lookup(ecfg.Model)
+	if err != nil {
+		return nil, usageErr("%v", err)
 	}
 	cache, err := d.modelCacheDir()
 	if err != nil {
@@ -63,49 +97,24 @@ func downloadsModel(cmd *cobra.Command) bool {
 	return false
 }
 
-// embedderChoice reads and validates the root's persistent --embedder and --embed-model flags.
-// An unknown name or model is an error listing what is supported.
-func embedderChoice(cmd *cobra.Command) (name string, spec local.Spec, err error) {
-	name, model := embedderLocal, local.DefaultModel
-	if cmd != nil {
-		if v, _ := cmd.Flags().GetString("embedder"); v != "" {
-			name = v
-		}
-		if v, _ := cmd.Flags().GetString("embed-model"); v != "" {
-			model = v
-		}
+// openStoreForWrite opens the store's database, creating the store directory and the file if necessary.
+func (d *deps) openStoreForWrite(ctx context.Context, ws *workspace.Workspace) (store.Store, error) {
+	if err := os.MkdirAll(ws.KBDir, 0o755); err != nil {
+		return nil, usageErr("create %s: %v", ws.KBDir, err)
 	}
-	switch name {
-	case embedderNone:
-		return name, local.Spec{}, nil
-	case embedderLocal:
-		spec, err = local.Lookup(model)
-		if err != nil {
-			return "", local.Spec{}, usageErr("%v", err)
-		}
-		return name, spec, nil
-	}
-	return "", local.Spec{}, usageErr("unknown embedder %q (want %s or %s)", name, embedderLocal, embedderNone)
-}
-
-// openStoreForWrite opens the store at root, creating .kb/ and the database file if necessary.
-func (d *deps) openStoreForWrite(ctx context.Context, root string) (store.Store, error) {
-	if err := EnsureDBDir(root); err != nil {
-		return nil, err
-	}
-	return d.openStore(ctx, DBPath(root), false)
+	return d.openStore(ctx, ws.DBPath, false)
 }
 
 // openStoreIfExists opens the database only when it already exists. ok is false, with a nil Store
 // and nil error, when there is none yet: kb rm and kb show treat that as "nothing indexed".
-func (d *deps) openStoreIfExists(ctx context.Context, root string) (st store.Store, ok bool, err error) {
-	if _, statErr := os.Stat(DBPath(root)); statErr != nil {
+func (d *deps) openStoreIfExists(ctx context.Context, ws *workspace.Workspace) (st store.Store, ok bool, err error) {
+	if _, statErr := os.Stat(ws.DBPath); statErr != nil {
 		if os.IsNotExist(statErr) {
 			return nil, false, nil
 		}
 		return nil, false, usageErr("%v", statErr)
 	}
-	st, err = d.openStore(ctx, DBPath(root), false)
+	st, err = d.openStore(ctx, ws.DBPath, false)
 	if err != nil {
 		return nil, false, err
 	}

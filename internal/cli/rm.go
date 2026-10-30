@@ -13,6 +13,7 @@ import (
 
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/workspace"
 )
 
 // newRmCmd builds `kb rm <entry> [--yes]`.
@@ -31,7 +32,7 @@ func newRmCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runRm(cmd.Context(), d, stdout, stderr, ws.Root, args[0], yes)
+			return runRm(cmd.Context(), d, stdout, stderr, ws, args[0], yes)
 		},
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "confirm removing a directory entry and everything in it")
@@ -40,13 +41,14 @@ func newRmCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 
 // runRm resolves the entry, removes its file(s) from disk, drops its row from the database (if one
 // exists), and reports what was removed.
-func runRm(ctx context.Context, d *deps, stdout, stderr io.Writer, root, arg string, yes bool) error {
+func runRm(ctx context.Context, d *deps, stdout, stderr io.Writer, ws *workspace.Workspace, arg string, yes bool) error {
+	root := ws.Root
 	e, err := entry.Resolve(root, arg)
 	if err != nil {
 		return usageErr("%s", err)
 	}
 
-	st, ok, err := d.openStoreIfExists(ctx, root)
+	st, ok, err := d.openStoreIfExists(ctx, ws)
 	if err != nil {
 		return err
 	}

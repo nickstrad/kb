@@ -71,7 +71,7 @@ func TestIndexCanBeReproducedWithoutDatabase(t *testing.T) {
 		}
 		assertIndexContains(t, root, "[data/export.md](data/export.md)", true)
 		assertIndexContains(t, root, "Reproducible from source.", true)
-		if _, err := os.Stat(DBPath(root)); !os.IsNotExist(err) {
+		if _, err := os.Stat(testDBPath(root)); !os.IsNotExist(err) {
 			t.Fatalf("export created a database: %v", err)
 		}
 		if err := os.Remove(filepath.Join(root, "index.md")); err != nil {
@@ -120,7 +120,7 @@ func TestDoctorDetectsIndependentDrift(t *testing.T) {
 				}
 				want = "FAIL embed_meta:"
 			case "database":
-				if err := os.Remove(DBPath(root)); err != nil {
+				if err := os.Remove(testDBPath(root)); err != nil {
 					t.Fatal(err)
 				}
 				want = "FAIL database:"

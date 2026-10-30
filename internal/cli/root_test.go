@@ -69,7 +69,8 @@ func TestWorkspaceDiscoveryCLI(t *testing.T) {
 		t.Chdir(sub) // inside another store: --global must still win
 		src := filepath.Join(realTempDir(t), "global-entry.md")
 		writeFile(t, src, validFrontMatter("Global", "Created through --global."))
-		_, errOut, code := run(t, "--global", "--debug", "--embedder", "none", "add", src)
+		writeFile(t, filepath.Join(testDeps.workspaceEnv().Home, ".local", "share", "kb", ".kb", "config.toml"), "[embed]\nmodel = \"none\"\n")
+		_, errOut, code := run(t, "--global", "--debug", "add", src)
 		home := testDeps.workspaceEnv().Home
 		if code != 0 || !strings.Contains(errOut, "store "+filepath.Join(home, ".local", "share", "kb")+" (--global)") {
 			t.Fatalf("exit %d stderr %q", code, errOut)

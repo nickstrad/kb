@@ -50,7 +50,8 @@ func TestModelPull(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "already downloaded") {
 		t.Fatalf("second pull: %d %q", code, out)
 	}
-	if _, _, code := run(t, "model", "pull", "--embed-model", testModel768); code != 0 {
+	useModel768(t, newTempRoot(t))
+	if _, _, code := run(t, "model", "pull"); code != 0 {
 		t.Fatalf("pull %s: exit %d", testModel768, code)
 	}
 	if want := []string{local.DefaultModel, testModel768}; strings.Join(*calls, ",") != strings.Join(want, ",") {
@@ -71,6 +72,32 @@ func TestModelPull(t *testing.T) {
 	}
 }
 
+// useModel768 configures the store at root for testModel768.
+func useModel768(t *testing.T, root string) {
+	t.Helper()
+	writeConfig(t, root, "[embed]\nmodel = \""+testModel768+"\"\n")
+}
+
+// TestModelPullFollowsConfig: kb model pull downloads the configured model, refuses "none", and
+// outside any store pulls the default.
+func TestModelPullFollowsConfig(t *testing.T) {
+	t.Run("none has nothing to pull", func(t *testing.T) {
+		_, calls := stubPull(t, nil)
+		useNoneModel(t, newTempRoot(t))
+		_, errOut, code := run(t, "model", "pull")
+		if code != ExitUsage || len(*calls) != 0 || !strings.Contains(errOut, "no model to download") {
+			t.Fatalf("exit %d, pulls %v, stderr %q", code, *calls, errOut)
+		}
+	})
+	t.Run("no store: the default model", func(t *testing.T) {
+		_, calls := stubPull(t, nil)
+		t.Chdir(realTempDir(t))
+		if _, _, code := run(t, "model", "pull"); code != 0 || len(*calls) != 1 || (*calls)[0] != local.DefaultModel {
+			t.Fatalf("exit %d, pulls %v, want one pull of %s", code, *calls, local.DefaultModel)
+		}
+	})
+}
+
 func TestModelPullFailureIsUnavailable(t *testing.T) {
 	stubPull(t, errors.New("download model x: no network"))
 	_, errOut, code := run(t, "model", "pull")
@@ -84,18 +111,18 @@ func TestModelPullFailureIsUnavailable(t *testing.T) {
 func TestOnlyIndexingCommandsDownload(t *testing.T) {
 	t.Run("reindex pulls", func(t *testing.T) {
 		_, calls := stubPull(t, nil)
-		newTempRoot(t)
-		_, errOut, _ := run(t, "reindex", "--all", "--embed-model", testModel768)
+		useModel768(t, newTempRoot(t))
+		_, errOut, _ := run(t, "reindex", "--all")
 		if len(*calls) != 1 || (*calls)[0] != testModel768 || !strings.Contains(errOut, "downloading embedding model "+testModel768) {
 			t.Fatalf("pulls = %v, stderr %q; want one pull of %s with a note", *calls, errOut, testModel768)
 		}
 	})
 	t.Run("add pulls, a failed pull is exit 2", func(t *testing.T) {
 		_, calls := stubPull(t, errors.New("download model: offline"))
-		newTempRoot(t)
+		useModel768(t, newTempRoot(t))
 		src := filepath.Join(t.TempDir(), "a.md")
 		writeFile(t, src, validFrontMatter("A", "B."))
-		_, errOut, code := run(t, "add", src, "--embed-model", testModel768)
+		_, errOut, code := run(t, "add", src)
 		if len(*calls) != 1 || code != ExitEmbedder || !strings.Contains(errOut, "warning: download model: offline") || !strings.Contains(errOut, "kb model pull") {
 			t.Fatalf("pulls = %v, exit %d, stderr %q; want one failed pull, exit 2 and a kb model pull hint", *calls, code, errOut)
 		}
@@ -103,7 +130,7 @@ func TestOnlyIndexingCommandsDownload(t *testing.T) {
 	t.Run("search does not pull", func(t *testing.T) {
 		_, calls := stubPull(t, nil)
 		useRoot(t, newSearchTestRepo(t, testModel768, 768))
-		_, errOut, code := run(t, "search", "widget", "--embed-model", testModel768)
+		_, errOut, code := run(t, "search", "widget")
 		if len(*calls) != 0 || code != ExitEmbedder || !strings.Contains(errOut, "kb model pull") {
 			t.Fatalf("pulls = %v, exit %d, stderr %q; want no pull, fts fallback (exit 2) and a hint", *calls, code, errOut)
 		}
@@ -111,7 +138,7 @@ func TestOnlyIndexingCommandsDownload(t *testing.T) {
 	t.Run("doctor does not pull", func(t *testing.T) {
 		_, calls := stubPull(t, nil)
 		useRoot(t, newSearchTestRepo(t, testModel768, 768))
-		out, _, _ := run(t, "doctor", "--embed-model", testModel768)
+		out, _, _ := run(t, "doctor")
 		if len(*calls) != 0 || !strings.Contains(out, "FAIL embedder: model "+testModel768+" is not downloaded (run `kb model pull`)") {
 			t.Fatalf("pulls = %v, doctor output %q; want no pull and a not-downloaded FAIL", *calls, out)
 		}
@@ -131,7 +158,7 @@ func TestRootHelpNamesNoEnvEmbedders(t *testing.T) {
 			t.Errorf("root help still mentions %q:\n%s", gone, out)
 		}
 	}
-	for _, want := range []string{"kb model pull", "--embedder", "local (in-process model) or none", local.DefaultModel} {
+	for _, want := range []string{"kb model pull", "[embed] model", "kb config", local.DefaultModel} {
 		if !strings.Contains(out, want) {
 			t.Errorf("root help lacks %q", want)
 		}

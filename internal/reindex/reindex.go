@@ -96,7 +96,9 @@ func All(ctx context.Context, o Options) (Summary, error) {
 }
 
 func all(ctx context.Context, o Options) (Summary, error) {
-	preconditions(ctx, o)
+	if err := preconditions(ctx, o); err != nil {
+		return Summary{}, err
+	}
 	o.Stdout = orDiscard(o.Stdout)
 	o.Stderr = orDiscard(o.Stderr)
 	var sum Summary
@@ -166,7 +168,9 @@ func discover(root string) ([]entry.Entry, error) {
 // One reindexes a single entry, typically the result of entry.Resolve. It never touches any other
 // entry and never removes anything from the database.
 func One(ctx context.Context, o Options, e entry.Entry) (Summary, error) {
-	preconditions(ctx, o)
+	if err := preconditions(ctx, o); err != nil {
+		return Summary{}, err
+	}
 	o.Stdout = orDiscard(o.Stdout)
 	o.Stderr = orDiscard(o.Stderr)
 	var sum Summary
@@ -183,19 +187,24 @@ func boundary(err error, op string) error {
 	return errs.Wrap(err, errs.KindOf(err), op, "%v", err)
 }
 
-// preconditions asserts that the caller recorded this embedder in embed_meta before the run
-// (TESTING.md §3.5). A read error is left for the run itself to report.
-func preconditions(ctx context.Context, o Options) {
-	if !assert.Enabled {
-		return
-	}
+// preconditions checks the run's inputs before any work. A nil Store or Embedder, or an embed_meta
+// that was never recorded, is a caller bug (the CLI always runs EnsureEmbedMeta first): an
+// assertion (TESTING.md §3.5). embed_meta that holds a different model is not a bug: another kb
+// process, or an edited config, can change it between EnsureEmbedMeta and here, so it is a
+// Conflict error that says to reindex --all. A read error is left for the run itself to report.
+func preconditions(ctx context.Context, o Options) error {
 	assert.Pre(o.Store != nil && o.Embedder != nil, "reindex: nil Store or Embedder")
 	m, ok, err := o.Store.EmbedMeta(ctx)
 	if err != nil {
-		return
+		return nil
 	}
+	assert.Pre(ok, "reindex: embed_meta not recorded; call EnsureEmbedMeta first")
 	want := store.EmbedMeta{Model: o.Embedder.Model(), Dim: o.Embedder.Dim()}
-	assert.Pre(ok && m == want, "reindex: embed_meta %+v (recorded %t) != embedder %+v; call EnsureEmbedMeta first", m, ok, want)
+	if ok && m != want {
+		mismatch := &store.EmbedMetaMismatchError{StoredModel: m.Model, StoredDim: m.Dim, WantModel: want.Model, WantDim: want.Dim}
+		return errs.Wrap(mismatch, errs.Conflict, "reindex.preconditions", "%s", mismatch.Error())
+	}
+	return nil
 }
 
 // orDiscard returns w unchanged, or io.Discard when w is nil, so All and One never write through a

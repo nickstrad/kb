@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
-
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/workspace"
 )
 
 // useFakeEmbedder swaps the package-level newEmbedder hook (internal/cli/setup.go) for a
@@ -21,8 +21,29 @@ import (
 func useFakeEmbedder(t *testing.T) {
 	t.Helper()
 	orig := testDeps.embedder
-	testDeps.embedder = func(*cobra.Command) (embed.Embedder, error) { return fake.New("fake-add-test", 16), nil }
+	testDeps.embedder = func(config.Embed) (embed.Embedder, error) { return fake.New("fake-add-test", 16), nil }
 	t.Cleanup(func() { testDeps.embedder = orig })
+}
+
+// testWS is the workspace of a store root, for tests that call a run function directly.
+func testWS(root string) *workspace.Workspace { return workspace.New(root, "") }
+
+// testDBPath is the database file of a store root.
+func testDBPath(root string) string { return testWS(root).DBPath }
+
+// ensureKBDir creates <root>/.kb.
+func ensureKBDir(root string) error { return os.MkdirAll(testWS(root).KBDir, 0o755) }
+
+// writeConfig writes the store's .kb/config.toml, replacing the empty one newTempRoot made.
+func writeConfig(t *testing.T, root, body string) {
+	t.Helper()
+	writeFile(t, testWS(root).ConfigPath, body)
+}
+
+// useNoneModel makes root an FTS-only store: [embed] model = "none".
+func useNoneModel(t *testing.T, root string) {
+	t.Helper()
+	writeConfig(t, root, "[embed]\nmodel = \"none\"\n")
 }
 
 // newTempRoot creates a fresh store root (an empty .kb/config.toml, no database yet), makes it
@@ -88,7 +109,7 @@ func validFrontMatter(title, summary string) string {
 func useFakeEditor(t *testing.T, from, to string) {
 	t.Helper()
 	orig := testDeps.editor
-	testDeps.editor = func(_ context.Context, path string) error {
+	testDeps.editor = func(_ context.Context, _, path string) error {
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -101,7 +122,7 @@ func useFakeEditor(t *testing.T, from, to string) {
 // openTestStore opens the database kb add just wrote to, for assertions.
 func openTestStore(t *testing.T, root string) *sqlite.Store {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), DBPath(root), sqlite.Options{})
+	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -305,7 +326,7 @@ func (unusableEmbedder) Ping(context.Context) error { return errors.New("model n
 // writes anything, so a failed model load exits 2 with no copied file to roll back.
 func TestAddFileFailsBeforeCopyWhenEmbedderUnusable(t *testing.T) {
 	orig := testDeps.embedder
-	testDeps.embedder = func(*cobra.Command) (embed.Embedder, error) {
+	testDeps.embedder = func(config.Embed) (embed.Embedder, error) {
 		return unusableEmbedder{fake.New("fake-add-test", 16)}, nil
 	}
 	t.Cleanup(func() { testDeps.embedder = orig })

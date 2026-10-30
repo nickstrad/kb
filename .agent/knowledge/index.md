@@ -20,3 +20,5 @@ owner (docs/DEFAULTS.md, local only) and work to do (docs/PLAN.md).
 - [sqlite-cancel-surfaces-as-interrupt.md](sqlite-cancel-surfaces-as-interrupt.md) — a cancel can surface as sqlite3.ErrInterrupt or sql.ErrTxDone, not context.Canceled; sqlite.wrap decides by ctx.Err().
 - [store-seam-and-errs.md](store-seam-and-errs.md) — store interfaces vs sqlite backend, errs at boundaries, cli/report.go owns messages and exit codes 0/1/2/3; deps for test seams.
 - [workspace-root-discovery.md](workspace-root-discovery.md) — the store is --root, else --global, else the nearest ancestor with .kb/config.toml or .kb/kb.sqlite; no KB_ROOT; cli tests chdir into the store.
+- [config-package-and-precedence.md](config-package-and-precedence.md) — internal/config schema, single loader (cli.loadConfig), precedence flag/--set > store config > defaults, reserved keys, no env vars except $EDITOR.
+- [named-stores-layout-notes](named-stores-layout-notes.md) — why stores live in .kb/stores/<name>, named stores use data-<name>/, and migrate needs a flock around backup+apply

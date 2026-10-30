@@ -17,9 +17,6 @@ import (
 	"github.com/nickstrad/kb/internal/store"
 )
 
-// reindexBatchSize is the number of chunk texts sent to the embedder per call.
-const reindexBatchSize = 16
-
 // newReindexCmd builds `kb reindex [<entry>|--all]`.
 func newReindexCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	var all bool
@@ -67,19 +64,19 @@ func runReindex(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, all bool,
 
 func reindexRun(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, all bool, args []string) (reindex.Summary, error) {
 	ctx := cmd.Context()
-	ws, err := d.workspace(cmd)
+	ws, cfg, err := d.workspaceConfig(cmd)
 	if err != nil {
 		return reindex.Summary{}, err
 	}
 	root := ws.Root
-	st, err := d.openStoreForWrite(ctx, root)
+	st, err := d.openStoreForWrite(ctx, ws)
 	if err != nil {
 		return reindex.Summary{}, err
 	}
 	defer st.Close()
 
 	// The default per-call budget already gives a 16-text batch far more time than it takes.
-	embedder, err := d.newEmbedder(cmd)
+	embedder, err := d.newEmbedder(cmd, cfg.Embed)
 	if err != nil {
 		return reindex.Summary{}, err
 	}
@@ -91,7 +88,7 @@ func reindexRun(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, all bool,
 		Root:      root,
 		Store:     st,
 		Embedder:  embedder,
-		BatchSize: reindexBatchSize,
+		BatchSize: cfg.Embed.Batch,
 		Stdout:    stdout,
 		Stderr:    stderr,
 		Force:     force,

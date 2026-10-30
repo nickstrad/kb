@@ -7,7 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed/local"
+	"github.com/nickstrad/kb/internal/errs"
 )
 
 // newModelCmd builds `kb model pull` and `kb model list`.
@@ -23,7 +25,7 @@ func newModelCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:           "pull",
-			Short:         "Download the embedding model (--embed-model, default " + local.DefaultModel + ")",
+			Short:         "Download the embedding model named by [embed] model in the config (default " + local.DefaultModel + ")",
 			Args:          cobra.NoArgs,
 			SilenceUsage:  true,
 			SilenceErrors: true,
@@ -45,11 +47,20 @@ func newModelCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	return cmd
 }
 
-// runModelPull downloads the --embed-model model unless it is already cached. A failed download
-// exits 2 (embedder unavailable), like any other "the model cannot be used" failure.
+// runModelPull downloads the model [embed] model names unless it is already cached. Outside a
+// store it pulls the default model, so it works before a store exists. A failed download exits 2
+// (embedder unavailable), like any other "the model cannot be used" failure.
 func runModelPull(cmd *cobra.Command, d *deps, stdout, stderr io.Writer) error {
-	id, _ := cmd.Flags().GetString("embed-model")
-	spec, err := local.Lookup(id)
+	ecfg := config.Default().Embed
+	if _, cfg, err := d.workspaceConfig(cmd); err == nil {
+		ecfg = cfg.Embed
+	} else if errs.KindOf(err) != errs.NotFound {
+		return err
+	}
+	if ecfg.Model == config.ModelNone {
+		return usageErr("embed.model is %q: this store uses full-text search only, so there is no model to download", config.ModelNone)
+	}
+	spec, err := local.Lookup(ecfg.Model)
 	if err != nil {
 		return usageErr("%s", err)
 	}

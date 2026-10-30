@@ -54,6 +54,9 @@ func Run(t *testing.T, newStore Factory) {
 
 var ctx = context.Background()
 
+// openWindow is the window the contract tests pass to RecordOpen.
+const openWindow = 30 * time.Minute
+
 // vec is a deterministic unit-ish vector for a text, so KNN order is predictable: the vector of
 // "k<i>" is i on the first axis.
 func vec(dim int, seed float32) []float32 {
@@ -383,11 +386,11 @@ func searchLog(t *testing.T, st store.Store, dim int) {
 		path string
 		want bool
 	}{{"a.md", true}, {"a.md", false}, {"c.md", false}} {
-		if got, err := st.RecordOpen(ctx, tc.path, now, store.OpenWindow); err != nil || got != tc.want {
+		if got, err := st.RecordOpen(ctx, tc.path, now, openWindow); err != nil || got != tc.want {
 			t.Errorf("RecordOpen(%s) = %v, %v; want %v (c.md was only a candidate)", tc.path, got, err, tc.want)
 		}
 	}
-	if got, err := st.RecordOpen(ctx, "b.md", now.Add(store.OpenWindow+time.Minute), store.OpenWindow); err != nil || got {
+	if got, err := st.RecordOpen(ctx, "b.md", now.Add(openWindow+time.Minute), openWindow); err != nil || got {
 		t.Errorf("RecordOpen outside the window = %v, %v", got, err)
 	}
 }

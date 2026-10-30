@@ -21,7 +21,7 @@ func openRepo(t *testing.T) string {
 
 func openRows(t *testing.T, root string) []string {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), DBPath(root), sqlite.Options{})
+	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestShowWithoutDatabaseStaysQuiet(t *testing.T) {
 	if stderr != "" {
 		t.Errorf("stderr = %q, want empty", stderr)
 	}
-	if _, err := os.Stat(DBPath(root)); !os.IsNotExist(err) {
+	if _, err := os.Stat(testDBPath(root)); !os.IsNotExist(err) {
 		t.Errorf("kb show created the database (stat err %v)", err)
 	}
 	_, stderr = mustKB(t, "show", "foo.md", "--debug")
@@ -133,10 +133,10 @@ func TestShowWithoutDatabaseStaysQuiet(t *testing.T) {
 func TestShowOpenFailureIsSilentButNotSwallowed(t *testing.T) {
 	root := setupRepo(t)
 	useRoot(t, root)
-	if err := os.MkdirAll(filepath.Dir(DBPath(root)), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(testDBPath(root)), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(DBPath(root), []byte("this is not a sqlite database, just junk bytes padding it out"), 0o644); err != nil {
+	if err := os.WriteFile(testDBPath(root), []byte("this is not a sqlite database, just junk bytes padding it out"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

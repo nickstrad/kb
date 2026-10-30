@@ -6,7 +6,7 @@
 DEFERRED transaction in mattn/go-sqlite3. It reads first and takes the write lock at the first
 write. If another process committed in between, SQLite returns SQLITE_BUSY (BUSY_SNAPSHOT) at
 once and does not call the busy handler, because waiting could not help. Six parallel
-`kb add --embedder none` runs on a fresh root failed 2–4 of 6 with `database is locked` within
+`kb add` runs with an FTS-only config (formerly `--embedder none`) on a fresh root failed 2–4 of 6 with `database is locked` within
 about 30 ms (harness `concurrent-fresh-db`, 2026-10-29). `migrate` does not have the problem
 because it uses `BEGIN IMMEDIATE`.
 

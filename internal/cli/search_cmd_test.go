@@ -27,7 +27,7 @@ import (
 // both containing "widget" so `kb search widget` matches. embed_meta is recorded with the given
 // model/dim so the caller controls whether the CLI's embedder is seen as matching.
 // testModel768 is a supported local model of width testDim768, so a fixture can record it in
-// embed_meta and pass --embed-model testModel768. TestMain's model cache is empty, so using it for
+// embed_meta and set [embed] model to testModel768. TestMain's model cache is empty, so using it for
 // real exercises the "model not downloaded" path.
 const testModel768 = "BAAI/bge-base-en-v1.5"
 
@@ -48,6 +48,10 @@ func newSearchTestRepo(t *testing.T, embedModel string, embedDim int) string {
 
 	if err := st.EnsureEmbedMeta(context.Background(), store.EmbedMeta{Model: embedModel, Dim: embedDim}); err != nil {
 		t.Fatalf("EnsureEmbedMeta: %v", err)
+	}
+
+	if embedModel == testModel768 {
+		writeConfig(t, root, "[embed]\nmodel = \""+testModel768+"\"\n")
 	}
 
 	emb := fake.New("fake-embed-for-fixture", embedDim)
@@ -189,12 +193,12 @@ func TestSearchJSONMode(t *testing.T) {
 }
 
 func TestSearchHybridEmbedderUnavailable(t *testing.T) {
-	// embed_meta matches --embed-model, so the mismatch check passes and the failure comes from
+	// embed_meta matches the configured model, so the mismatch check passes and the failure comes from
 	// the model not being downloaded (TestMain's cache is empty).
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
-	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid", "--embed-model", testModel768})
+	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid"})
 	if exit != 2 {
 		t.Fatalf("exit = %d, want 2; stdout=%s stderr=%s", exit, stdout, stderr)
 	}
@@ -210,7 +214,7 @@ func TestSearchVecEmbedderUnavailable(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
-	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "vec", "--embed-model", testModel768})
+	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "vec"})
 	if exit != 2 {
 		t.Fatalf("exit = %d, want 2; stdout=%s stderr=%s", exit, stdout, stderr)
 	}
@@ -291,22 +295,25 @@ func TestSearchEmbedMetaMismatch(t *testing.T) {
 	}
 }
 
+// TestSearchCallerPrecedence: --caller, then [agent] caller, then "unknown". The old KB_CALLER
+// variable is ignored.
 func TestSearchCallerPrecedence(t *testing.T) {
 	tests := []struct {
 		name   string
-		env    string
+		config string
 		args   []string
 		caller string
 	}{
-		{name: "flag", env: "from-environment", args: []string{"--caller", "from-flag"}, caller: "from-flag"},
-		{name: "environment", env: "from-environment", caller: "from-environment"},
-		{name: "unknown", env: "", caller: "unknown"},
+		{name: "flag beats config", config: "[agent]\ncaller = \"from-config\"\n", args: []string{"--caller", "from-flag"}, caller: "from-flag"},
+		{name: "config", config: "[agent]\ncaller = \"from-config\"\n", caller: "from-config"},
+		{name: "unknown", config: "", caller: "unknown"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := newSearchTestRepo(t, testModel768, testDim768)
 			useRoot(t, root)
-			t.Setenv("KB_CALLER", tt.env)
+			writeConfig(t, root, tt.config)
+			t.Setenv("KB_CALLER", "from-environment")
 
 			args := append([]string{"search", "widget", "--mode", "fts"}, tt.args...)
 			_, stderr, exit := runKB(t, args)
@@ -360,7 +367,7 @@ func TestSearchFallbackLogFailurePrintsBothWarnings(t *testing.T) {
 	useRoot(t, root)
 	disableSearchLog(t, root)
 
-	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid", "--embed-model", testModel768})
+	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid"})
 	if exit != 2 {
 		t.Fatalf("exit = %d, want 2; stdout=%s stderr=%s", exit, stdout, stderr)
 	}

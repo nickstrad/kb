@@ -14,12 +14,13 @@ import (
 // starts, so the first entry's write is what sees it: deterministic, no signal or sleep needed.
 func TestReindexInterrupted(t *testing.T) {
 	root := newTempRoot(t)
+	useNoneModel(t, root)
 	writeFile(t, filepath.Join(root, "data", "a.md"), validFrontMatter("A", "a summary"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var out, errBuf bytes.Buffer
-	code := execute(ctx, testDeps, []string{"reindex", "--all", "--embedder", "none"}, &out, &errBuf)
+	code := execute(ctx, testDeps, []string{"reindex", "--all"}, &out, &errBuf)
 	if code != ExitUsage {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitUsage, errBuf.String())
 	}

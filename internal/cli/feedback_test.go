@@ -53,7 +53,6 @@ func feedbackRows(t *testing.T, root, where string, args ...any) int {
 func TestFeedbackArgValidation(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
-	t.Setenv("KB_CALLER", "")
 	id := searchID(t, "widget", "--caller", "claude")
 
 	for _, tc := range []struct {
@@ -129,12 +128,11 @@ func TestFeedbackByID(t *testing.T) {
 	}
 }
 
-// TestFeedbackLast: --last resolves the caller exactly as kb search does (flag, then $KB_CALLER),
+// TestFeedbackLast: --last resolves the caller exactly as kb search does (flag, then [agent] caller),
 // picks that caller's newest search, and says which search it judged.
 func TestFeedbackLast(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
-	t.Setenv("KB_CALLER", "")
 
 	claudeOld := searchID(t, "widget", "--caller", "claude")
 	claudeNew := searchID(t, "widget configuring", "--caller", "claude")
@@ -160,20 +158,20 @@ func TestFeedbackLast(t *testing.T) {
 		t.Errorf("the older claude search %s got %d feedback rows, want 0", claudeOld, n)
 	}
 
-	// Environment form, and --none on a zero-result search, which is how such a search gets judged.
-	t.Setenv("KB_CALLER", "codex")
+	// Config form, and --none on a zero-result search, which is how such a search gets judged.
+	writeConfig(t, root, "[agent]\ncaller = \"codex\"\n")
 	stdout, stderr, exit = runKB(t, []string{"feedback", "--last", "--none", "--note", "nothing there"})
 	if exit != 0 {
-		t.Fatalf("feedback --last --none via KB_CALLER: exit %d; stderr=%s", exit, stderr)
+		t.Fatalf("feedback --last --none via [agent] caller: exit %d; stderr=%s", exit, stderr)
 	}
 	if want := "recorded: search " + codexZero + " none (nothing useful) (newest search for codex, "; !strings.HasPrefix(stdout, want) {
 		t.Errorf("stdout = %q, want prefix %q", stdout, want)
 	}
 
-	// The flag beats the environment, as in kb search: KB_CALLER=codex, --caller claude.
+	// The flag beats the config, as in kb search: caller = codex, --caller claude.
 	stdout, stderr, exit = runKB(t, []string{"feedback", "--last", "1", "--not-useful", "--caller", "claude"})
 	if exit != 0 {
-		t.Fatalf("feedback --last with flag over env: exit %d; stderr=%s", exit, stderr)
+		t.Fatalf("feedback --last with flag over config: exit %d; stderr=%s", exit, stderr)
 	}
 	if want := "recorded: search " + claudeNew + " rank 1 useful=0 "; !strings.HasPrefix(stdout, want) {
 		t.Errorf("stdout = %q, want prefix %q", stdout, want)

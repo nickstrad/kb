@@ -392,7 +392,7 @@ func TestDriverFaultsOnReadsAndLog(t *testing.T) {
 		{"FeedbackNone write", "INSERT OR REPLACE INTO search_feedback", 1, func(st *Store, id int64) error { return st.FeedbackNone(ctx, id, "") }},
 		{"LastSearch", "FROM searches", 1, func(st *Store, _ int64) error { _, err := st.LastSearch(ctx, "c"); return err }},
 		{"RecordOpen", "INSERT OR IGNORE INTO search_opens", 1, func(st *Store, _ int64) error {
-			_, err := st.RecordOpen(ctx, "a.md", time.Now(), store.OpenWindow)
+			_, err := st.RecordOpen(ctx, "a.md", time.Now(), openWindow)
 			return err
 		}},
 		{"QueryLog", "SELECT count(*) FROM searches", 1, func(st *Store, _ int64) error {

@@ -64,7 +64,7 @@ func QueryText(e Embedder, query string) string {
 	return query
 }
 
-// None is the embedder for --embedder none: the index holds no vectors and search is FTS only.
+// None is the embedder for [embed] model = "none": the index holds no vectors and search is FTS only.
 // Its Dim is 0, which is how the indexer and the store recognise it; Embed is never meant to be
 // called and always fails.
 type None struct{}

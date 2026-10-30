@@ -102,6 +102,7 @@ func (s interruptingStore) Entry(context.Context, string) (*store.EntryRow, erro
 // same friendly interrupted message and exit 1 as a cancelled ctx (TestReindexInterrupted).
 func TestReindexInterruptedKind(t *testing.T) {
 	root := newTempRoot(t)
+	useNoneModel(t, root)
 	writeFile(t, filepath.Join(root, "data", "a.md"), validFrontMatter("A", "a summary"))
 	orig := testDeps.openStore
 	testDeps.openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
@@ -112,7 +113,7 @@ func TestReindexInterruptedKind(t *testing.T) {
 		return interruptingStore{st}, nil
 	}
 	t.Cleanup(func() { testDeps.openStore = orig })
-	_, stderr, code := run(t, "reindex", "--all", "--embedder", "none")
+	_, stderr, code := run(t, "reindex", "--all")
 	if code != ExitUsage || !strings.Contains(stderr, "rerun kb reindex") {
 		t.Fatalf("exit %d, stderr %q; want 1 with the interrupted/rerun message", code, stderr)
 	}

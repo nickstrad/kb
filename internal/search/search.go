@@ -78,7 +78,7 @@ func NewResult(query, mode string) *Result {
 }
 
 // Request is one search as the CLI asked for it. Mode is one of the Mode constants, Caller comes
-// from --caller / KB_CALLER / "unknown", and Tag is an optional tag filter.
+// from --caller, else [agent] caller in the config, else "unknown", and Tag is an optional tag filter.
 type Request struct {
 	Query  string
 	Mode   string

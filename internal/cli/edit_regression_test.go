@@ -9,13 +9,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/entry"
 )
 
 func TestShowChunksReportsDatabaseStatFailure(t *testing.T) {
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "show-topic.md"), validFrontMatter("Show topic", "Stat errors must surface."))
-	if err := os.Symlink("kb.sqlite", DBPath(root)); err != nil {
+	if err := os.Symlink("kb.sqlite", testDBPath(root)); err != nil {
 		t.Fatal(err)
 	}
 	out, errOut, code := run(t, "show", "show-topic.md", "--chunks")
@@ -45,7 +46,7 @@ func TestRmPreservesSourceWhenDatabaseCannotOpen(t *testing.T) {
 				args = []string{"rm", name, "--yes"}
 			}
 			writeFile(t, path, validFrontMatter("Rm topic", "Keep source on preflight failure."))
-			writeFile(t, DBPath(root), "corrupt sqlite database")
+			writeFile(t, testDBPath(root), "corrupt sqlite database")
 			out, errOut, code := run(t, args...)
 			if code != 1 || strings.Contains(out, "removed") {
 				t.Fatalf("%d %q %q", code, out, errOut)
@@ -90,12 +91,12 @@ func TestEditValidationErrorKeepsChain(t *testing.T) {
 	writeFile(t, filepath.Join(root, "data", "edit-bad.md"), validFrontMatter("Edit bad", "Original summary."))
 	orig := testDeps.editor
 	t.Cleanup(func() { testDeps.editor = orig })
-	testDeps.editor = func(_ context.Context, path string) error {
+	testDeps.editor = func(_ context.Context, _, path string) error {
 		// No summary: ParseFrontMatter reports a *ValidationError.
 		return os.WriteFile(path, []byte("---\ntitle: Edit bad\n---\n\nbody\n"), 0o644)
 	}
 	var out, errBuf bytes.Buffer
-	err := runEdit(context.Background(), nil, testDeps, &out, &errBuf, root, "edit-bad.md")
+	err := runEdit(context.Background(), nil, testDeps, &out, &errBuf, testWS(root), config.Default(), "edit-bad.md")
 	var ve *entry.ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("runEdit = %v, want the *entry.ValidationError in its chain", err)

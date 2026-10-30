@@ -11,8 +11,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nickstrad/kb/internal/chunk"
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/entry"
-	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/workspace"
 )
 
 // newShowCmd builds `kb show <entry> [--chunks]`.
@@ -22,7 +23,7 @@ func newShowCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		Use:   "show <entry>",
 		Short: "Print an entry, or its indexed chunks",
 		Long: "Prints the entry's file(s) verbatim, or with --chunks the chunks the indexer stored.\n\n" +
-			"If a search from the last 30 minutes returned the entry, kb show also records an\n" +
+			"If a recent search (log.open_window, 30 minutes by default) returned the entry, kb show also records an\n" +
 			"\"open\" against the newest such search; kb stats reports it as opened_pct. That is\n" +
 			"best effort: a failure never changes the exit code, and is only reported with\n" +
 			"--debug. --no-log turns the recording off.",
@@ -30,11 +31,11 @@ func newShowCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ws, err := d.workspace(cmd)
+			ws, cfg, err := d.workspaceConfig(cmd)
 			if err != nil {
 				return err
 			}
-			return runShow(cmd.Context(), d, stdout, stderr, ws.Root, args[0], chunksFlag, !noLog, debugFlag(cmd))
+			return runShow(cmd.Context(), d, stdout, stderr, ws, cfg, args[0], chunksFlag, !noLog, debugFlag(cmd))
 		},
 	}
 	cmd.Flags().BoolVar(&chunksFlag, "chunks", false, "print the stored chunks instead of the file")
@@ -45,7 +46,8 @@ func newShowCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 // runShow resolves arg to an entry and either prints its file(s) verbatim or its chunks, then (when
 // logOpen) records the open. Exit code is ExitUsage (1) when arg does not name a discovered entry;
 // recording the open never changes it.
-func runShow(ctx context.Context, d *deps, stdout, stderr io.Writer, root, arg string, showChunks, logOpen, debug bool) error {
+func runShow(ctx context.Context, d *deps, stdout, stderr io.Writer, ws *workspace.Workspace, cfg config.Config, arg string, showChunks, logOpen, debug bool) error {
+	root := ws.Root
 	e, err := entry.Resolve(root, arg)
 	if err != nil {
 		return usageErr("%s", err)
@@ -53,12 +55,12 @@ func runShow(ctx context.Context, d *deps, stdout, stderr io.Writer, root, arg s
 	if !showChunks {
 		err = showFiles(stdout, root, e)
 	} else {
-		err = showEntryChunks(ctx, d, stdout, stderr, root, e)
+		err = showEntryChunks(ctx, d, stdout, stderr, ws, e)
 	}
 	if err != nil || !logOpen {
 		return err
 	}
-	recordOpen(ctx, d, stderr, root, e.Path, debug)
+	recordOpen(ctx, d, stderr, ws, cfg.Log.OpenWindowDuration(), e.Path, debug)
 	return nil
 }
 
@@ -66,13 +68,13 @@ func runShow(ctx context.Context, d *deps, stdout, stderr io.Writer, root, arg s
 // which is what the user asked for, so a failure to note the open must not fail the command or add
 // noise to stderr. It is not swallowed: with debug the cause is printed as one stderr line. A
 // missing database is not a failure; there is no search to attach to.
-func recordOpen(ctx context.Context, d *deps, stderr io.Writer, root, entryPath string, debug bool) {
+func recordOpen(ctx context.Context, d *deps, stderr io.Writer, ws *workspace.Workspace, window time.Duration, entryPath string, debug bool) {
 	report := func(format string, args ...any) {
 		if debug {
 			fmt.Fprintf(stderr, "kb show: "+format+"\n", args...)
 		}
 	}
-	st, exists, err := d.openStoreIfExists(ctx, root)
+	st, exists, err := d.openStoreIfExists(ctx, ws)
 	if err != nil {
 		report("open not recorded: %s", err)
 		return
@@ -82,13 +84,13 @@ func recordOpen(ctx context.Context, d *deps, stderr io.Writer, root, entryPath 
 		return
 	}
 	defer st.Close()
-	recorded, err := st.RecordOpen(ctx, entryPath, time.Now(), store.OpenWindow)
+	recorded, err := st.RecordOpen(ctx, entryPath, time.Now(), window)
 	if err != nil {
 		report("open not recorded: %s", err)
 		return
 	}
 	if !recorded {
-		report("open not recorded: no search in the last %s returned %s, or the open is already on record", store.OpenWindow, entryPath)
+		report("open not recorded: no search in the last %s returned %s, or the open is already on record", window, entryPath)
 	}
 }
 
@@ -118,8 +120,8 @@ func showFiles(stdout io.Writer, root string, e entry.Entry) error {
 // showEntryChunks prints the chunks stored in the database for e, or, when e has never been
 // indexed (or there is no database yet), the chunks chunk.Split would produce right now — noting
 // that fallback on stderr.
-func showEntryChunks(ctx context.Context, d *deps, stdout, stderr io.Writer, root string, e entry.Entry) error {
-	st, exists, err := d.openStoreIfExists(ctx, root)
+func showEntryChunks(ctx context.Context, d *deps, stdout, stderr io.Writer, ws *workspace.Workspace, e entry.Entry) error {
+	st, exists, err := d.openStoreIfExists(ctx, ws)
 	if err != nil {
 		return err
 	}
@@ -143,7 +145,7 @@ func showEntryChunks(ctx context.Context, d *deps, stdout, stderr io.Writer, roo
 	}
 
 	fmt.Fprintln(stderr, "(not indexed; showing what the indexer would produce)")
-	files, err := entry.Load(root, e)
+	files, err := entry.Load(ws.Root, e)
 	if err != nil {
 		return usageErr("%s", err)
 	}

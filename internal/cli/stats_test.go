@@ -470,7 +470,7 @@ func TestStatsHelpShowsDefinitionsAndQueries(t *testing.T) {
 func TestStatsErrorHasOneStatsPrefix(t *testing.T) {
 	root := t.TempDir()
 	useRoot(t, root)
-	p := DBPath(root)
+	p := testDBPath(root)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -17,10 +17,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/local"
 	"github.com/nickstrad/kb/internal/store"
@@ -38,12 +38,13 @@ const (
 
 // deps is everything a command needs from the outside world that a test may replace.
 type deps struct {
-	// embedder, when set, replaces the embedder the --embedder/--embed-model flags would build.
-	embedder      func(cmd *cobra.Command) (embed.Embedder, error)
+	// embedder, when set, replaces the embedder the [embed] config would build.
+	embedder      func(config.Embed) (embed.Embedder, error)
 	modelCacheDir func() (string, error)
 	pullModel     func(ctx context.Context, spec local.Spec, cacheDir string) error
 	openStore     func(ctx context.Context, path string, readOnly bool) (store.Store, error)
-	editor        func(ctx context.Context, path string) error
+	// editor runs the configured editor command on path; configured is [edit] editor, "" when unset.
+	editor func(ctx context.Context, configured, path string) error
 	// userCacheDir is where the incident log goes when there is no <root>/.kb.
 	userCacheDir func() (string, error)
 	// workspaceEnv supplies the working directory, home, XDG_DATA_HOME and cache base that
@@ -97,34 +98,6 @@ func (d *deps) workspace(cmd *cobra.Command) (*workspace.Workspace, error) {
 // Version is printed by `kb version` and recorded with every logged search; main sets it from
 // ResolveVersion.
 var Version = "dev"
-
-// DBPath is the database file for a repo root: <root>/.kb/kb.sqlite. It only computes the path;
-// a command that is about to create the database calls EnsureDBDir first.
-func DBPath(root string) string {
-	return filepath.Join(root, ".kb", "kb.sqlite")
-}
-
-// EnsureDBDir creates <root>/.kb so the database can be opened for writing. Read-only callers do
-// not need it: a missing directory means there is no database yet, which is worth reporting rather
-// than papering over.
-func EnsureDBDir(root string) error {
-	dir := filepath.Join(root, ".kb")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return usageErr("create %s: %v", dir, err)
-	}
-	return nil
-}
-
-// Caller resolves the --caller value: the flag, else $KB_CALLER, else "unknown".
-func Caller(flag string) string {
-	if flag != "" {
-		return flag
-	}
-	if c := os.Getenv("KB_CALLER"); c != "" {
-		return c
-	}
-	return "unknown"
-}
 
 // Execute runs one kb command line and returns its exit code. args excludes the program name. ctx
 // carries the process's cancellation (main wires it to SIGINT and SIGTERM) and reaches every
@@ -188,11 +161,11 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		Short: "Search and maintain the knowledge repository",
 		Long: "kb is a knowledge store for agents and people: Markdown entries, indexed for hybrid\n" +
 			"full-text and vector search. kb help is the reference for using it.\n\n" +
-			"Store: kb works on the nearest directory at or above the current one that has .kb/\n" +
-			"(.kb/config.toml, or the older .kb/kb.sqlite). --root DIR names a store explicitly\n" +
+			"Store: kb works on the nearest directory at or above the current one that holds a kb\n" +
+			"store. --root DIR names a store explicitly\n" +
 			"and --global uses the machine-wide store ($XDG_DATA_HOME/kb, else ~/.local/share/kb);\n" +
-			"add and reindex create .kb/ there when it is missing. Entries live under data/; the\n" +
-			"index and search log live in .kb/kb.sqlite.\n\n" +
+			"add and reindex create the store there when it is missing. Entries live under data/;\n" +
+			"the index and search log live in the store's database.\n\n" +
 			"Use it in two steps:\n" +
 			"  kb search \"<query>\" --caller claude   ranked hits, opening with \"search N · M hits\"\n" +
 			"  kb show <path>                        read a hit's entry\n" +
@@ -201,9 +174,9 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"Embeddings are computed in-process by a local model (default " + local.DefaultModel + "),\n" +
 			"downloaded once per machine by kb model pull, or automatically by kb reindex and\n" +
 			"kb add. Search never downloads: without the model it falls back to full-text search\n" +
-			"(exit 2). --embed-model picks another supported model (kb model list); --embedder\n" +
-			"none indexes and searches with full-text search only. Changing either on an\n" +
-			"existing index needs kb reindex --all.",
+			"(exit 2). The model is the [embed] model key of the store config (kb config --path; kb model list shows\n" +
+			"the supported ids; \"none\" indexes and searches with full-text search only). Changing\n" +
+			"it on an existing index needs kb reindex --all. kb config shows the effective settings.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -213,8 +186,6 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd.PersistentFlags().Bool("global", false, "use the machine-wide store ($XDG_DATA_HOME/kb, else ~/.local/share/kb)")
 	cmd.MarkFlagsMutuallyExclusive("root", "global")
 	cmd.PersistentFlags().Bool("debug", false, "print extra detail on stderr: the full error chain, and best-effort steps that failed quietly")
-	cmd.PersistentFlags().String("embedder", embedderLocal, "local (in-process model) or none (full-text search only)")
-	cmd.PersistentFlags().String("embed-model", local.DefaultModel, "embedding model for --embedder local (see kb model list)")
 
 	cmd.AddCommand(
 		newAddCmd(d, stdout, stderr),
@@ -230,6 +201,7 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		newStatsCmd(d, stdout, stderr),
 		newVersionCmd(stdout),
 		newModelCmd(d, stdout, stderr),
+		newConfigCmd(d, stdout, stderr),
 	)
 	markRunErrors(cmd)
 	return cmd

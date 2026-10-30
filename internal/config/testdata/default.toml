@@ -1,0 +1,61 @@
+version = 1
+sources = []
+
+[embed]
+model = "BAAI/bge-small-en-v1.5"
+dim = 0
+int8 = false
+workers = 0
+batch = 16
+
+[search]
+k = 8
+list_limit = 20
+candidate_limit = 40
+per_entry_cap = 3
+rrf_k = 60
+vec_overfetch = 60
+phrase_boost = true
+exact_list = true
+synonyms = ""
+spell = true
+supersede_penalty = 0.5
+stores = []
+[search.bm25]
+text = 1.0
+heading = 2.0
+title = 3.0
+[search.list_weights]
+fts = 1.0
+vec = 1.0
+exact = 1.0
+memory = 1.0
+
+[output]
+budget = 0
+context_budget = 2000
+expand = "none"
+
+[log]
+corpus_rev = false
+open_window = "30m"
+
+[stale]
+days = 180
+
+[eval]
+min_judged = 30
+holdout = 0.3
+
+[prior]
+enabled = false
+min_judged = 50
+half_life_days = 90
+max_boost = 0.2
+query_memory = false
+
+[agent]
+caller = ""
+
+[edit]
+editor = ""

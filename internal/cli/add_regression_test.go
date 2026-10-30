@@ -7,8 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
-
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/errs"
 )
@@ -56,7 +55,7 @@ func TestAddRollsBackCopiedFilesOnFailure(t *testing.T) {
 		for _, inPlace := range []bool{false, true} {
 			t.Run(map[bool]string{false: "file", true: "dir"}[dir]+map[bool]string{false: "-copy", true: "-inplace"}[inPlace], func(t *testing.T) {
 				useFakeEmbedder(t)
-				testDeps.embedder = func(*cobra.Command) (embed.Embedder, error) { return unavailableAddEmbedder{}, nil }
+				testDeps.embedder = func(config.Embed) (embed.Embedder, error) { return unavailableAddEmbedder{}, nil }
 				root := newTempRoot(t)
 				sourceRoot := t.TempDir()
 				if inPlace {

@@ -14,16 +14,35 @@ import (
 	"time"
 )
 
-// withNone prefixes args with the persistent --embedder none, so the command runs on full-text
-// search with no model involved. The flag goes first so a "--" in args cannot swallow it.
-func withNone(args ...string) []string { return append([]string{"--embedder", "none"}, args...) }
+// withNone marks a command that runs on full-text search with no model involved. The store's
+// config must say so: call h.useNone() first (it writes [embed] model = "none" to the scenario
+// root and to the --global store). args are returned unchanged.
+func withNone(args ...string) []string { return args }
+
+// setConfig writes body as the config of the scenario root's store (global=false) or of the
+// --global store, at the path kb itself reports (kb config --path), so no layout is assumed.
+func (h *H) setConfig(body string, global bool) {
+	r := h.kb("config", "--path")
+	if global { // h.kb adds --root, so the global store is asked for without it
+		r = h.kbAt(h.outside, "--global", "config", "--path")
+	}
+	h.must(r.Code == 0, "kb config --path: %s", r.Stderr)
+	h.write(strings.TrimSpace(r.Stdout), body)
+}
+
+// useNone writes the FTS-only config into the scenario root and the --global store.
+func (h *H) useNone() {
+	const none = "[embed]\nmodel = \"none\"\n"
+	h.setConfig(none, false)
+	h.setConfig(none, true)
+}
 
 // scenarios is the table. To add one: append {Name, Desc, Run}; Run sets up files under h.root
 // (or h.outside), calls h.kb, and reports with h.fail / h.expect / h.note. The universal
 // invariants (no panic, exit code in 0/1/2 (3 is a finding), no model download) are checked for every run.
 var scenarios = []scenario{
 	{"exit-codes", "the 0/1/2/3 exit-code contract on usage errors and lookups", scExitCodes},
-	{"fts-roundtrip", "add with --embedder none, then search, show, list, doctor", scRoundTrip},
+	{"fts-roundtrip", "add with an FTS-only config, then search, show, list, doctor", scRoundTrip},
 	{"no-model-search", "with no model: --mode fts works, a none-indexed DB reports a mismatch, a fresh root is never created or downloaded to", scNoModelSearch},
 	{"no-model-index", "reindex/add with no model and no network exit 2 without downloading or half-writing", scNoModelIndex},
 	{"hostile-queries", "FTS5 syntax, quotes, *, NEAR, column filters, huge and unicode queries", scHostileQueries},
@@ -118,8 +137,16 @@ func scExitCodes(h *H) {
 	h.expect(h.kb("search", "x", "--no-such-flag"), 1)
 	h.expect(h.kb("search"), 1)
 	h.expect(h.kb(withNone("search", "x", "--mode", "bogus")...), 1)
-	h.expect(h.kb("search", "x", "--embedder", "bogus"), 1)
+	h.expect(h.kb("search", "x", "--embedder", "none"), 1) // the flags are gone
 	h.expect(h.kb("search", "x", "--embed-model", "no/such-model"), 1)
+	h.setConfig("[embed]\nmodel = \"no/such-model\"\n", false)
+	h.expect(h.kb("search", "x"), 1) // unknown model in the config
+	h.setConfig("[search]\nk = 0\n", false)
+	h.expect(h.kb("config"), 1) // out of range, names file and key
+	h.setConfig("bogus = 1\n", false)
+	h.expect(h.kb("config"), 1) // unknown key
+	h.setConfig("", false)
+	h.useNone()
 	h.expect(h.kb(withNone("show", "data/nope.md")...), 1)
 	h.expect(h.kb(withNone("stats", "no-such-query")...), 1)
 	h.expect(h.kb(withNone("feedback", "1", "1", "--useful")...), 1) // no database yet
@@ -151,14 +178,16 @@ func scRoundTrip(h *H) {
 }
 
 func scNoModelSearch(h *H) {
-	// A database indexed with --embedder none: --mode fts needs no model, and the default
+	// A database indexed with an FTS-only config: --mode fts needs no model, and the default
 	// (local, hybrid) is a recorded-model mismatch the user must resolve, not a silent fallback.
 	h.write("data/fallback.md", entryText("Fallback", "## A\n\nquokkaword lives here.\n"))
-	h.must(h.kb(withNone("reindex", "--all")...).Code == 0, "index with --embedder none")
+	h.useNone()
+	h.must(h.kb(withNone("reindex", "--all")...).Code == 0, "index with an FTS-only config")
 	r := h.kb("search", "quokkaword", "--mode", "fts")
 	if h.expect(r, 0) && !strings.Contains(r.Stdout, "data/fallback.md") {
 		h.fail("--mode fts found nothing:\n%s", r)
 	}
+	h.setConfig("", false) // the default model against a none-indexed database
 	r = h.kb("search", "quokkaword")
 	if h.expect(r, 1, 2) && r.Code == 1 && !strings.Contains(r.Stderr, "reindex --all") {
 		h.fail("mismatch error does not say how to fix it:\n%s", r)
@@ -423,7 +452,7 @@ func scConcurrent(h *H) {
 			h.fail("SQLITE_BUSY reached the user:\n%s", r)
 		}
 		// A search may run before the first migration commits: that is "no database yet" (1).
-		if p.args[2] == "search" {
+		if p.args[0] == "search" {
 			h.expect(r, 0, 1)
 		} else {
 			h.expect(r, 0)

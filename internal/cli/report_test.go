@@ -103,12 +103,13 @@ func TestReportDecision(t *testing.T) {
 // exit 3, an incident in <root>/.kb/kb.log, and --debug prints the chain.
 func TestInternalErrorFromStoreExits3(t *testing.T) {
 	root := newTempRoot(t)
+	useNoneModel(t, root)
 	orig := testDeps.openStore
 	t.Cleanup(func() { testDeps.openStore = orig })
 	testDeps.openStore = func(context.Context, string, bool) (store.Store, error) {
 		return nil, errs.Wrap(errors.New("disk I/O error"), errs.Internal, "sqlite.Open", "could not open the database")
 	}
-	_, stderr, code := run(t, "reindex", "--all", "--embedder", "none", "--debug")
+	_, stderr, code := run(t, "reindex", "--all", "--debug")
 	if code != ExitInternal || !incidentIDRe.MatchString(stderr) {
 		t.Fatalf("exit %d, stderr %q; want 3 with an incident id", code, stderr)
 	}
@@ -133,10 +134,11 @@ func TestPanicExits3(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := newTempRoot(t)
+			useNoneModel(t, root)
 			orig := testDeps.openStore
 			t.Cleanup(func() { testDeps.openStore = orig })
 			testDeps.openStore = func(context.Context, string, bool) (store.Store, error) { panic(tc.value) }
-			_, stderr, code := run(t, "reindex", "--all", "--embedder", "none")
+			_, stderr, code := run(t, "reindex", "--all")
 			if code != ExitInternal || !incidentIDRe.MatchString(stderr) || strings.Contains(stderr, "goroutine") {
 				t.Fatalf("exit %d, stderr %q; want 3, an incident id and no stack", code, stderr)
 			}
@@ -279,10 +281,11 @@ func TestIncidentWithoutStoreGoesToCacheDir(t *testing.T) {
 // incident log that cannot be written still gives the user an id.
 func TestReportPanicDebugAndNoCmd(t *testing.T) {
 	root := newTempRoot(t)
+	useNoneModel(t, root)
 	orig := testDeps.openStore
 	t.Cleanup(func() { testDeps.openStore = orig })
 	testDeps.openStore = func(context.Context, string, bool) (store.Store, error) { panic("boom") }
-	_, stderr, code := run(t, "reindex", "--all", "--embedder", "none", "--debug")
+	_, stderr, code := run(t, "reindex", "--all", "--debug")
 	if code != ExitInternal || !strings.Contains(stderr, "boom") || !strings.Contains(stderr, "goroutine") {
 		t.Fatalf("exit %d, stderr %q; want 3 with the panic value and stack", code, stderr)
 	}
@@ -513,7 +516,6 @@ func TestReplaceFileIsAtomicRename(t *testing.T) {
 func TestDiskFullIsExit1(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
-	t.Setenv("KB_CALLER", "")
 	id := searchID(t, "widget")
 	orig := testDeps.openStore
 	t.Cleanup(func() { testDeps.openStore = orig })

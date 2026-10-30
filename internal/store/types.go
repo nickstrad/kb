@@ -3,7 +3,6 @@ package store
 import (
 	"errors"
 	"fmt"
-	"time"
 )
 
 // FTSOnlyModel is the embed_meta model of an index built with no embedder. Its dim is 0 and it
@@ -139,9 +138,6 @@ type ChunkMeta struct {
 // WholeSearchRank is the feedback rank of a whole-search verdict (kb feedback N --none). No
 // result has rank 0, so the row makes its search judged and never joins a result.
 const WholeSearchRank = 0
-
-// OpenWindow is how far back an open (kb show) looks for the search it follows.
-const OpenWindow = 30 * time.Minute
 
 // SearchRecord is one search as the log stores it. A nil *Ms means that stage did not run,
 // which the log keeps distinct from 0 ms.

@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/search"
@@ -57,11 +58,11 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().IntVarP(&k, "k", "k", search.DefaultK, "number of hits to return (1..20)")
+	cmd.Flags().IntVarP(&k, "k", "k", search.DefaultK, "number of hits to return (1..20; default [search] k, 8)")
 	cmd.Flags().StringVar(&mode, "mode", search.ModeHybrid, "hybrid, fts or vec")
 	cmd.Flags().StringVar(&tag, "tag", "", "only entries carrying this tag")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
-	cmd.Flags().StringVar(&caller, "caller", "", "who is searching (default $KB_CALLER, else unknown)")
+	cmd.Flags().StringVar(&caller, "caller", "", "who is searching (default [agent] caller, else unknown)")
 	return cmd
 }
 
@@ -90,12 +91,11 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	}
 	ctx := cmd.Context()
 
-	ws, err := d.workspace(cmd)
+	ws, cfg, err := d.workspaceConfig(cmd)
 	if err != nil {
 		return err
 	}
-	root := ws.Root
-	dbPath := DBPath(root)
+	dbPath := ws.DBPath
 	if _, err := os.Stat(dbPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return errs.Wrap(err, errs.NotFound, "cli.search", "no index at %s; run kb reindex --all", dbPath)
@@ -112,12 +112,12 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	mode := opts.mode
 	var embedder embed.Embedder
 	if mode == search.ModeHybrid || mode == search.ModeVec {
-		client, err := d.newEmbedder(cmd)
+		client, err := d.newEmbedder(cmd, cfg.Embed)
 		if err != nil {
 			return err
 		}
 		if embed.IsNone(client) {
-			// --embedder none: FTS is the whole search, not a fallback, so it exits 0.
+			// embed.model = "none": FTS is the whole search, not a fallback, so it exits 0.
 			if mode == search.ModeVec {
 				return usageErr("--mode vec needs an embedder, but the embedder is none")
 			}
@@ -141,9 +141,9 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	req := search.Request{
 		Query:  opts.query,
 		Mode:   mode,
-		K:      search.ClampK(opts.k),
+		K:      search.ClampK(searchK(cmd.Flags().Changed("k"), opts.k, cfg.Search.K)),
 		Tag:    opts.tag,
-		Caller: Caller(opts.caller),
+		Caller: callerFor(opts.caller, cfg),
 	}
 
 	out, err := searcher.SearchAndLog(ctx, req)
@@ -169,6 +169,25 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 		return exitSilently(ExitEmbedder)
 	}
 	return nil
+}
+
+// searchK picks the result count: an explicit -k wins, else [search] k from the config.
+func searchK(flagChanged bool, flagK, configK int) int {
+	if flagChanged {
+		return flagK
+	}
+	return configK
+}
+
+// callerFor picks who is searching: --caller, else [agent] caller, else "unknown".
+func callerFor(flag string, cfg config.Config) string {
+	if flag != "" {
+		return flag
+	}
+	if cfg.Agent.Caller != "" {
+		return cfg.Agent.Caller
+	}
+	return "unknown"
 }
 
 // printResults writes the search result to stdout. --json emits the result fields (with full,
