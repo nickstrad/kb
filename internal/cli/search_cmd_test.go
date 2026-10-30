@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,26 +17,33 @@ import (
 
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/fake"
-	"github.com/nickstrad/kb/internal/embed/ollama"
 	"github.com/nickstrad/kb/internal/store"
 )
 
 // newSearchTestRepo builds a temp repo root with a populated database: one entry, two chunks,
 // both containing "widget" so `kb search widget` matches. embed_meta is recorded with the given
-// model/dim so the caller controls whether the CLI's ollama-backed embedder (which always reports
-// ollama.DefaultModel/DefaultDim unless KB_EMBED_MODEL/dim override it) is seen as matching.
+// model/dim so the caller controls whether the CLI's embedder is seen as matching.
+// testModel768 is a supported local model of width testDim768, so a fixture can record it in
+// embed_meta and pass --embed-model testModel768. TestMain's model cache is empty, so using it for
+// real exercises the "model not downloaded" path.
+const testModel768 = "BAAI/bge-base-en-v1.5"
+
+// testDim768 is testModel768's width. chunks_vec takes any width since PLAN 0.5b; the CLI test
+// fixtures keep this one so their fake vectors match the model they record.
+const testDim768 = 768
+
 func newSearchTestRepo(t *testing.T, embedModel string, embedDim int) string {
 	t.Helper()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, ".kb", "kb.sqlite")
 
-	st, err := store.Open(dbPath)
+	st, err := sqlite.Open(context.Background(), dbPath, sqlite.Options{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer st.Close()
 
-	if err := st.EnsureEmbedMeta(embedModel, embedDim); err != nil {
+	if err := st.EnsureEmbedMeta(context.Background(), store.EmbedMeta{Model: embedModel, Dim: embedDim}); err != nil {
 		t.Fatalf("EnsureEmbedMeta: %v", err)
 	}
 
@@ -47,7 +55,7 @@ func newSearchTestRepo(t *testing.T, embedModel string, embedDim int) string {
 	}
 	docTexts := make([]string, len(texts))
 	for i, text := range texts {
-		docTexts[i] = embed.DocPrefix + text
+		docTexts[i] = embed.DocText(emb, text)
 	}
 	vecs, err := emb.Embed(ctx, docTexts)
 	if err != nil {
@@ -71,7 +79,7 @@ func newSearchTestRepo(t *testing.T, embedModel string, embedDim int) string {
 		}
 	}
 
-	if _, err := st.ReplaceEntryChunks(ctx, store.EntryInput{
+	if _, err := st.ReplaceEntry(ctx, store.EntryInput{
 		Path:     "widget.md",
 		Kind:     "file",
 		Title:    "Widget Doc",
@@ -89,12 +97,12 @@ func newSearchTestRepo(t *testing.T, embedModel string, embedDim int) string {
 func runKB(t *testing.T, args []string) (stdout, stderr string, exit int) {
 	t.Helper()
 	var outBuf, errBuf bytes.Buffer
-	exit = Execute(context.Background(), args, &outBuf, &errBuf)
+	exit = execute(context.Background(), testDeps, args, &outBuf, &errBuf)
 	return outBuf.String(), errBuf.String(), exit
 }
 
 func TestSearchFTSMode(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts"})
@@ -103,26 +111,24 @@ func TestSearchFTSMode(t *testing.T) {
 	}
 	// A two-hit block is deliberately checked as one shape: callers who do not use --json can
 	// still rely on the documented human format: the id-bearing first line (so `| head` keeps it),
-	// the blank line between hits, the search_id=N footer, and the feedback hint.
-	human := regexp.MustCompile(`(?s)\Asearch ([1-9][0-9]*) · 2 hits\n#1  [0-9]+\.[0-9]{4}  widget\.md(?: › Configuration)?\n[^\n]+\n\n#2  [0-9]+\.[0-9]{4}  widget\.md(?: › Configuration)?\n[^\n]+\nsearch_id=([1-9][0-9]*)\n(→ judge: [^\n]+)\n\z`)
+	// the blank line between hits, the search_id=N footer, and no feedback hint (feedback is optional).
+	human := regexp.MustCompile(`(?s)\Asearch ([1-9][0-9]*) · 2 hits\n#1  [0-9]+\.[0-9]{4}  widget\.md(?: › Configuration)?\n[^\n]+\n\n#2  [0-9]+\.[0-9]{4}  widget\.md(?: › Configuration)?\n[^\n]+\nsearch_id=([1-9][0-9]*)\n\z`)
 	m := human.FindStringSubmatch(stdout)
 	if m == nil {
 		t.Fatalf("stdout does not match the two-hit human format:\n%s", stdout)
 	}
-	// Go's regexp has no backreferences, so the three places the id appears are compared here.
+	// Go's regexp has no backreferences, so the two places the id appears are compared here.
 	id := m[1]
 	if m[2] != id {
 		t.Errorf("header id %s and footer search_id=%s differ", id, m[2])
 	}
-	wantHint := "→ judge: kb feedback " + id + " RANK --useful (or --not-useful) · none helped: kb feedback " +
-		id + ` --none --note "why"`
-	if m[3] != wantHint {
-		t.Errorf("hint = %q, want %q", m[3], wantHint)
+	if strings.Contains(stdout, "kb feedback") || strings.Contains(stdout, "judge") {
+		t.Errorf("human output carries a feedback hint, but feedback is optional:\n%s", stdout)
 	}
 }
 
 func TestSearchJSONMode(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts", "--json"})
@@ -180,19 +186,17 @@ func TestSearchJSONMode(t *testing.T) {
 }
 
 func TestSearchHybridEmbedderUnavailable(t *testing.T) {
-	// embed_meta matches what the ollama client will report for itself (DefaultModel/DefaultDim,
-	// since KB_EMBED_MODEL is unset), so the mismatch check passes and the failure comes from the
-	// network call instead.
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	// embed_meta matches --embed-model, so the mismatch check passes and the failure comes from
+	// the model not being downloaded (TestMain's cache is empty).
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
-	t.Setenv("KB_OLLAMA_URL", "http://127.0.0.1:1") // closed port: connection refused
 
-	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid"})
+	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid", "--embed-model", testModel768})
 	if exit != 2 {
 		t.Fatalf("exit = %d, want 2; stdout=%s stderr=%s", exit, stdout, stderr)
 	}
-	if !strings.Contains(stderr, "falling back to --mode fts") {
-		t.Errorf("stderr missing fallback warning: %s", stderr)
+	if !strings.Contains(stderr, "falling back to --mode fts") || !strings.Contains(stderr, "kb model pull") {
+		t.Errorf("stderr missing fallback warning with a kb model pull hint: %s", stderr)
 	}
 	if !strings.Contains(stdout, "search_id=") {
 		t.Errorf("stdout missing results/footer despite fallback:\n%s", stdout)
@@ -200,11 +204,10 @@ func TestSearchHybridEmbedderUnavailable(t *testing.T) {
 }
 
 func TestSearchVecEmbedderUnavailable(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
-	t.Setenv("KB_OLLAMA_URL", "http://127.0.0.1:1")
 
-	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "vec"})
+	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "vec", "--embed-model", testModel768})
 	if exit != 2 {
 		t.Fatalf("exit = %d, want 2; stdout=%s stderr=%s", exit, stdout, stderr)
 	}
@@ -230,7 +233,7 @@ func TestSearchNoDatabase(t *testing.T) {
 }
 
 func TestSearchTagFilterAndZeroHits(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts", "--tag", "test"})
@@ -245,17 +248,13 @@ func TestSearchTagFilterAndZeroHits(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("zero-hit search exit = %d, want 0; stderr=%s", exit, stderr)
 	}
-	// A zero-result search still leads with its id and ends with a hint, and the hint offers only
-	// --none: there is no rank to mark.
-	m := regexp.MustCompile(`\Asearch ([1-9][0-9]*) · 0 hits\nno results\nsearch_id=([1-9][0-9]*)\n(→ judge: [^\n]+)\n\z`).FindStringSubmatch(stdout)
+	// A zero-result search still leads with its id and ends with the search_id footer, no hint.
+	m := regexp.MustCompile(`\Asearch ([1-9][0-9]*) · 0 hits\nno results\nsearch_id=([1-9][0-9]*)\n\z`).FindStringSubmatch(stdout)
 	if m == nil {
-		t.Fatalf("zero-hit output = %q, want no-results format with a search id and hint", stdout)
+		t.Fatalf("zero-hit output = %q, want no-results format with a search id and no hint", stdout)
 	}
 	if m[1] != m[2] {
 		t.Errorf("header id %s and footer search_id=%s differ", m[1], m[2])
-	}
-	if want := "→ judge: kb feedback " + m[1] + ` --none --note "what you were looking for"`; m[3] != want {
-		t.Errorf("zero-hit hint = %q, want %q", m[3], want)
 	}
 
 	stdout, stderr, exit = runKB(t, []string{"search", "not-in-the-fixture", "--mode", "fts", "--json"})
@@ -277,7 +276,7 @@ func TestSearchTagFilterAndZeroHits(t *testing.T) {
 }
 
 func TestSearchEmbedMetaMismatch(t *testing.T) {
-	root := newSearchTestRepo(t, "a-different-model", ollama.DefaultDim)
+	root := newSearchTestRepo(t, "a-different-model", testDim768)
 	t.Setenv("KB_ROOT", root)
 
 	_, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid"})
@@ -302,7 +301,7 @@ func TestSearchCallerPrecedence(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+			root := newSearchTestRepo(t, testModel768, testDim768)
 			t.Setenv("KB_ROOT", root)
 			t.Setenv("KB_CALLER", tt.env)
 
@@ -319,7 +318,7 @@ func TestSearchCallerPrecedence(t *testing.T) {
 }
 
 func TestSearchLogFailure(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
 	disableSearchLog(t, root)
 
@@ -354,12 +353,11 @@ func TestSearchLogFailure(t *testing.T) {
 }
 
 func TestSearchFallbackLogFailurePrintsBothWarnings(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
-	t.Setenv("KB_OLLAMA_URL", "http://127.0.0.1:1")
 	disableSearchLog(t, root)
 
-	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid"})
+	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid", "--embed-model", testModel768})
 	if exit != 2 {
 		t.Fatalf("exit = %d, want 2; stdout=%s stderr=%s", exit, stdout, stderr)
 	}
@@ -375,7 +373,7 @@ func TestSearchFallbackLogFailurePrintsBothWarnings(t *testing.T) {
 
 func loggedSearchCaller(t *testing.T, root string) string {
 	t.Helper()
-	st, err := store.Open(filepath.Join(root, ".kb", "kb.sqlite"))
+	st, err := sqlite.Open(context.Background(), filepath.Join(root, ".kb", "kb.sqlite"), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("open store for caller assertion: %v", err)
 	}
@@ -389,7 +387,7 @@ func loggedSearchCaller(t *testing.T, root string) string {
 
 func disableSearchLog(t *testing.T, root string) {
 	t.Helper()
-	st, err := store.Open(filepath.Join(root, ".kb", "kb.sqlite"))
+	st, err := sqlite.Open(context.Background(), filepath.Join(root, ".kb", "kb.sqlite"), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("open store to disable search logging: %v", err)
 	}
@@ -413,7 +411,7 @@ func TestSearchBadMode(t *testing.T) {
 }
 
 func TestSearchErrorHasOneSearchPrefix(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
 
 	_, stderr, exit := runKB(t, []string{"search", " ", "--mode", "fts"})
@@ -436,7 +434,7 @@ func TestSearchHelpRecommendsJSON(t *testing.T) {
 }
 
 func TestSearchKClampsToOne(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts", "-k", "0"})
@@ -453,7 +451,7 @@ func TestSearchKClampsToOne(t *testing.T) {
 }
 
 func TestSearchMultiWordQueryJoinsArgs(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "subsystem", "--mode", "fts"})

@@ -3,15 +3,16 @@ package search
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 	"path/filepath"
 	"strings"
 	"testing"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/fake"
@@ -21,7 +22,8 @@ import (
 // TestClampK pins the documented 1..20 range, including the explicit -k 0 case.
 func TestClampK(t *testing.T) {
 	for _, tc := range []struct{ in, want int }{
-		{-5, MinK}, {0, MinK}, {1, 1}, {8, 8}, {20, MaxK}, {21, MaxK}, {1000, MaxK},
+		{-5, MinK}, {MinK - 1, MinK}, {MinK, MinK}, {MinK + 1, MinK + 1}, {DefaultK, DefaultK},
+		{MaxK - 1, MaxK - 1}, {MaxK, MaxK}, {MaxK + 1, MaxK}, {1000, MaxK},
 	} {
 		if got := ClampK(tc.in); got != tc.want {
 			t.Errorf("ClampK(%d) = %d, want %d", tc.in, got, tc.want)
@@ -38,145 +40,6 @@ func TestResultHitsNeverNull(t *testing.T) {
 	want := `{"search_id":0,"query":"anything","mode":"hybrid","hits":[]}`
 	if string(data) != want {
 		t.Errorf("json = %s, want %s", data, want)
-	}
-}
-
-// TestSanitizeFTS covers the queries from the plan's validation list plus the syntax characters
-// that make raw FTS5 throw: quotes, colons, parentheses, a leading dash, and the operator words.
-func TestSanitizeFTS(t *testing.T) {
-	for _, tc := range []struct {
-		name, in, wantAnd, wantOr string
-	}{
-		{
-			name:    "plain sentence",
-			in:      "daemon dies when I log out of ssh",
-			wantAnd: `"daemon" AND "dies" AND "when" AND "I" AND "log" AND "out" AND "of" AND "ssh"`,
-			wantOr:  `"daemon" OR "dies" OR "when" OR "I" OR "log" OR "out" OR "of" OR "ssh"`,
-		},
-		{
-			name:    "leading dash flag",
-			in:      "set -e loop counter exits",
-			wantAnd: `"set" AND "-e" AND "loop" AND "counter" AND "exits"`,
-			wantOr:  `"set" OR "-e" OR "loop" OR "counter" OR "exits"`,
-		},
-		{
-			name:    "embedded quotes and a bare NOT",
-			in:      `grpcurl says "server does not support reflection"`,
-			wantAnd: `"grpcurl" AND "says" AND "server" AND "does" AND "support" AND "reflection"`,
-			wantOr:  `"grpcurl" OR "says" OR "server" OR "does" OR "support" OR "reflection"`,
-		},
-		{
-			name:    "colon and parentheses",
-			in:      "foo:bar (baz)",
-			wantAnd: `"foo:bar" AND "(baz)"`,
-			wantOr:  `"foo:bar" OR "(baz)"`,
-		},
-		{
-			name:    "hyphenated name stays one phrase",
-			in:      "draw-visual go-build",
-			wantAnd: `"draw-visual" AND "go-build"`,
-			wantOr:  `"draw-visual" OR "go-build"`,
-		},
-		{
-			name:    "punctuation-only fields are dropped, not left as empty phrases",
-			in:      "quokka ... && — widget",
-			wantAnd: `"quokka" AND "widget"`,
-			wantOr:  `"quokka" OR "widget"`,
-		},
-		{
-			name:    "letters SQLite does not tokenize are dropped like punctuation",
-			in:      "quokka ᳳ ᦳ",
-			wantAnd: `"quokka"`,
-			wantOr:  `"quokka"`,
-		},
-		{
-			name:    "NUL byte breaks the word",
-			in:      "a\x00b",
-			wantAnd: `"a b"`,
-			wantOr:  `"a b"`,
-		},
-		{
-			name:    "operator word inside a hyphenated name is kept",
-			in:      "not-found",
-			wantAnd: `"not-found"`,
-			wantOr:  `"not-found"`,
-		},
-		{
-			name:    "operator word alone",
-			in:      "NOT a",
-			wantAnd: `"a"`,
-			wantOr:  `"a"`,
-		},
-		{
-			name:    "every operator word",
-			in:      "and OR Not near",
-			wantAnd: "",
-			wantOr:  "",
-		},
-		{
-			name:    "empty",
-			in:      "",
-			wantAnd: "",
-			wantOr:  "",
-		},
-		{
-			name:    "whitespace only",
-			in:      "   \t\n  ",
-			wantAnd: "",
-			wantOr:  "",
-		},
-		{
-			name:    "only punctuation",
-			in:      `"" ** (( )) :: ^^ -- ++ {}`,
-			wantAnd: "",
-			wantOr:  "",
-		},
-		{
-			name:    "prefix star stripped",
-			in:      "post*gres",
-			wantAnd: `"postgres"`,
-			wantOr:  `"postgres"`,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			gotAnd, gotOr := SanitizeFTS(tc.in)
-			if gotAnd != tc.wantAnd {
-				t.Errorf("and = %s, want %s", gotAnd, tc.wantAnd)
-			}
-			if gotOr != tc.wantOr {
-				t.Errorf("or = %s, want %s", gotOr, tc.wantOr)
-			}
-		})
-	}
-}
-
-// TestSanitizeFTSAcceptedBySQLite is the point of the sanitiser: the output has to parse. Every
-// raw query above goes through a real FTS5 MATCH.
-func TestSanitizeFTSAcceptedBySQLite(t *testing.T) {
-	s, _ := testSearcher(t)
-	for _, raw := range []string{
-		"daemon dies when I log out of ssh",
-		"set -e loop counter exits",
-		`grpcurl says "server does not support reflection"`,
-		"foo:bar (baz)",
-		"draw-visual not-found",
-		"quokka ... && — widget",
-		"a\x00b c",
-		"NOT a",
-		"widget^2",
-		"a AND b NEAR c",
-	} {
-		andQuery, orQuery := SanitizeFTS(raw)
-		if andQuery == "" {
-			continue
-		}
-		for _, q := range []string{andQuery, orQuery} {
-			if _, err := s.runFTS(context.Background(),
-				"SELECT rowid, bm25(chunks_fts, 1.0, 2.0, 3.0) AS s FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY s LIMIT 20",
-				[]any{q}); err != nil {
-				t.Errorf("query %q sanitised to %s: %v", raw, q, err)
-			}
-		}
 	}
 }
 
@@ -421,12 +284,12 @@ func testSearcher(t testing.TB) (*Searcher, []testEntry) {
 	t.Helper()
 
 	emb := prefixBlindEmbedder{fake.New("fake-embed", 768)}
-	st, err := store.Open(filepath.Join(t.TempDir(), "kb.sqlite"))
+	st, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "kb.sqlite"), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	if err := st.EnsureEmbedMeta(emb.Model(), emb.Dim()); err != nil {
+	if err := st.EnsureEmbedMeta(context.Background(), store.EmbedMeta{Model: emb.Model(), Dim: emb.Dim()}); err != nil {
 		t.Fatalf("embed meta: %v", err)
 	}
 
@@ -458,7 +321,7 @@ func testSearcher(t testing.TB) (*Searcher, []testEntry) {
 				Embedding:  vecs[j],
 			}
 		}
-		id, err := st.ReplaceEntryChunks(ctx, store.EntryInput{
+		id, err := st.ReplaceEntry(ctx, store.EntryInput{
 			Path:     e.path,
 			Kind:     kindOf(e.path),
 			Title:    e.title,
@@ -472,7 +335,7 @@ func testSearcher(t testing.TB) (*Searcher, []testEntry) {
 		e.entryID = id
 	}
 
-	return &Searcher{DB: st.DB(), Embedder: emb}, entries
+	return &Searcher{Store: st, Log: st, Embedder: emb}, entries
 }
 
 func kindOf(path string) string {
@@ -588,76 +451,81 @@ func TestSearchHybrid(t *testing.T) {
 	}
 }
 
-// TestSearchHybridFallsBackWithoutEmbedder: hybrid with no embedder is not an error, it is an FTS
-// search recorded as fts-fallback.
-func TestSearchHybridFallsBackWithoutEmbedder(t *testing.T) {
-	s, _ := testSearcher(t)
-	s.Embedder = nil
-
-	out, err := s.Search(context.Background(), Request{Query: "quokka widget", Mode: ModeHybrid, K: 8})
-	if err != nil {
-		t.Fatalf("search: %v", err)
-	}
-	if out.Mode != ModeFTSFallback {
-		t.Errorf("mode = %s, want %s", out.Mode, ModeFTSFallback)
-	}
-	if out.Result.Mode != ModeFTSFallback {
-		t.Errorf("result mode = %s, want %s", out.Result.Mode, ModeFTSFallback)
-	}
-	if out.FallbackErr == nil || !errors.Is(out.FallbackErr, ErrEmbedderUnavailable) {
-		t.Errorf("fallback err = %v, want one wrapping ErrEmbedderUnavailable", out.FallbackErr)
-	}
-	if out.NVec != 0 {
-		t.Errorf("n_vec = %d, want 0", out.NVec)
-	}
-	if len(out.Result.Hits) == 0 {
-		t.Error("fallback returned no hits; the FTS list should still have run")
-	}
+// failingEmbedder fails every Embed call with err.
+type failingEmbedder struct {
+	*fake.Embedder
+	err error
 }
 
-// TestSearchVecWithoutEmbedderIsAnError: --mode vec has nothing to fall back to.
-func TestSearchVecWithoutEmbedderIsAnError(t *testing.T) {
-	s, _ := testSearcher(t)
-	s.Embedder = nil
-
-	if _, err := s.Search(context.Background(), Request{Query: "quokka", Mode: ModeVec, K: 8}); err == nil {
-		t.Fatal("want an error, got nil")
-	} else if !errors.Is(err, ErrEmbedderUnavailable) {
-		t.Errorf("err = %v, want one wrapping ErrEmbedderUnavailable", err)
-	}
+func (e failingEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, e.err
 }
 
-// unavailableEmbedder fails every call with an error that only IsUnavailable can recognise.
-type unavailableEmbedder struct{ *fake.Embedder }
+var (
+	errBoom = errors.New("boom")
+)
 
-var errServiceDown = errors.New("connection refused")
+// TestSearchEmbedFailureDecision is the TESTING.md §4.3 table for the embedder-failure decision
+// in Search: one row per branch outcome (fallback vs error), per mode, per way an error can mean
+// "unavailable" (a nil Embedder, the embed.ErrUnavailable sentinel, an errs.Unavailable kind).
+func TestSearchEmbedFailureDecision(t *testing.T) {
+	sentinel := fmt.Errorf("dial: %w", embed.ErrUnavailable)
+	kinded := errs.New(errs.Unavailable, "test", "service down")
+	for _, tc := range []struct {
+		name     string
+		nilEmb   bool  // Embedder is nil
+		err      error // otherwise Embed returns this
+		mode     string
+		wantMode string    // "" = Search returns an error
+		wantIs   error     // the error (or FallbackErr) must wrap this
+		wantKind errs.Kind // for an error
+	}{
+		{"nil embedder, hybrid: fallback", true, nil, ModeHybrid, ModeFTSFallback, embed.ErrUnavailable, 0},
+		{"nil embedder, vec: error", true, nil, ModeVec, "", embed.ErrUnavailable, errs.Unavailable},
+		{"sentinel, hybrid: fallback", false, sentinel, ModeHybrid, ModeFTSFallback, embed.ErrUnavailable, 0},
+		{"sentinel, vec: error", false, sentinel, ModeVec, "", embed.ErrUnavailable, errs.Unavailable},
+		{"unavailable kind, hybrid: fallback", false, kinded, ModeHybrid, ModeFTSFallback, kinded, 0},
+		{"unavailable kind, vec: error", false, kinded, ModeVec, "", kinded, errs.Unavailable},
+		{"other error, hybrid: error", false, errBoom, ModeHybrid, "", errBoom, errs.Internal},
+		{"fts never embeds: no fallback", false, errBoom, ModeFTS, ModeFTS, nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := testSearcher(t)
+			s.Embedder = failingEmbedder{fake.New("fake-embed", 768), tc.err}
+			if tc.nilEmb {
+				s.Embedder = nil
+			}
 
-func (e unavailableEmbedder) Embed(context.Context, []string) ([][]float32, error) {
-	return nil, errServiceDown
-}
-
-// TestSearchFallbackViaIsUnavailable: an embedder error that does not wrap ErrEmbedderUnavailable
-// still degrades hybrid when the caller's hook recognises it (this is how the CLI maps the Ollama
-// client's own ErrUnavailable).
-func TestSearchFallbackViaIsUnavailable(t *testing.T) {
-	s, _ := testSearcher(t)
-	s.Embedder = unavailableEmbedder{fake.New("fake-embed", 768)}
-
-	// Without the hook the error is fatal, because a refusal is not an outage.
-	if _, err := s.Search(context.Background(), Request{Query: "widget", Mode: ModeHybrid, K: 4}); err == nil {
-		t.Fatal("want an error without IsUnavailable, got nil")
-	}
-
-	s.IsUnavailable = func(err error) bool { return errors.Is(err, errServiceDown) }
-	out, err := s.Search(context.Background(), Request{Query: "widget", Mode: ModeHybrid, K: 4})
-	if err != nil {
-		t.Fatalf("search: %v", err)
-	}
-	if out.Mode != ModeFTSFallback {
-		t.Errorf("mode = %s, want %s", out.Mode, ModeFTSFallback)
-	}
-	if !errors.Is(out.FallbackErr, errServiceDown) {
-		t.Errorf("fallback err = %v, want the embedder's error", out.FallbackErr)
+			out, err := s.Search(context.Background(), Request{Query: "quokka widget", Mode: tc.mode, K: 8})
+			if tc.wantMode == "" {
+				if err == nil {
+					t.Fatalf("want an error, got mode %s", out.Mode)
+				}
+				if !errors.Is(err, tc.wantIs) || errs.KindOf(err) != tc.wantKind {
+					t.Fatalf("err = %v (kind %v), want one wrapping %v of kind %v", err, errs.KindOf(err), tc.wantIs, tc.wantKind)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("search: %v", err)
+			}
+			if out.Mode != tc.wantMode || out.Result.Mode != tc.wantMode {
+				t.Fatalf("mode = %s / result mode %s, want %s", out.Mode, out.Result.Mode, tc.wantMode)
+			}
+			if tc.wantMode == ModeFTSFallback {
+				if !errors.Is(out.FallbackErr, tc.wantIs) {
+					t.Errorf("fallback err = %v, want one wrapping %v", out.FallbackErr, tc.wantIs)
+				}
+				if out.NVec != 0 {
+					t.Errorf("n_vec = %d, want 0", out.NVec)
+				}
+			} else if out.FallbackErr != nil {
+				t.Errorf("fallback err = %v, want nil", out.FallbackErr)
+			}
+			if len(out.Result.Hits) == 0 {
+				t.Error("no hits; the FTS list should still have run")
+			}
+		})
 	}
 }
 
@@ -745,23 +613,9 @@ func TestSearchTagFilterIsExact(t *testing.T) {
 	}
 }
 
-// TestTagPatternEscapes pins the escaping itself, so a future reader can see what the SQL sees.
-func TestTagPatternEscapes(t *testing.T) {
-	for _, tc := range []struct{ tag, want string }{
-		{"docker", `%"docker"%`},
-		{"%", `%"\%"%`},
-		{"docke_", `%"docke\_"%`},
-		{`a\b`, `%"a\\b"%`},
-	} {
-		if got := tagPattern(tc.tag); got != tc.want {
-			t.Errorf("tagPattern(%q) = %q, want %q", tc.tag, got, tc.want)
-		}
-	}
-}
-
 // TestSearchBlankQuery: a blank query is an error in every mode. It must not reach the embedder,
 // which would happily embed the bare "search_query: " prefix and hand back k arbitrary chunks for
-// P3.3 to log as a real search.
+// the log to record as a real search.
 func TestSearchBlankQuery(t *testing.T) {
 	s, _ := testSearcher(t)
 	for _, mode := range []string{ModeFTS, ModeVec, ModeHybrid, ""} {
@@ -793,100 +647,8 @@ func TestSearchUnsanitisableQueryStillRunsVec(t *testing.T) {
 	}
 }
 
-// TestBaseRuneMatchesSQLite checks ftsBaseRune against the linked SQLite for every assigned code
-// point it accepts: each one, alone in a document, must give the unicode61 tokenizer at least one
-// token. A failure lists code points to add to ftsSkewNotToken, typically after a SQLite upgrade.
-func TestBaseRuneMatchesSQLite(t *testing.T) {
-	s, _ := testSearcher(t)
-	ctx := context.Background()
-	conn, err := s.DB.Conn(ctx)
-	if err != nil {
-		t.Fatalf("dedicated connection: %v", err)
-	}
-	defer conn.Close()
-	for _, stmt := range []string{
-		`CREATE VIRTUAL TABLE temp.base_doc USING fts5(x, tokenize='porter unicode61')`,
-		`CREATE VIRTUAL TABLE temp.base_vocab USING fts5vocab(temp, base_doc, instance)`,
-		`BEGIN`,
-	} {
-		if _, err := conn.ExecContext(ctx, stmt); err != nil {
-			t.Fatalf("%s: %v", stmt, err)
-		}
-	}
-	checked := 0
-	for r := rune(0); r <= unicode.MaxRune; r++ {
-		if !utf8.ValidRune(r) || unicode.Is(unicode.Cn, r) || !ftsBaseRune(r) {
-			continue
-		}
-		if _, err := conn.ExecContext(ctx, `INSERT INTO temp.base_doc(rowid, x) VALUES (?, ?)`, int64(r), string(r)); err != nil {
-			t.Fatalf("insert U+%04X: %v", r, err)
-		}
-		checked++
-	}
-	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	rows, err := conn.QueryContext(ctx,
-		`SELECT rowid FROM temp.base_doc WHERE rowid NOT IN (SELECT doc FROM temp.base_vocab) ORDER BY rowid`)
-	if err != nil {
-		t.Fatalf("find untokenized: %v", err)
-	}
-	defer rows.Close()
-	var bad []string
-	for rows.Next() {
-		var r int64
-		if err := rows.Scan(&r); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		bad = append(bad, fmt.Sprintf("U+%04X", r))
-	}
-	if checked < 100000 {
-		t.Fatalf("checked only %d code points; the enumeration is broken", checked)
-	}
-	if len(bad) > 0 {
-		t.Errorf("ftsBaseRune accepts %d code points SQLite does not tokenize: %v", len(bad), bad)
-	}
-}
-
-// TestQuotedPunctuationMatchesLikeSplitWords backs the TestSanitizeFTS expectations that keep
-// punctuation inside a phrase ("foo:bar", "(baz)", "-e"): FTS5 must tokenize such a phrase into
-// the same adjacent words, so each pair below has to match exactly the same rows.
-func TestQuotedPunctuationMatchesLikeSplitWords(t *testing.T) {
-	s, _ := testSearcher(t)
-	ctx := context.Background()
-	match := func(q string) []int64 {
-		rows, err := s.runFTS(ctx,
-			"SELECT rowid, bm25(chunks_fts, 1.0, 2.0, 3.0) AS s FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY rowid",
-			[]any{q})
-		if err != nil {
-			t.Fatalf("match %s: %v", q, err)
-		}
-		ids := make([]int64, len(rows))
-		for i, r := range rows {
-			ids[i] = r.ChunkID
-		}
-		return ids
-	}
-	for _, pair := range [][2]string{
-		{`"zebracorn-widget"`, `"zebracorn widget"`},
-		{`"zebracorn:widget"`, `"zebracorn widget"`},
-		{`"(quokka)"`, `"quokka"`},
-		{`"-quokka"`, `"quokka"`},
-		{`"Zebracorn-WIDGET"`, `"zebracorn widget"`},
-	} {
-		got, want := match(pair[0]), match(pair[1])
-		if len(want) == 0 {
-			t.Fatalf("%s matched nothing; the pair proves nothing", pair[1])
-		}
-		if fmt.Sprint(got) != fmt.Sprint(want) {
-			t.Errorf("%s matched %v, %s matched %v; want the same rows", pair[0], got, pair[1], want)
-		}
-	}
-}
-
 // TestSearchHyphenatedQuery: unicode61 indexes "zebracorn widget" as two tokens, so a hyphenated
-// query must match them as an adjacent pair. Deleting the hyphen used to search for the single
-// token "zebracornwidget" and return nothing. The mixed case checks that FTS5, not the sanitiser,
+// query must match them as an adjacent pair, not as the single token "zebracornwidget". The mixed case checks that FTS5, not the sanitiser,
 // folds case.
 func TestSearchHyphenatedQuery(t *testing.T) {
 	s, entries := testSearcher(t)
@@ -910,15 +672,15 @@ func TestSearchANDThenORRetry(t *testing.T) {
 	s, _ := testSearcher(t)
 	ctx := context.Background()
 
-	andQuery, orQuery := SanitizeFTS("quokka fluffernutter")
-	andOnly, _, err := s.ftsList(ctx, andQuery, "", "")
+	terms := []string{"quokka", "fluffernutter"}
+	andOnly, err := s.Store.FTS(ctx, store.FTSQuery{Terms: terms, Op: store.OpAnd, Limit: ListLimit})
 	if err != nil {
 		t.Fatalf("fts AND: %v", err)
 	}
-	if len(andOnly) != 0 {
-		t.Fatalf("AND query matched %d rows, want 0 (the fixture must not contain 'fluffernutter')", len(andOnly))
+	if len(andOnly.Rows) != 0 {
+		t.Fatalf("AND query matched %d rows, want 0 (the fixture must not contain 'fluffernutter')", len(andOnly.Rows))
 	}
-	retried, _, err := s.ftsList(ctx, andQuery, orQuery, "")
+	retried, err := s.ftsList(ctx, terms, "")
 	if err != nil {
 		t.Fatalf("fts AND/OR: %v", err)
 	}
@@ -1004,3 +766,6 @@ func TestSearchClampsK(t *testing.T) {
 		t.Errorf("hits = %d, want %d", len(out.Result.Hits), MinK)
 	}
 }
+
+// dbOf is the raw handle behind a test Searcher, for asserting on the rows it wrote.
+func dbOf(s *Searcher) *sql.DB { return s.Store.(*sqlite.Store).DB() }

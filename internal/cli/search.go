@@ -1,4 +1,4 @@
-// `kb search`: hybrid FTS5 + sqlite-vec search over the indexed chunks. P3.4 implements it.
+// `kb search`: hybrid FTS5 + sqlite-vec search over the indexed chunks.
 package cli
 
 import (
@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/search"
 	"github.com/nickstrad/kb/internal/store"
 )
@@ -23,7 +24,7 @@ const hitTextLimit = 600
 
 // newSearchCmd builds
 // `kb search "<q>" [-k 8] [--mode hybrid|fts|vec] [--tag t] [--json] [--caller name]`.
-func newSearchCmd(stdout, stderr io.Writer) *cobra.Command {
+func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	var (
 		k      int
 		mode   string
@@ -35,17 +36,18 @@ func newSearchCmd(stdout, stderr io.Writer) *cobra.Command {
 		Use:   "search <query>",
 		Short: "Search the knowledge store",
 		Long: "Runs an FTS5/BM25 list and a sqlite-vec KNN list and fuses them with reciprocal\n" +
-			"rank fusion. Exit code 2 means the embedder was unavailable: hybrid falls back\n" +
-			"to FTS; vec fails without results. Agents and scripts should parse --json.\n\n" +
-			"Output opens with \"search N · M hits\" (N is the search id, so it survives | head) and\n" +
-			"ends with the kb feedback commands that judge this search; --json carries the same\n" +
-			"commands in its \"feedback\" field. Judge every search, including one that found\n" +
-			"nothing: kb feedback N <rank> --useful, or kb feedback N --none --note \"why\".",
+			"rank fusion. Exit code 2 means the embedder was unavailable (for example the model\n" +
+			"is not downloaded: run kb model pull): hybrid falls back to FTS; vec fails without\n" +
+			"results. Search never downloads a model. Agents and scripts should parse --json.\n\n" +
+			"Output opens with \"search N · M hits\" (N is the search id, so it survives | head).\n" +
+			"Read a hit with kb show <path>; that read is recorded as an open of this search.\n" +
+			"Feedback is optional: kb feedback N <rank> --useful (or kb feedback N --none) judges\n" +
+			"a search, and --json carries those commands in its \"feedback\" field.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSearch(cmd, stdout, stderr, searchOpts{
+			return runSearch(cmd, d, stdout, stderr, searchOpts{
 				query:  strings.Join(args, " "),
 				k:      k,
 				mode:   mode,
@@ -73,74 +75,65 @@ type searchOpts struct {
 	caller string
 }
 
-// runSearch validates the flags, opens the database read-only-in-spirit (it never creates one),
-// builds the embedder only when the mode needs it, runs the search and prints the result. With
-// the none embedder a hybrid search runs as plain fts.
+// runSearch validates the flags, opens the database (it never creates one), builds the embedder
+// only when the mode needs it, runs the search and prints the result. With the none embedder a
+// hybrid search runs as plain fts.
 //
-// Exit codes (plan.md's "CLI" section):
-//   - 1 (ExitUsage): bad flags, no database, or an embed_meta/embedder mismatch.
-//   - 2 (ExitEmbedder): the embedder was unavailable, either because --mode vec had nothing to
-//     fall back to, or because a hybrid search degraded to fts-fallback (results are still
-//     printed in that case; the warning is what carries the exit code).
-//   - 0: everything else, including a search whose results were printed but could not be logged.
-func runSearch(cmd *cobra.Command, stdout, stderr io.Writer, opts searchOpts) error {
+// Exit codes: 1 for bad flags, no database or an embed_meta mismatch; 2 when the embedder was
+// unavailable, either for --mode vec or because hybrid fell back to fts (results are printed, then
+// the warning); 0 otherwise, including a search whose results could not be logged.
+func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searchOpts) error {
 	switch opts.mode {
 	case search.ModeHybrid, search.ModeFTS, search.ModeVec:
 	default:
-		return usageErr("kb search: invalid --mode %q (want hybrid, fts or vec)", opts.mode)
+		return usageErr("invalid --mode %q (want hybrid, fts or vec)", opts.mode)
 	}
+	ctx := cmd.Context()
 
 	root := Root()
 	dbPath := DBPath(root)
 	if _, err := os.Stat(dbPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return usageErr("no index at %s; run kb reindex --all", dbPath)
+			return errs.Wrap(err, errs.NotFound, "cli.search", "no index at %s; run kb reindex --all", dbPath)
 		}
-		return usageErr("kb search: stat %s: %s", dbPath, err)
+		return usageErr("stat %s: %v", dbPath, err)
 	}
 
-	st, err := store.Open(dbPath)
+	st, err := d.openStore(ctx, dbPath, false)
 	if err != nil {
-		return usageErr("kb search: %s", err)
+		return err
 	}
 	defer st.Close()
 
 	mode := opts.mode
 	var embedder embed.Embedder
-	var isUnavailable func(error) bool
 	if mode == search.ModeHybrid || mode == search.ModeVec {
-		client, err := newEmbedder(cmd)
+		client, err := d.newEmbedder(cmd)
 		if err != nil {
-			return usageErr("kb search: %s", err)
+			return err
 		}
 		if embed.IsNone(client) {
-			// KB_EMBEDDER=none: FTS is the whole search, not a fallback, so it exits 0.
+			// --embedder none: FTS is the whole search, not a fallback, so it exits 0.
 			if mode == search.ModeVec {
-				return usageErr("kb search: --mode vec needs an embedder, but the embedder is none")
+				return usageErr("--mode vec needs an embedder, but the embedder is none")
 			}
 			mode = search.ModeFTS
 		} else {
-			if storedModel, storedDim, ok, err := st.EmbedMeta(); err != nil {
-				return usageErr("kb search: %s", err)
-			} else if ok && (storedModel != client.Model() || storedDim != client.Dim()) {
+			stored, ok, err := st.EmbedMeta(ctx)
+			if err != nil {
+				return err
+			}
+			if want := (store.EmbedMeta{Model: client.Model(), Dim: client.Dim()}); ok && stored != want {
 				mismatch := &store.EmbedMetaMismatchError{
-					StoredModel: storedModel, StoredDim: storedDim,
-					WantModel: client.Model(), WantDim: client.Dim(),
+					StoredModel: stored.Model, StoredDim: stored.Dim, WantModel: want.Model, WantDim: want.Dim,
 				}
-				return usageErr("%s", mismatch.Error())
+				return errs.Wrap(mismatch, errs.Conflict, "cli.search", "%s", mismatch.Error())
 			}
 			embedder = client
-			isUnavailable = func(err error) bool { return errors.Is(err, embed.ErrUnavailable) }
 		}
 	}
 
-	searcher := &search.Searcher{
-		DB:            st.DB(),
-		Embedder:      embedder,
-		KBVersion:     search.GitShortHash(root),
-		IsUnavailable: isUnavailable,
-	}
-
+	searcher := &search.Searcher{Store: st, Log: st, Embedder: embedder, KBVersion: Version}
 	req := search.Request{
 		Query:  opts.query,
 		Mode:   mode,
@@ -149,29 +142,25 @@ func runSearch(cmd *cobra.Command, stdout, stderr io.Writer, opts searchOpts) er
 		Caller: Caller(opts.caller),
 	}
 
-	out, err := searcher.SearchAndLog(cmd.Context(), req)
-	if err != nil && out == nil {
-		// A vec-mode search with nothing to fall back to returns the raw embedder error rather
-		// than search.ErrEmbedderUnavailable (that sentinel marks the fallback path a hybrid
-		// search takes instead), so unavailability is recognised the same way the Searcher itself
-		// recognises it: either sentinel, via the same isUnavailable hook.
-		if errors.Is(err, search.ErrEmbedderUnavailable) || (isUnavailable != nil && isUnavailable(err)) {
-			return embedderErr("%s", err)
-		}
-		return usageErr("kb search: %s", trimSearchErrorPrefix(err.Error()))
-	}
-	if err != nil && !errors.Is(err, search.ErrLogFailed) {
-		return usageErr("kb search: %s", trimSearchErrorPrefix(err.Error()))
-	}
-
+	out, err := searcher.SearchAndLog(ctx, req)
 	logFailed := errors.Is(err, search.ErrLogFailed)
+	if err != nil && !logFailed {
+		return err
+	}
 	printResults(stdout, out.Result, opts.asJSON, !logFailed)
 	if logFailed {
 		fmt.Fprintf(stderr, "warning: search not logged: %s\n", err)
 	}
 
 	if out.Mode == search.ModeFTSFallback {
-		return embedderErr("warning: embedder unavailable (%s); falling back to --mode fts", out.FallbackErr)
+		// The index lacking vectors (schema 3, not reindexed yet) is not the embedder's fault:
+		// say what is missing and how to fix it. Same exit code: the search was FTS only.
+		if errors.Is(out.FallbackErr, search.ErrNoVectors) {
+			fmt.Fprintf(stderr, "warning: %s; falling back to --mode fts\n", out.FallbackErr)
+		} else {
+			fmt.Fprintf(stderr, "warning: embedder unavailable (%s); falling back to --mode fts\n", out.FallbackErr)
+		}
+		return exitSilently(ExitEmbedder)
 	}
 	return nil
 }
@@ -179,10 +168,10 @@ func runSearch(cmd *cobra.Command, stdout, stderr io.Writer, opts searchOpts) er
 // printResults writes the search result to stdout. --json emits the result fields (with full,
 // untrimmed text) plus the feedback commands for its search_id, and nothing else. The human form
 // opens with a "search N · M hits" line, so the id survives `kb search ... | head`, then one block
-// per hit, then the search_id=N footer (kept for scripts that grep it) and a one-line hint naming
-// the exact `kb feedback` commands that judge this search.
+// per hit, then the search_id=N footer (kept for scripts that grep it). Feedback is optional, so
+// the human form carries no hint; --json keeps the `kb feedback` commands.
 // A result that could not be logged has no usable search id, so its human header and footer say
-// so and print no hint, and its JSON search_id and feedback are null rather than the zero value Go
+// so, and its JSON search_id and feedback are null rather than the zero value Go
 // leaves in Result.SearchID.
 func printResults(stdout io.Writer, result *search.Result, asJSON, logged bool) {
 	if asJSON {
@@ -241,7 +230,6 @@ func printResults(stdout io.Writer, result *search.Result, asJSON, logged bool) 
 		return
 	}
 	fmt.Fprintf(stdout, "search_id=%d\n", result.SearchID)
-	fmt.Fprintln(stdout, feedbackHint(result.SearchID, len(result.Hits)))
 }
 
 // feedbackCommands is the --json "feedback" object: the exact commands that judge one search.
@@ -259,22 +247,6 @@ func newFeedbackCommands(searchID int64, nHits int) *feedbackCommands {
 		fc.NotUseful = fmt.Sprintf("kb feedback %d RANK --not-useful --note \"why\"", searchID)
 	}
 	return fc
-}
-
-// feedbackHint is the last line of human output. It deliberately avoids "|" between the
-// alternatives: a line copied whole into a shell would otherwise pipe one kb command into another.
-func feedbackHint(searchID int64, nHits int) string {
-	if nHits == 0 {
-		return fmt.Sprintf("→ judge: kb feedback %d --none --note \"what you were looking for\"", searchID)
-	}
-	return fmt.Sprintf("→ judge: kb feedback %d RANK --useful (or --not-useful) · none helped: kb feedback %d --none --note \"why\"",
-		searchID, searchID)
-}
-
-// trimSearchErrorPrefix avoids user-facing errors such as "kb search: search: empty query".
-// Search errors are already namespaced because search is also usable below the CLI layer.
-func trimSearchErrorPrefix(message string) string {
-	return strings.TrimPrefix(message, "search: ")
 }
 
 // trimText caps text at limit runes, cutting at a rune boundary. When it has to cut, it prefers

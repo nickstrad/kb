@@ -344,3 +344,121 @@ func TestSplitOrdSequentialAcrossFiles(t *testing.T) {
 		}
 	}
 }
+
+// TestSplitContextLine pins the context-line format: every non-summary chunk starts with exactly
+// one context line; the front door uses "<title> › <heading>", and any other file with a title of
+// its own (front matter, else a leading H1) uses "<title> › <file title> › <heading>". An H1 that
+// supplied the file title is not repeated in the body; a front-matter title leaves the body alone.
+func TestSplitContextLine(t *testing.T) {
+	e := entry.Entry{
+		Path:  "topic/README.md",
+		Kind:  entry.KindDir,
+		Dir:   "topic",
+		Files: []string{"topic/README.md", "topic/docs/a.md", "topic/docs/b.md", "topic/docs/c.md", "topic/docs/d.md", "topic/docs/same.md"},
+		Meta:  entry.FrontMatter{Title: "Topic", Summary: "A topic."},
+	}
+	files := map[string][]byte{
+		"topic/README.md":    []byte("# Readme H1\n\nLede.\n\n## Main\n\nMain body.\n"),
+		"topic/docs/a.md":    []byte("---\ntitle: Alpha\n---\n\n# Alpha\n\nLede A.\n\n## Sec\n\nBody A.\n"),
+		"topic/docs/b.md":    []byte("# Beta\n\nLede B.\n\n## Sec\n\nBody B.\n"),
+		"topic/docs/d.md":    []byte("---\ntitle: Delta\n---\n# Other H1\n\nLede D.\n"),
+		"topic/docs/c.md":    []byte("Lede C.\n\n## Sec\n\nBody C.\n"), // no title of its own
+		"topic/docs/same.md": []byte("# topic\n\nLede S.\n"),           // title repeats the entry's
+	}
+	chunks, err := Split(e, files)
+	if err != nil {
+		t.Fatalf("Split: %v", err)
+	}
+	want := map[string][]string{
+		"topic/README.md":    {"Topic › (intro)\n# Readme H1\n\nLede.", "Topic › Main\nMain body."},
+		"topic/docs/a.md":    {"Topic › Alpha › (intro)\nLede A.", "Topic › Alpha › Sec\nBody A."},
+		"topic/docs/b.md":    {"Topic › Beta › (intro)\nLede B.", "Topic › Beta › Sec\nBody B."},
+		"topic/docs/c.md":    {"Topic › (intro)\nLede C.", "Topic › Sec\nBody C."},
+		"topic/docs/d.md":    {"Topic › Delta › (intro)\n# Other H1\n\nLede D."},
+		"topic/docs/same.md": {"Topic › (intro)\nLede S."},
+	}
+	got := map[string][]string{}
+	for _, c := range chunks[1:] {
+		got[c.SourceFile] = append(got[c.SourceFile], c.Text)
+		if n := strings.Count(c.Text, " › "); n < 1 || n > 2 || strings.Contains(c.Text[strings.Index(c.Text, "\n"):], "\nTopic › ") {
+			t.Errorf("chunk %q: want exactly one context line", c.Text)
+		}
+	}
+	for f, w := range want {
+		if strings.Join(got[f], "|") != strings.Join(w, "|") {
+			t.Errorf("%s chunks = %q, want %q", f, got[f], w)
+		}
+	}
+}
+
+// TestSplitFenceClosesOnlyOnMarker: inside a multi-line fence, a later "## " line must stay
+// content. (FuzzSplit asserts structure, not which text lands under which heading, so a mutated
+// fence-close test is invisible to it; a fixed-input table row pins it.)
+func TestSplitFenceClosesOnlyOnMarker(t *testing.T) {
+	body := "## Real\n\n```md\nfirst line\n## not a heading\nthird line\n```\n\nAfter.\n"
+	chunks := mustSplit(t, body)
+	if len(chunks) != 2 { // summary, Real
+		t.Fatalf("got %d chunks, want 2: %+v", len(chunks), chunks)
+	}
+	for _, c := range chunks {
+		if c.Heading == "not a heading" {
+			t.Fatalf("fenced line became a heading: %+v", c)
+		}
+	}
+	if !strings.Contains(chunks[1].Text, "## not a heading\nthird line\n```") {
+		t.Errorf("fence body not kept whole in Real: %q", chunks[1].Text)
+	}
+}
+
+// TestSplitOversizedFenceWithBlankLines: a fenced block that contains blank lines is never cut,
+// even when the packing boundary falls between its blank-line-separated parts.
+func TestSplitOversizedFenceWithBlankLines(t *testing.T) {
+	lead := strings.Repeat("a", MaxChunkChars-250)
+	seg1 := strings.Repeat("b", 150)
+	seg2 := strings.Repeat("c", 150)
+	fence := "```text\n" + seg1 + "\n\n" + seg2 + "\n```"
+	chunks := mustSplit(t, "## S\n\n"+lead+"\n\n"+fence+"\n")
+	if len(chunks) < 3 {
+		t.Fatalf("got %d chunks, want the section split in two: %+v", len(chunks), chunks)
+	}
+	found := false
+	for _, c := range chunks {
+		has1, has2 := strings.Contains(c.Text, seg1), strings.Contains(c.Text, seg2)
+		if has1 != has2 {
+			t.Fatalf("fence cut between its blank-line-separated parts: %q", c.Text)
+		}
+		if has1 && strings.Contains(c.Text, fence) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no chunk holds the whole fence")
+	}
+}
+
+// TestSplitDocsFileUnclosedFrontMatter: a docs/*.md whose front matter fence never closes fails
+// the whole Split, naming that file.
+func TestSplitDocsFileUnclosedFrontMatter(t *testing.T) {
+	e := entry.Entry{
+		Path:  "topic/README.md",
+		Kind:  entry.KindDir,
+		Files: []string{"topic/README.md", "topic/docs/x.md"},
+		Meta:  entry.FrontMatter{Title: "Topic", Summary: "S."},
+	}
+	for _, tc := range []struct{ name, bad string }{
+		{"front door", "topic/README.md"},
+		{"secondary file", "topic/docs/x.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string][]byte{
+				"topic/README.md": []byte("---\ntitle: Topic\nsummary: S.\n---\nBody.\n"),
+				"topic/docs/x.md": []byte("---\ntitle: X\nsummary: S.\n---\nBody.\n"),
+			}
+			files[tc.bad] = []byte("---\ntitle: Broken\nno closing fence\n")
+			chunks, err := Split(e, files)
+			if err == nil || !strings.Contains(err.Error(), tc.bad) {
+				t.Fatalf("Split = %v, %v; want an error naming %s", chunks, err, tc.bad)
+			}
+		})
+	}
+}

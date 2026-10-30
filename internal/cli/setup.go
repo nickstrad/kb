@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -9,50 +10,102 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nickstrad/kb/internal/embed"
-	"github.com/nickstrad/kb/internal/embed/provider"
+	"github.com/nickstrad/kb/internal/embed/local"
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/store"
 )
 
-// newEmbedder builds the configured embedder (see internal/embed/provider) from cmd's --embedder
-// and --embed-model flags and the environment. It is a variable rather than a plain function so
-// tests can substitute a fake embedder without touching a real embedding service.
-var newEmbedder = func(cmd *cobra.Command) (embed.Embedder, error) {
-	e, _, err := provider.New(embedderOptions(cmd))
-	return e, err
-}
+// Embedder names accepted by --embedder.
+const (
+	embedderLocal = "local"
+	embedderNone  = "none"
+)
 
-// embedderOptions reads the root command's persistent --embedder and --embed-model flags.
-func embedderOptions(cmd *cobra.Command) provider.Options {
-	var o provider.Options
-	if cmd == nil {
-		return o
+// newEmbedder builds the embedder named by cmd's --embedder and --embed-model flags, unless
+// d.embedder replaces it. `kb reindex` and `kb add` download a missing model first (a one-line
+// note on stderr); every other command only loads what is cached, so a search with no model falls
+// back to FTS with a `kb model pull` hint.
+func (d *deps) newEmbedder(cmd *cobra.Command) (embed.Embedder, error) {
+	if d.embedder != nil {
+		return d.embedder(cmd)
 	}
-	o.Embedder, _ = cmd.Flags().GetString("embedder")
-	o.Model, _ = cmd.Flags().GetString("embed-model")
-	return o
+	name, spec, err := embedderChoice(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if name == embedderNone {
+		return embed.None{}, nil
+	}
+	cache, err := d.modelCacheDir()
+	if err != nil {
+		return nil, usageErr("%v", err)
+	}
+	e := local.New(spec, cache)
+	if downloadsModel(cmd) && !e.Cached() {
+		stderr := cmd.ErrOrStderr()
+		fmt.Fprintf(stderr, "kb: downloading embedding model %s to %s (once per machine)\n", spec.ID, cache)
+		if err := d.pullModel(cmd.Context(), spec, cache); err != nil {
+			// Not fatal here: the embedder reports Unavailable when it is used, which the
+			// commands turn into exit 2 before writing anything.
+			fmt.Fprintf(stderr, "warning: %s\n", err)
+		}
+	}
+	return e, nil
 }
 
-// openStoreForWrite opens the store at root, creating .kb/ and the database file first if
-// necessary.
-func openStoreForWrite(root string) (*store.Store, error) {
+// downloadsModel reports whether cmd may download a missing model: only the commands that build
+// the index do, so search, show and doctor never wait on the network.
+func downloadsModel(cmd *cobra.Command) bool {
+	switch cmd.Name() {
+	case "reindex", "add":
+		return true
+	}
+	return false
+}
+
+// embedderChoice reads and validates the root's persistent --embedder and --embed-model flags.
+// An unknown name or model is an error listing what is supported.
+func embedderChoice(cmd *cobra.Command) (name string, spec local.Spec, err error) {
+	name, model := embedderLocal, local.DefaultModel
+	if cmd != nil {
+		if v, _ := cmd.Flags().GetString("embedder"); v != "" {
+			name = v
+		}
+		if v, _ := cmd.Flags().GetString("embed-model"); v != "" {
+			model = v
+		}
+	}
+	switch name {
+	case embedderNone:
+		return name, local.Spec{}, nil
+	case embedderLocal:
+		spec, err = local.Lookup(model)
+		if err != nil {
+			return "", local.Spec{}, usageErr("%v", err)
+		}
+		return name, spec, nil
+	}
+	return "", local.Spec{}, usageErr("unknown embedder %q (want %s or %s)", name, embedderLocal, embedderNone)
+}
+
+// openStoreForWrite opens the store at root, creating .kb/ and the database file if necessary.
+func (d *deps) openStoreForWrite(ctx context.Context, root string) (store.Store, error) {
 	if err := EnsureDBDir(root); err != nil {
 		return nil, err
 	}
-	return store.Open(DBPath(root))
+	return d.openStore(ctx, DBPath(root), false)
 }
 
-// openStoreIfExists opens the database only when it already exists on disk. ok is false, with a
-// nil Store and nil error, when there is no database yet: callers (kb rm) treat "nothing indexed
-// yet" as "nothing to do to the database", not as an error.
-func openStoreIfExists(root string) (st *store.Store, ok bool, err error) {
+// openStoreIfExists opens the database only when it already exists. ok is false, with a nil Store
+// and nil error, when there is none yet: kb rm and kb show treat that as "nothing indexed".
+func (d *deps) openStoreIfExists(ctx context.Context, root string) (st store.Store, ok bool, err error) {
 	if _, statErr := os.Stat(DBPath(root)); statErr != nil {
 		if os.IsNotExist(statErr) {
 			return nil, false, nil
 		}
-		return nil, false, statErr
+		return nil, false, usageErr("%v", statErr)
 	}
-	st, err = store.Open(DBPath(root))
+	st, err = d.openStore(ctx, DBPath(root), false)
 	if err != nil {
 		return nil, false, err
 	}

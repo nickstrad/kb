@@ -1,13 +1,13 @@
-// `kb stats`: run the named search-effectiveness queries (see internal/stats) against a copy of
-// the search log loaded into an in-memory DuckDB. With no name and no --sql it lists the named
-// queries; --sql is the escape hatch for anything the registry does not cover; --print-sql shows a
-// named query's SQL without touching any database.
+// `kb stats`: run the named search-effectiveness queries (see internal/stats) read-only against
+// the search log. With no name and no --sql it lists the named queries; --sql runs ad-hoc SQLite
+// SQL; --print-sql shows a named query's SQL without opening any database.
 package cli
 
 import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -17,16 +17,21 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/stats"
 )
 
-// dayDurationRe matches the plan's "Nd" duration suffix: a whole number of days. Anything else
+// dayDurationRe matches the "Nd" duration suffix: a whole number of days. Anything else
 // (fractional days, a bare "d") falls through to time.ParseDuration, which rejects it.
 var dayDurationRe = regexp.MustCompile(`^([0-9]+)d$`)
 
+// maxSinceDays is the largest "Nd" that fits in a time.Duration (about 292 years); one more day
+// would overflow into a negative duration and silently filter out every search.
+const maxSinceDays = int(math.MaxInt64 / int64(24*time.Hour))
+
 // newStatsCmd builds
 // `kb stats [<name>] [--since d|date] [--caller name] [--json] [--print-sql] [--sql "..."]`.
-func newStatsCmd(stdout, stderr io.Writer) *cobra.Command {
+func newStatsCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	var (
 		since    string
 		caller   string
@@ -51,7 +56,7 @@ func newStatsCmd(stdout, stderr io.Writer) *cobra.Command {
 			if len(args) == 1 {
 				name = args[0]
 			}
-			return runStats(cmd, stdout, stderr, statsOpts{
+			return runStats(cmd, d, stdout, stderr, statsOpts{
 				name:     name,
 				since:    since,
 				caller:   caller,
@@ -65,9 +70,8 @@ func newStatsCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&caller, "caller", "", "only searches logged by this caller")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
 	cmd.Flags().BoolVar(&printSQL, "print-sql", false, "print the named query's SQL and exit; opens no database")
-	cmd.Flags().StringVar(&sqlText, "sql", "", "run ad-hoc DuckDB SQL against the loaded tables instead of a named query "+
-		"(DuckDB widens sum() over an INTEGER column to HUGEINT, which prints here as a string; use "+
-		"count(*) FILTER (WHERE ...) or CAST(sum(x) AS BIGINT) instead)")
+	cmd.Flags().StringVar(&sqlText, "sql", "", "run ad-hoc read-only SQLite SQL against the log's tables "+
+		"instead of a named query (--since and --caller do not apply; filter in the SQL)")
 	return cmd
 }
 
@@ -80,9 +84,9 @@ func statsLongHelp() string {
 	b.WriteString("coverage beside every rate, so an unjudged search is unknown, not a failure. A whole-search\n")
 	b.WriteString("verdict (kb feedback <id> --none, stored as a rank-0 feedback row) makes a search judged and\n")
 	b.WriteString("never a hit; it is the only way a zero-result search can be judged.\n\n")
-	b.WriteString("--sql runs ad-hoc DuckDB SQL against the loaded tables; DuckDB widens sum() over an INTEGER\n")
-	b.WriteString("column to HUGEINT, which kb stats prints as a string, so prefer count(*) FILTER (WHERE ...) or\n")
-	b.WriteString("CAST(sum(x) AS BIGINT) in ad-hoc queries that need a whole-number sum.\n\n")
+	b.WriteString("--sql runs ad-hoc SQLite SQL, read-only, against the real tables (searches, search_results,\n")
+	b.WriteString("search_candidates, search_feedback, entries). --since and --caller do not apply to it.\n")
+	b.WriteString("--print-sql shows a named query's SQL; ?1 is the --since bound and ?2 the caller.\n\n")
 	b.WriteString("Named queries:\n")
 	for _, q := range stats.Queries {
 		b.WriteString("\n")
@@ -107,19 +111,21 @@ type statsOpts struct {
 }
 
 // runStats validates the flags, resolves what to run (a named query, ad-hoc SQL, or just the
-// listing), and — unless it is only listing or printing SQL — loads the search log and prints the
-// result.
-func runStats(cmd *cobra.Command, stdout, stderr io.Writer, opts statsOpts) error {
+// listing) and, unless it is only listing or printing SQL, runs it and prints the result.
+func runStats(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts statsOpts) error {
 	if opts.sqlText != "" && opts.name != "" {
-		return usageErr("kb stats: a query name and --sql are mutually exclusive")
+		return usageErr("a query name and --sql are mutually exclusive")
 	}
 	if opts.sqlText != "" && opts.printSQL {
-		return usageErr("kb stats: --print-sql and --sql are mutually exclusive")
+		return usageErr("--print-sql and --sql are mutually exclusive")
+	}
+	if opts.sqlText != "" && (opts.since != "" || opts.caller != "") {
+		return usageErr("--since and --caller do not apply to --sql; filter in the SQL instead")
 	}
 
 	since, err := parseSince(opts.since)
 	if err != nil {
-		return usageErr("kb stats: %s", err)
+		return usageErr("%s", err)
 	}
 
 	if opts.name == "" && opts.sqlText == "" {
@@ -127,43 +133,55 @@ func runStats(cmd *cobra.Command, stdout, stderr io.Writer, opts statsOpts) erro
 		return nil
 	}
 
-	queryName := "sql"
-	sqlToRun := opts.sqlText
+	var q stats.Query
 	if opts.sqlText == "" {
-		q, ok := stats.Lookup(opts.name)
+		var ok bool
+		q, ok = stats.Lookup(opts.name)
 		if !ok {
-			return usageErr("kb stats: unknown query %q (want one of: %s)", opts.name, strings.Join(queryNames(), ", "))
+			return usageErr("unknown query %q (want one of: %s)", opts.name, strings.Join(queryNames(), ", "))
 		}
 		if opts.printSQL {
 			fmt.Fprintln(stdout, q.SQL)
 			return nil
 		}
-		queryName = q.Name
-		sqlToRun = q.SQL
 	}
 
-	// Checked before opening: stats.Load only reads the file, so a missing one would otherwise
-	// surface as an os.Stat error inside Load rather than this command's own reindex hint.
+	// Checked here so a missing file gets this command's reindex hint.
 	dbPath := DBPath(Root())
 	if _, err := os.Stat(dbPath); err != nil {
-		return usageErr("kb stats: no search database at %s; run `kb reindex --all` first", dbPath)
+		return errs.Wrap(err, errs.NotFound, "cli.stats", "no search database at %s; run `kb reindex --all` first", dbPath)
 	}
 
-	db, err := stats.Load(cmd.Context(), dbPath, stats.Filter{Since: since, Caller: opts.caller})
+	// Read-only: stats never creates, migrates or writes the database.
+	ctx := cmd.Context()
+	st, err := d.openStore(ctx, dbPath, true)
 	if err != nil {
-		return usageErr("kb stats: %s", err)
+		return err
 	}
-	defer db.Close()
+	defer st.Close()
+	db := stats.New(st)
 
-	tbl, err := db.Query(cmd.Context(), sqlToRun)
+	filter := stats.Filter{Since: since, Caller: opts.caller}
+	queryName := "sql"
+	var tbl *stats.Table
+	if opts.sqlText != "" {
+		tbl, err = db.SQL(ctx, opts.sqlText)
+	} else {
+		queryName = q.Name
+		tbl, err = db.Run(ctx, q, filter)
+	}
 	if err != nil {
-		return usageErr("kb stats: %s", err)
+		return err
+	}
+	searches, err := db.SearchesMatching(ctx, filter)
+	if err != nil {
+		return err
 	}
 
 	if opts.asJSON {
-		return printStatsJSON(stdout, queryName, tbl, db.SearchesLoaded(), since, opts.caller)
+		return printStatsJSON(stdout, queryName, tbl, searches, since, opts.caller)
 	}
-	printStatsHuman(stdout, tbl, db.SearchesLoaded(), since, opts.caller)
+	printStatsHuman(stdout, tbl, searches, since, opts.caller)
 	return nil
 }
 
@@ -185,7 +203,7 @@ func listQueries(stdout io.Writer) {
 	tw.Flush()
 }
 
-// parseSince implements the plan's --since grammar: a Go duration, an "Nd" whole-number-of-days
+// parseSince implements the --since grammar: a Go duration, an "Nd" whole-number-of-days
 // suffix (7d = 168h), or a YYYY-MM-DD date meaning UTC midnight. The bound itself is
 // time.Now().UTC() minus the duration; a literal date is returned as-is. An empty string means no
 // bound (the zero time.Time), matching stats.Filter's zero value.
@@ -197,6 +215,9 @@ func parseSince(s string) (time.Time, error) {
 		return t, nil
 	}
 	if d, ok := parseSinceDuration(s); ok {
+		if d < 0 {
+			return time.Time{}, fmt.Errorf("invalid --since %q: a duration must not be negative", s)
+		}
 		return time.Now().UTC().Add(-d), nil
 	}
 	return time.Time{}, fmt.Errorf("invalid --since %q (want a duration like 7d or 24h, or a YYYY-MM-DD date)", s)
@@ -208,8 +229,8 @@ func parseSince(s string) (time.Time, error) {
 func parseSinceDuration(s string) (time.Duration, bool) {
 	if m := dayDurationRe.FindStringSubmatch(s); m != nil {
 		days, err := strconv.Atoi(m[1])
-		if err != nil {
-			return 0, false
+		if err != nil || days > maxSinceDays {
+			return 0, false // too many days for a time.Duration; rejected rather than wrapped
 		}
 		return time.Duration(days) * 24 * time.Hour, true
 	}
@@ -276,7 +297,7 @@ func statsNameText(caller string) string {
 	return caller
 }
 
-// statsJSON is the exact --json shape from the plan's CLI section.
+// statsJSON is the --json shape; it is a stable contract.
 type statsJSON struct {
 	Query          string           `json:"query"`
 	Columns        []string         `json:"columns"`
@@ -316,15 +337,14 @@ func printStatsJSON(stdout io.Writer, queryName string, tbl *stats.Table, search
 	if err != nil {
 		// out is built from strings/ints/floats/bools/nils, so this should not happen; a CLI
 		// still reports it as a failure rather than crashing.
-		return usageErr("kb stats: marshal result: %v", err)
+		return errs.Wrap(err, errs.Internal, "cli.stats", "marshal result: %v", err)
 	}
 	fmt.Fprintf(stdout, "%s\n", data)
 	return nil
 }
 
-// statsJSONValue converts one Table cell to the value encoding/json should see: time.Time becomes
-// an RFC3339 string (its default MarshalJSON uses RFC3339Nano, which is not what the plan asks
-// for); everything else (nil, int64, float64, string, bool) already marshals correctly as-is.
+// statsJSONValue converts one Table cell for encoding/json: time.Time becomes RFC3339 text (its
+// default MarshalJSON uses RFC3339Nano); everything else marshals as-is.
 func statsJSONValue(v any) any {
 	if t, ok := v.(time.Time); ok {
 		return t.UTC().Format(time.RFC3339)

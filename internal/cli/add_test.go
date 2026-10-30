@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,17 +14,15 @@ import (
 
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/fake"
-	"github.com/nickstrad/kb/internal/store"
 )
 
 // useFakeEmbedder swaps the package-level newEmbedder hook (internal/cli/setup.go) for a
-// deterministic fake, restoring it after the test. Its dimension must equal store.VecDim, the
-// fixed width of the schema's chunks_vec column.
+// deterministic fake, restoring it after the test.
 func useFakeEmbedder(t *testing.T) {
 	t.Helper()
-	orig := newEmbedder
-	newEmbedder = func(*cobra.Command) (embed.Embedder, error) { return fake.New("fake-add-test", store.VecDim), nil }
-	t.Cleanup(func() { newEmbedder = orig })
+	orig := testDeps.embedder
+	testDeps.embedder = func(*cobra.Command) (embed.Embedder, error) { return fake.New("fake-add-test", 16), nil }
+	t.Cleanup(func() { testDeps.embedder = orig })
 }
 
 // newTempRoot creates a fresh repository root and points KB_ROOT at it for the duration of the
@@ -50,12 +50,12 @@ func writeFile(t *testing.T, path, content string) {
 func run(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
 	var out, errBuf bytes.Buffer
-	code = Execute(context.Background(), args, &out, &errBuf)
+	code = execute(context.Background(), testDeps, args, &out, &errBuf)
 	return out.String(), errBuf.String(), code
 }
 
 // validFrontMatter is a minimal but valid entry body: title, summary, tags, updated, and one
-// non-empty "##" section, per plan.md's chunking rules.
+// non-empty "##" section, which the chunker requires.
 func validFrontMatter(title, summary string) string {
 	return "---\n" +
 		"title: " + title + "\n" +
@@ -66,10 +66,22 @@ func validFrontMatter(title, summary string) string {
 		"## Section\n\nSome body text for the chunker to index.\n"
 }
 
-// openTestStore opens the database kb add just wrote to, for assertions.
-func openTestStore(t *testing.T, root string) *store.Store {
+// fakeEditor writes an $EDITOR script that replaces from with to in the file it is given, using
+// only POSIX sh and sed (no GNU `sed -i`), and returns its path. from and to must not contain '/'.
+func fakeEditor(t *testing.T, from, to string) string {
 	t.Helper()
-	st, err := store.Open(DBPath(root))
+	path := filepath.Join(t.TempDir(), "editor.sh")
+	script := "#!/bin/sh\nsed 's/" + from + "/" + to + "/' \"$1\" > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake editor: %v", err)
+	}
+	return path
+}
+
+// openTestStore opens the database kb add just wrote to, for assertions.
+func openTestStore(t *testing.T, root string) *sqlite.Store {
+	t.Helper()
+	st, err := sqlite.Open(context.Background(), DBPath(root), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -96,14 +108,14 @@ func TestAddFileOutsideRootIsCopiedAndIndexed(t *testing.T) {
 	}
 
 	st := openTestStore(t, root)
-	e, err := st.GetEntryByPath("data/kb-add-outside-test.md")
+	e, err := st.Entry(context.Background(), "data/kb-add-outside-test.md")
 	if err != nil {
 		t.Fatalf("GetEntryByPath: %v", err)
 	}
 	if e == nil {
 		t.Fatal("entry was not indexed")
 	}
-	chunks, err := st.ListChunks(e.ID)
+	chunks, err := st.Chunks(context.Background(), e.ID)
 	if err != nil {
 		t.Fatalf("ListChunks: %v", err)
 	}
@@ -212,7 +224,7 @@ func TestAddDirWithReadmeAndDocsIsIndexed(t *testing.T) {
 	}
 
 	st := openTestStore(t, root)
-	e, err := st.GetEntryByPath("data/sample-topic/README.md")
+	e, err := st.Entry(context.Background(), "data/sample-topic/README.md")
 	if err != nil {
 		t.Fatalf("GetEntryByPath: %v", err)
 	}
@@ -258,5 +270,32 @@ func TestAddFileInsideRootSubdirectoryIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "subdirectory") {
 		t.Errorf("stderr = %q, want it to mention the subdirectory rule", errOut)
+	}
+}
+
+// unusableEmbedder is a fake embedder whose Ping fails, as a missing or broken model does.
+type unusableEmbedder struct{ *fake.Embedder }
+
+func (unusableEmbedder) Ping(context.Context) error { return errors.New("model not cached") }
+
+// TestAddFileFailsBeforeCopyWhenEmbedderUnusable pins Q11: kb add checks the embedder before it
+// writes anything, so a failed model load exits 2 with no copied file to roll back.
+func TestAddFileFailsBeforeCopyWhenEmbedderUnusable(t *testing.T) {
+	orig := testDeps.embedder
+	testDeps.embedder = func(*cobra.Command) (embed.Embedder, error) {
+		return unusableEmbedder{fake.New("fake-add-test", 16)}, nil
+	}
+	t.Cleanup(func() { testDeps.embedder = orig })
+
+	root := newTempRoot(t)
+	src := filepath.Join(t.TempDir(), "kb-add-unusable-test.md")
+	writeFile(t, src, validFrontMatter("KB add unusable test", "Covers add when the model cannot load."))
+
+	_, errOut, code := run(t, "add", src)
+	if code != ExitEmbedder {
+		t.Fatalf("exit = %d, want %d; stderr=%q", code, ExitEmbedder, errOut)
+	}
+	if _, err := os.Stat(filepath.Join(root, "data", "kb-add-unusable-test.md")); !os.IsNotExist(err) {
+		t.Fatalf("file was copied before the embedder check: stat err = %v", err)
 	}
 }

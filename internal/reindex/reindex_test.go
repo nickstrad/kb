@@ -3,6 +3,7 @@ package reindex
 import (
 	"bytes"
 	"context"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 	"io"
 	"math"
 	"os"
@@ -84,14 +85,14 @@ func copyTree(t *testing.T, src, dst string) {
 }
 
 // newTestStore opens a temp database and records embed_meta for emb.
-func newTestStore(t *testing.T, emb embed.Embedder) *store.Store {
+func newTestStore(t *testing.T, emb embed.Embedder) *sqlite.Store {
 	t.Helper()
-	s, err := store.Open(filepath.Join(t.TempDir(), "kb.sqlite"))
+	s, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "kb.sqlite"), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
-	if err := s.EnsureEmbedMeta(emb.Model(), emb.Dim()); err != nil {
+	if err := s.EnsureEmbedMeta(context.Background(), store.EmbedMeta{Model: emb.Model(), Dim: emb.Dim()}); err != nil {
 		t.Fatalf("EnsureEmbedMeta: %v", err)
 	}
 	return s
@@ -102,7 +103,7 @@ func ceilDiv(a, b int) int {
 	return int(math.Ceil(float64(a) / float64(b)))
 }
 
-// TestReindexLifecycle drives reindex.All through the scenarios P2.4 must cover: a clean first
+// TestReindexLifecycle drives reindex.All through these scenarios: a clean first
 // pass, a fully-skipped second pass, an edit that reindexes and re-embeds only the changed
 // entry/chunk, a broken entry that is warned about rather than aborting the run, and a deleted
 // entry that is removed from the database.
@@ -238,7 +239,7 @@ func TestReindexLifecycle(t *testing.T) {
 	if sum5.Scanned != 2 { // tmux-daemons-die-at-logout.md, broken.md
 		t.Errorf("pass 5: Scanned = %d, want 2", sum5.Scanned)
 	}
-	if got, err := s.GetEntryByPath("data/droplet/README.md"); err != nil {
+	if got, err := s.Entry(context.Background(), "data/droplet/README.md"); err != nil {
 		t.Fatalf("GetEntryByPath(droplet/README.md): %v", err)
 	} else if got != nil {
 		t.Errorf("droplet/README.md is still in the database after its file was deleted")
@@ -276,7 +277,7 @@ func TestResolveOne(t *testing.T) {
 	if sum.Reindexed != 1 || sum.Scanned != 1 {
 		t.Errorf("One: Reindexed=%d Scanned=%d, want 1, 1", sum.Reindexed, sum.Scanned)
 	}
-	if got, err := s.GetEntryByPath("data/droplet/README.md"); err != nil {
+	if got, err := s.Entry(context.Background(), "data/droplet/README.md"); err != nil {
 		t.Fatalf("GetEntryByPath: %v", err)
 	} else if got != nil {
 		t.Error("One(tmux) must not index droplet/README.md, which was never discovered")
@@ -328,7 +329,7 @@ func appendToSection(t *testing.T, path, heading, line string) {
 }
 
 // countRows runs a "SELECT count(*) FROM ..." query and returns the result.
-func countRows(t *testing.T, s *store.Store, query string) int {
+func countRows(t *testing.T, s *sqlite.Store, query string) int {
 	t.Helper()
 	var n int
 	if err := s.DB().QueryRow(query).Scan(&n); err != nil {
@@ -337,13 +338,9 @@ func countRows(t *testing.T, s *store.Store, query string) int {
 	return n
 }
 
-// TestReindexChunkSplitFailureIsPerEntry covers the regression the reviewer found: a plain
-// (non-*entry.ValidationError) error from chunk.Split — here, a directory entry whose front door
-// (README.md) has perfectly good front matter but whose secondary docs/bad.md opens a front
-// matter fence ("---") that never closes — must be warned about and counted as Failed like any
-// other bad entry, not treated as a run-aborting error. Before the fix, only a
-// *entry.ValidationError from chunk.Split was handled this way, so this case aborted All before
-// it ever reached the second, healthy entry.
+// TestReindexChunkSplitFailureIsPerEntry: a plain (non-ValidationError) error from chunk.Split,
+// here a docs/bad.md whose front-matter fence never closes, is warned about and counted as Failed
+// like any other bad entry; the run still reaches the healthy entry.
 func TestReindexChunkSplitFailureIsPerEntry(t *testing.T) {
 	root := t.TempDir()
 	copyFile(t, filepath.Join(sourceRepo, "tmux-daemons-die-at-logout.md"), filepath.Join(root, "data", "tmux-daemons-die-at-logout.md"))
@@ -387,17 +384,17 @@ func TestReindexChunkSplitFailureIsPerEntry(t *testing.T) {
 	if !strings.Contains(stderr.String(), "warning:") {
 		t.Errorf("stderr = %q, want a warning line", stderr.String())
 	}
-	if got, err := s.GetEntryByPath("data/tmux-daemons-die-at-logout.md"); err != nil || got == nil {
+	if got, err := s.Entry(context.Background(), "data/tmux-daemons-die-at-logout.md"); err != nil || got == nil {
 		t.Errorf("the healthy entry must still be indexed: GetEntryByPath = %v, %v", got, err)
 	}
-	if got, err := s.GetEntryByPath("data/brokendir/README.md"); err != nil {
+	if got, err := s.Entry(context.Background(), "data/brokendir/README.md"); err != nil {
 		t.Fatalf("GetEntryByPath(brokendir/README.md): %v", err)
 	} else if got != nil {
 		t.Error("brokendir/README.md must not be indexed: its docs/bad.md failed to chunk")
 	}
 }
 
-// TestSummaryStringFormat pins the exact one-line summary format from plan.md's P2.4 row,
+// TestSummaryStringFormat pins the exact one-line summary format,
 // including the optional ", N failed" / ", N removed" clauses.
 func TestSummaryStringFormat(t *testing.T) {
 	cases := []struct {
@@ -444,7 +441,7 @@ func TestReindexNeverStoresDocPrefix(t *testing.T) {
 		t.Fatalf("All: %v", err)
 	}
 
-	entries, err := s.ListEntries()
+	entries, err := s.Entries(context.Background())
 	if err != nil {
 		t.Fatalf("ListEntries: %v", err)
 	}
@@ -452,7 +449,7 @@ func TestReindexNeverStoresDocPrefix(t *testing.T) {
 		t.Fatal("no entries were indexed")
 	}
 	for _, e := range entries {
-		chunks, err := s.ListChunks(e.ID)
+		chunks, err := s.Chunks(context.Background(), e.ID)
 		if err != nil {
 			t.Fatalf("ListChunks(%s): %v", e.Path, err)
 		}

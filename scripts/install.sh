@@ -1,77 +1,98 @@
 #!/usr/bin/env bash
-# Builds the kb CLI with cgo (fts5 + sqlite-vec) and links it to /usr/local/bin/kb.
+# Installs the kb CLI from a GitHub release (default) or from source.
 #
-#   KB_DEFAULT_ROOT=/path/to/knowledge scripts/install.sh
+#   scripts/install.sh [--version vX.Y.Z] [--prefix DIR] [--from-source]
 #
-# KB_DEFAULT_ROOT is the knowledge repository kb uses when KB_ROOT is unset. It is remembered in
-# .cache/default-root, so later installs on the same machine need no arguments; without either,
-# the binary defaults to ~/knowledge.
+# Release install downloads kb-<tag>-<os>-<arch>.tar.gz from github.com/nickstrad/kb, verifies
+# its sha256, and writes DIR/kb (default ~/.local/bin). No sudo.
 set -euo pipefail
 
-# Resolve the module dir from the script's own location, not from cwd, so this works no matter
-# where it is invoked from, even through a symlink.
-SELF=$(readlink -f "$0")
-MODULE_DIR=$(cd "$(dirname "$SELF")/.." && pwd)
-cd "$MODULE_DIR"
+REPO=nickstrad/kb
+PREFIX="$HOME/.local/bin"
+VERSION=""
+FROM_SOURCE=0
 
-# --- Prerequisites -----------------------------------------------------------------------------
+usage() {
+  cat <<'USAGE'
+Usage: install.sh [--version vX.Y.Z] [--prefix DIR] [--from-source]
 
-GO=""
-if command -v go >/dev/null 2>&1; then
-  GO=$(command -v go)
-elif [ -x /usr/local/go/bin/go ]; then
-  GO=/usr/local/go/bin/go
+  --version TAG    install this release tag (default: latest)
+  --prefix DIR     install directory for the kb binary (default: ~/.local/bin)
+  --from-source    run: go install -tags fts5 github.com/nickstrad/kb/cmd/kb@latest
+                   (needs Go and a C compiler; ignores --version and --prefix)
+  -h, --help       show this help
+USAGE
+}
+
+die() { echo "install.sh: $*" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version) [ $# -ge 2 ] || die "--version needs a value"; VERSION=$2; shift 2 ;;
+    --prefix) [ $# -ge 2 ] || die "--prefix needs a value"; PREFIX=$2; shift 2 ;;
+    --from-source) FROM_SOURCE=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; die "unknown argument: $1" ;;
+  esac
+done
+
+if [ "$FROM_SOURCE" = 1 ]; then
+  command -v go >/dev/null 2>&1 || die "go is required for --from-source"
+  go install -tags fts5 "github.com/$REPO/cmd/kb@latest"
+  echo "install.sh: installed kb into ${GOBIN:-$(go env GOPATH)/bin}"
+  exit 0
+fi
+
+case "$(uname -s)" in
+  Darwin) OS=darwin ;;
+  Linux) OS=linux ;;
+  *) die "unsupported OS: $(uname -s)" ;;
+esac
+case "$(uname -m)" in
+  arm64|aarch64) ARCH=arm64 ;;
+  x86_64|amd64) ARCH=amd64 ;;
+  *) die "unsupported architecture: $(uname -m)" ;;
+esac
+
+command -v curl >/dev/null 2>&1 || die "curl is required"
+if command -v sha256sum >/dev/null 2>&1; then
+  sha_check() { sha256sum -c "$1" >/dev/null; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha_check() { shasum -a 256 -c "$1" >/dev/null; }
 else
-  echo "install.sh: go is required (checked PATH and /usr/local/go/bin/go)" >&2
-  exit 1
+  die "sha256sum or shasum is required"
 fi
 
-if ! command -v gcc >/dev/null 2>&1; then
-  echo "install.sh: gcc is required for the cgo build (fts5 + sqlite-vec)" >&2
-  exit 1
+if [ -z "$VERSION" ]; then
+  # The /releases/latest redirect ends in the tag name; no API token needed.
+  VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") \
+    || die "could not resolve the latest release"
+  VERSION=${VERSION##*/}
+  [ -n "$VERSION" ] && [ "$VERSION" != latest ] || die "no release found for $REPO"
 fi
 
-echo "install.sh: using go at $GO ($("$GO" version))"
-echo "install.sh: using gcc at $(command -v gcc) ($(gcc -dumpversion))"
+NAME="kb-$VERSION-$OS-$ARCH.tar.gz"
+BASE="https://github.com/$REPO/releases/download/$VERSION"
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
 
-# --- Build ---------------------------------------------------------------------------------------
+echo "install.sh: downloading $NAME"
+curl -fsSL -o "$TMP/$NAME" "$BASE/$NAME" || die "download failed: $BASE/$NAME"
+curl -fsSL -o "$TMP/$NAME.sha256" "$BASE/$NAME.sha256" || die "checksum download failed"
+(cd "$TMP" && sha_check "$NAME.sha256") || die "sha256 mismatch for $NAME"
 
-mkdir -p .cache
+tar -xzf "$TMP/$NAME" -C "$TMP" kb
+mkdir -p "$PREFIX"
+install -m 0755 "$TMP/kb" "$PREFIX/kb"
+echo "install.sh: installed $PREFIX/kb"
 
-VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo dev)
-
-DEFAULT_ROOT=${KB_DEFAULT_ROOT:-}
-if [ -z "$DEFAULT_ROOT" ] && [ -f .cache/default-root ]; then
-  DEFAULT_ROOT=$(cat .cache/default-root)
+if [ "$OS" = darwin ]; then
+  echo "install.sh: macOS binaries are unsigned; if Gatekeeper blocks kb, run:"
+  echo "  xattr -d com.apple.quarantine $PREFIX/kb"
 fi
-if [ -n "$DEFAULT_ROOT" ]; then
-  printf '%s\n' "$DEFAULT_ROOT" > .cache/default-root
-  echo "install.sh: default knowledge repository: $DEFAULT_ROOT"
-else
-  echo "install.sh: no KB_DEFAULT_ROOT; kb will default to ~/knowledge when KB_ROOT is unset"
-fi
-LDFLAGS="-X main.version=$VERSION -X github.com/nickstrad/kb/internal/cli.defaultRoot=$DEFAULT_ROOT"
+case ":$PATH:" in
+  *":$PREFIX:"*) ;;
+  *) echo "install.sh: warning: $PREFIX is not on your PATH; add it to your shell profile" >&2 ;;
+esac
 
-echo "install.sh: building kb (cgo: fts5 + sqlite-vec) from $MODULE_DIR"
-echo "install.sh: the first cgo build of mattn/go-sqlite3 + sqlite-vec can take ~2 minutes;" \
-     "later builds are fast because the build cache is warm."
-
-START=$SECONDS
-"$GO" build -tags fts5 -trimpath -ldflags "$LDFLAGS" -o "$PWD/.cache/kb" ./cmd/kb
-ELAPSED=$((SECONDS - START))
-echo "install.sh: build finished in ${ELAPSED}s -> $PWD/.cache/kb"
-
-# --- Link ------------------------------------------------------------------------------------
-
-# Symlink (not copy): the binary in .cache/ is what gets updated on the next install, and
-# /usr/local/bin/kb always points at it.
-ln -sfn "$PWD/.cache/kb" /usr/local/bin/kb
-echo "install.sh: linked /usr/local/bin/kb -> $PWD/.cache/kb"
-
-# --- Verify ------------------------------------------------------------------------------------
-
-/usr/local/bin/kb version
-
-# The final health check exits non-zero if the database, embedder, or generated index needs attention.
-echo "install ok; running kb doctor:"
-/usr/local/bin/kb doctor
+"$PREFIX/kb" version

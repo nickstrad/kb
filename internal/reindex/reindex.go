@@ -1,53 +1,43 @@
-// Package reindex rebuilds the SQLite index from the knowledge repository's Markdown files: it is
-// the implementation behind `kb reindex` (plan.md, P2.4) and is written so `kb add`/`kb edit`
-// (P4.x) can reuse it to reindex the one entry they just wrote.
+// Package reindex rebuilds the SQLite index from the knowledge repository's Markdown files. It
+// backs `kb reindex`, and `kb add`/`kb edit` use One to reindex the entry they just wrote.
 //
-// Per plan.md chunking rule 6, reindexing an entry is a three-way comparison: an entry whose
-// body_hash is unchanged is skipped entirely; otherwise every chunk is recomputed, but a chunk
-// whose text_hash already exists for that entry reuses its stored embedding instead of paying for
-// another call to the embedder. Batching (Options.BatchSize texts per embedder call) is scoped to
-// one entry at a time, not to the whole run: the "reuse an unchanged chunk's embedding" lookup
-// (store.ExistingEmbeddings) is itself scoped to one entry, so there is no benefit to batching
-// across entries, and keeping the loop per-entry lets one entry's ReplaceEntryChunks commit as
-// soon as its own chunks are ready instead of waiting on every other entry's embeddings too.
+// Reindexing an entry is a three-way comparison (chunking rule 6): an entry whose body_hash is
+// unchanged is skipped; otherwise every chunk is recomputed, and a chunk whose text_hash already
+// exists for that entry reuses its stored embedding. Batching (Options.BatchSize texts per
+// embedder call) is per entry, because the embedding-reuse lookup is per entry and each entry
+// commits as soon as its own chunks are ready.
 //
-// A bad individual entry — front matter that fails to validate, a file that cannot be read, a
-// secondary file (docs/*.md) with a structural problem such as an unclosed front-matter fence —
-// is warned about on Stderr and counted in Summary.Failed; it does not stop the rest of the repo
-// from being reindexed. An embedder failure is different: since it will keep failing for every
-// subsequent entry too, it aborts the whole run and is returned as an error. This package never
-// imports a concrete embedder implementation (e.g. internal/embed/ollama) — it only knows the
-// embed.Embedder interface — so it has no way to distinguish "embedder unreachable" from any other
-// embedder error by type. It simply returns the error from embed.Embedder.Embed wrapped with
-// %w, which preserves the chain: a caller that constructed the embedder (kb reindex, in
-// internal/cli/reindex.go) can still recognise the shared sentinel (embed.ErrUnavailable) with
-// errors.Is on the error this package returns, and map that to exit code 2 per plan.md's CLI exit
-// codes. Everything else maps to exit code 1.
+// A bad entry (invalid front matter, an unreadable file, a broken docs/*.md fence) is warned about
+// on Stderr and counted in Summary.Failed; the run continues. An embedder or store error aborts
+// the run and is returned as an *errs.Error that keeps the inner kind (Unavailable for a missing
+// model) and names the entry.
 package reindex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 
+	"github.com/nickstrad/kb/internal/assert"
 	"github.com/nickstrad/kb/internal/chunk"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/store"
 )
 
-// defaultBatchSize is used when Options.BatchSize is not positive: 16 texts per embedder call, per
-// plan.md ("embedded (batched, 16 texts per Ollama call, ...)").
+// defaultBatchSize is used when Options.BatchSize is not positive: 16 texts per embedder call.
 const defaultBatchSize = 16
 
-// Options configures a reindex run. Store must already have EnsureEmbedMeta called on it (the
-// caller decides the model/dim and what to do about a mismatch — see cli/reindex.go); Force skips
-// the body_hash comparison and reindexes every entry regardless, which the CLI sets after calling
-// Store.ResetForReindex() for `kb reindex --all` on an embed_meta mismatch, since ResetForReindex
-// has already erased the old body_hash anyway.
+// Options configures a reindex run. Store must already have EnsureEmbedMeta called on it for
+// Embedder (the caller decides what to do about a mismatch; see cli/reindex.go). Force skips the
+// body_hash comparison, which the CLI sets after ResetIndex for `kb reindex --all` on a mismatch.
 type Options struct {
 	Root      string
-	Store     *store.Store
+	Store     store.Index
 	Embedder  embed.Embedder
 	BatchSize int
 	Stdout    io.Writer
@@ -69,7 +59,7 @@ type Summary struct {
 	Removed    int
 }
 
-// String renders the one-line summary from plan.md's P2.4 row: "entries: N scanned, M reindexed,
+// String renders the one-line summary: "entries: N scanned, M reindexed,
 // K skipped; chunks: X; embed calls: Y", with ", F failed" and ", R removed" appended to the
 // entries clause only when non-zero.
 func (s Summary) String() string {
@@ -87,14 +77,33 @@ func (s Summary) String() string {
 // longer exists on disk (Summary.Removed). It stops and returns an error the first time an entry
 // fails for a reason other than its own content (an embedder or database failure); a bad entry's
 // own content (missing front matter, unreadable file) never stops the run — see the package doc.
+//
+// A root with no data/ directory yet is an empty corpus, not an error: `kb add` creates data/ on
+// demand, so a reindex on a fresh root (possibly racing that add) has simply nothing to scan.
+//
+// Pruning and concurrent writers: another kb process may add an entry after this run's Discover.
+// That entry's row is then in ListEntries but not in the first discovery, and pruning on the
+// first discovery alone would delete it. Every writer (kb add, kb edit) puts the file on disk
+// before it commits the row, so a row that ListEntries returns had its file on disk before
+// ListEntries ran. All therefore discovers again after ListEntries and prunes only the rows that
+// neither discovery found: a row whose file exists at prune time is never removed.
 func All(ctx context.Context, o Options) (Summary, error) {
+	sum, err := all(ctx, o)
+	if err != nil {
+		return sum, boundary(err, "reindex.All")
+	}
+	return sum, nil
+}
+
+func all(ctx context.Context, o Options) (Summary, error) {
+	preconditions(ctx, o)
 	o.Stdout = orDiscard(o.Stdout)
 	o.Stderr = orDiscard(o.Stderr)
 	var sum Summary
 
-	entries, err := entry.Discover(o.Root)
+	entries, err := discover(o.Root)
 	if err != nil {
-		return sum, fmt.Errorf("reindex: %w", err)
+		return sum, err
 	}
 
 	onDisk := make(map[string]bool, len(entries))
@@ -105,34 +114,88 @@ func All(ctx context.Context, o Options) (Summary, error) {
 		}
 	}
 
-	rows, err := o.Store.ListEntries()
+	rows, err := o.Store.Entries(ctx)
 	if err != nil {
-		return sum, fmt.Errorf("reindex: list existing entries: %w", err)
+		return sum, fmt.Errorf("list existing entries: %w", err)
 	}
+	var gone []string
 	for _, row := range rows {
-		if onDisk[row.Path] {
+		if !onDisk[row.Path] {
+			gone = append(gone, row.Path)
+		}
+	}
+	if len(gone) == 0 {
+		return sum, nil
+	}
+	// Re-check on disk now, after ListEntries: see the doc comment.
+	now, err := discover(o.Root)
+	if err != nil {
+		return sum, err
+	}
+	for _, e := range now {
+		onDisk[e.Path] = true
+	}
+	for _, path := range gone {
+		if onDisk[path] {
 			continue
 		}
-		if err := o.Store.DeleteEntry(ctx, row.Path); err != nil {
-			return sum, fmt.Errorf("reindex: remove %s: %w", row.Path, err)
+		if err := o.Store.DeleteEntry(ctx, path); err != nil {
+			return sum, fmt.Errorf("remove %s: %w", path, err)
 		}
 		sum.Removed++
-		fmt.Fprintf(o.Stdout, "removed %s (no longer on disk)\n", row.Path)
+		fmt.Fprintf(o.Stdout, "removed %s (no longer on disk)\n", path)
 	}
 
 	return sum, nil
 }
 
+// discover is entry.Discover with a missing data/ directory read as an empty corpus (see All).
+func discover(root string) ([]entry.Entry, error) {
+	entries, err := entry.Discover(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		if _, statErr := os.Stat(entry.DataRoot(root)); errors.Is(statErr, fs.ErrNotExist) {
+			return nil, nil
+		}
+	}
+	if err != nil {
+		return nil, errs.Wrap(err, errs.Usage, "reindex.All", "could not read the entries under %s: %v", entry.DataRoot(root), err)
+	}
+	return entries, nil
+}
+
 // One reindexes a single entry, typically the result of entry.Resolve. It never touches any other
 // entry and never removes anything from the database.
 func One(ctx context.Context, o Options, e entry.Entry) (Summary, error) {
+	preconditions(ctx, o)
 	o.Stdout = orDiscard(o.Stdout)
 	o.Stderr = orDiscard(o.Stderr)
 	var sum Summary
 	if err := reindexOne(ctx, o, e, &sum); err != nil {
-		return sum, err
+		return sum, boundary(err, "reindex.One")
 	}
 	return sum, nil
+}
+
+// boundary makes a run-aborting error well-formed: it keeps the inner kind (an Unavailable model
+// stays exit 2, a store driver failure stays Internal) and the inner message, which names the
+// entry.
+func boundary(err error, op string) error {
+	return errs.Wrap(err, errs.KindOf(err), op, "%v", err)
+}
+
+// preconditions asserts that the caller recorded this embedder in embed_meta before the run
+// (TESTING.md §3.5). A read error is left for the run itself to report.
+func preconditions(ctx context.Context, o Options) {
+	if !assert.Enabled {
+		return
+	}
+	assert.Pre(o.Store != nil && o.Embedder != nil, "reindex: nil Store or Embedder")
+	m, ok, err := o.Store.EmbedMeta(ctx)
+	if err != nil {
+		return
+	}
+	want := store.EmbedMeta{Model: o.Embedder.Model(), Dim: o.Embedder.Dim()}
+	assert.Pre(ok && m == want, "reindex: embed_meta %+v (recorded %t) != embedder %+v; call EnsureEmbedMeta first", m, ok, want)
 }
 
 // orDiscard returns w unchanged, or io.Discard when w is nil, so All and One never write through a
@@ -168,7 +231,7 @@ func reindexOne(ctx context.Context, o Options, e entry.Entry, sum *Summary) err
 	}
 	bodyHash := entry.BodyHash(files, e.Files)
 
-	existing, err := o.Store.GetEntryByPath(e.Path)
+	existing, err := o.Store.Entry(ctx, e.Path)
 	if err != nil {
 		return fmt.Errorf("reindex %s: %w", e.Path, err)
 	}
@@ -192,7 +255,7 @@ func reindexOne(ctx context.Context, o Options, e entry.Entry, sum *Summary) err
 
 	var reusable map[string][]float32
 	if existing != nil {
-		reusable, err = o.Store.ExistingEmbeddings(ctx, existing.ID)
+		reusable, err = o.Store.Embeddings(ctx, existing.ID)
 		if err != nil {
 			return fmt.Errorf("reindex %s: %w", e.Path, err)
 		}
@@ -233,11 +296,15 @@ func reindexOne(ctx context.Context, o Options, e entry.Entry, sum *Summary) err
 		}
 		vecs, err := o.Embedder.Embed(ctx, pendingText[start:end])
 		if err != nil {
-			return fmt.Errorf("reindex %s: embed: %w", e.Path, err)
+			k := errs.KindOf(err)
+			if errors.Is(err, embed.ErrUnavailable) {
+				k = errs.Unavailable
+			}
+			return errs.Wrap(err, k, "reindex.One", "reindex %s: embed: %v", e.Path, err).With("path", e.Path)
 		}
 		sum.EmbedCalls++
 		if len(vecs) != end-start {
-			return fmt.Errorf("reindex %s: embedder returned %d vectors for %d texts", e.Path, len(vecs), end-start)
+			return errs.New(errs.Conflict, "reindex.One", "reindex %s: embedder returned %d vectors for %d texts", e.Path, len(vecs), end-start).With("path", e.Path)
 		}
 		for j, vec := range vecs {
 			inputs[pendingIdx[start+j]].Embedding = vec
@@ -255,7 +322,7 @@ func reindexOne(ctx context.Context, o Options, e entry.Entry, sum *Summary) err
 		Verified: e.Meta.Verified,
 		BodyHash: bodyHash,
 	}
-	if _, err := o.Store.ReplaceEntryChunks(ctx, entryInput, inputs); err != nil {
+	if _, err := o.Store.ReplaceEntry(ctx, entryInput, inputs); err != nil {
 		return fmt.Errorf("reindex %s: %w", e.Path, err)
 	}
 

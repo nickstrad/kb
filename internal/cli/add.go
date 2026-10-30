@@ -1,7 +1,7 @@
 // `kb add`: validate front matter, place the file in data/, then chunk and embed it.
 //
 // Both forms (`kb add <file.md>` and `kb add --dir <topic>/`) follow the same shape:
-//  1. validate the name (plan.md: lowercase kebab-case);
+//  1. validate the name (lowercase kebab-case);
 //  2. read and validate front matter, and reject anything that looks like a secret, before
 //     touching the repository or the database at all;
 //  3. work out where the entry belongs (copy in from outside the repo, or index in place when it
@@ -32,15 +32,15 @@ import (
 
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/reindex"
 	"github.com/nickstrad/kb/internal/store"
 )
 
-// addBatchSize matches reindex's own batching (plan.md: "batched, 16 texts per Ollama call").
+// addBatchSize matches reindex's batching: 16 texts per embedder call.
 const addBatchSize = 16
 
-// fileNameRe and dirNameRe are the naming rule for a new entry (plan.md "Conventions": lowercase
-// kebab-case).
+// fileNameRe and dirNameRe are the naming rule for a new entry: lowercase kebab-case.
 var (
 	fileNameRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*\.md$`)
 	dirNameRe  = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -67,7 +67,7 @@ var reservedDirNames = map[string]bool{
 }
 
 // newAddCmd builds `kb add <file.md>` and `kb add --dir <topic>/`.
-func newAddCmd(stdout, stderr io.Writer) *cobra.Command {
+func newAddCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	var asDir bool
 	cmd := &cobra.Command{
 		Use:   "add <file.md>",
@@ -80,9 +80,9 @@ func newAddCmd(stdout, stderr io.Writer) *cobra.Command {
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if asDir {
-				return runAddDir(cmd, stdout, stderr, args[0])
+				return runAddDir(cmd, d, stdout, stderr, args[0])
 			}
-			return runAddFile(cmd, stdout, stderr, args[0])
+			return runAddFile(cmd, d, stdout, stderr, args[0])
 		},
 	}
 	cmd.Flags().BoolVar(&asDir, "dir", false, "the argument is a directory entry, not a single file")
@@ -90,32 +90,32 @@ func newAddCmd(stdout, stderr io.Writer) *cobra.Command {
 }
 
 // runAddFile implements `kb add <file.md>`.
-func runAddFile(cmd *cobra.Command, stdout, stderr io.Writer, srcArg string) (retErr error) {
+func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg string) (retErr error) {
 	root := Root()
 	basename := filepath.Base(filepath.Clean(srcArg))
 
 	if !fileNameRe.MatchString(basename) {
-		return usageErr("kb add: %q must be lowercase kebab-case matching ^[a-z0-9]+(-[a-z0-9]+)*\\.md$", basename)
+		return usageErr("%q must be lowercase kebab-case matching ^[a-z0-9]+(-[a-z0-9]+)*\\.md$", basename)
 	}
 	if reservedFileNames[basename] {
-		return usageErr("kb add: %q is a reserved repository file, not a knowledge entry", basename)
+		return usageErr("%q is a reserved repository file, not a knowledge entry", basename)
 	}
 
 	src, err := os.ReadFile(srcArg)
 	if err != nil {
-		return usageErr("kb add: read %s: %s", srcArg, err)
+		return usageErr("read %s: %s", srcArg, err)
 	}
 
 	fm, _, err := entry.ParseFrontMatter(src)
 	if err != nil {
 		var ve *entry.ValidationError
 		if errors.As(err, &ve) {
-			return usageErr("kb add: %s: %s", srcArg, ve.Reason)
+			return usageErr("%s: %s", srcArg, ve.Reason)
 		}
-		return usageErr("kb add: %s: %s", srcArg, err)
+		return usageErr("%s: %s", srcArg, err)
 	}
 	if strings.TrimSpace(fm.Title) == "" || strings.TrimSpace(fm.Summary) == "" {
-		return usageErr("kb add: %s: front matter with title and summary is required", srcArg)
+		return usageErr("%s: front matter with title and summary is required", srcArg)
 	}
 	warnMissingMeta(stderr, basename, fm)
 
@@ -128,54 +128,61 @@ func runAddFile(cmd *cobra.Command, stdout, stderr io.Writer, srcArg string) (re
 		return err
 	}
 
-	// newEmbedder and openStoreForWrite are shared with `kb edit`/`kb rm` (P4.2,
-	// internal/cli/setup_p42.go); ensureEmbedMetaForReindex is shared with `kb reindex`
-	// (internal/cli/reindex.go). `kb add` cannot recover from an embed_meta mismatch on its own
-	// (all=false), same as `kb edit` — see ensureEmbedMetaForReindex's doc.
-	st, err := openStoreForWrite(root)
+	// Like `kb edit`, `kb add` cannot recover from an embed_meta mismatch (all=false below).
+	st, err := d.openStoreForWrite(cmd.Context(), root)
 	if err != nil {
-		return usageErr("kb add: %s", err)
+		return err
 	}
 	defer st.Close()
 
-	embedder, err := newEmbedder(cmd)
+	embedder, err := d.newEmbedder(cmd)
 	if err != nil {
-		return usageErr("kb add: %s", err)
+		return err
 	}
 	force, err := ensureEmbedMetaForReindex(cmd.Context(), st, embedder, false, stderr)
 	if err != nil {
-		return usageErr("kb add: %s", strings.TrimPrefix(err.Error(), "kb reindex: "))
+		return err
 	}
 
-	if err := checkAddDestination(st, relPath, destPath, copyNeeded); err != nil {
+	// Check the model before anything is written, so an unusable embedder fails fast with nothing
+	// to roll back (exit 2, same as the reindex path).
+	if p, ok := embedder.(pinger); ok {
+		if err := p.Ping(cmd.Context()); err != nil {
+			return errs.Wrap(err, unavailableOr(err), "cli.add", "embedder not usable, nothing copied: %v", err)
+		}
+	}
+
+	if err := checkAddDestination(cmd.Context(), st, relPath, destPath, copyNeeded); err != nil {
 		return err
 	}
 	if copyNeeded {
 		if err := os.MkdirAll(entry.DataRoot(root), 0o755); err != nil {
-			return usageErr("kb add: create data directory: %s", err)
+			return usageErr("create data directory: %s", err)
 		}
 		// Claim the destination exclusively before arming cleanup; never remove another writer's files.
 		f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
-			return usageErr("kb add: %s", err)
+			return usageErr("%s", err)
 		}
-		f.Close()
 		defer func() {
 			if retErr != nil {
-				rollbackAdded(st, relPath, destPath, stderr)
+				rollbackAdded(cmd.Context(), st, relPath, destPath, stderr)
 			}
 		}()
+		if err := f.Close(); err != nil {
+			return usageErr("%s", err)
+		}
 		if err := writeFileBytes(src, destPath); err != nil {
-			return usageErr("kb add: %s", err)
+			return usageErr("%s", err)
 		}
 	}
 
 	e, err := entry.Resolve(root, relPath)
 	if err != nil {
-		return usageErr("kb add: %s", err)
+		return usageErr("%s", err)
 	}
 	if e.Err != nil {
-		return usageErr("kb add: %s", e.Err)
+		return usageErr("%s", e.Err)
 	}
 
 	sum, err := reindex.One(cmd.Context(), reindex.Options{
@@ -188,14 +195,11 @@ func runAddFile(cmd *cobra.Command, stdout, stderr io.Writer, srcArg string) (re
 		Force:     force,
 	}, e)
 	if err != nil {
-		if errors.Is(err, embed.ErrUnavailable) {
-			return embedderErr("kb add: %s", err)
-		}
-		return usageErr("kb add: %s", err)
+		return err
 	}
 
 	if sum.Failed > 0 {
-		return usageErr("kb add: %s: indexing failed; see warnings above", relPath)
+		return usageErr("%s: indexing failed; see warnings above", relPath)
 	}
 
 	fmt.Fprintf(stdout, "added %s (%d chunks)\n", relPath, sum.Chunks)
@@ -203,47 +207,47 @@ func runAddFile(cmd *cobra.Command, stdout, stderr io.Writer, srcArg string) (re
 }
 
 // runAddDir implements `kb add --dir <topic>/`.
-func runAddDir(cmd *cobra.Command, stdout, stderr io.Writer, argPath string) (retErr error) {
+func runAddDir(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, argPath string) (retErr error) {
 	root := Root()
 	srcDir := filepath.Clean(argPath)
 	name := filepath.Base(srcDir)
 
 	if !dirNameRe.MatchString(name) {
-		return usageErr("kb add --dir: %q must be lowercase kebab-case matching ^[a-z0-9]+(-[a-z0-9]+)*$", name)
+		return usageErr("%q must be lowercase kebab-case matching ^[a-z0-9]+(-[a-z0-9]+)*$", name)
 	}
 	if reservedDirNames[name] {
-		return usageErr("kb add --dir: %q is a reserved directory name, not a knowledge entry", name)
+		return usageErr("%q is a reserved directory name, not a knowledge entry", name)
 	}
 
 	info, err := os.Stat(srcDir)
 	if err != nil {
-		return usageErr("kb add --dir: %s", err)
+		return usageErr("%s", err)
 	}
 	if !info.IsDir() {
-		return usageErr("kb add --dir: %s is not a directory", srcDir)
+		return usageErr("%s is not a directory", srcDir)
 	}
 
 	readmePath := filepath.Join(srcDir, "README.md")
 	readmeData, err := os.ReadFile(readmePath)
 	if err != nil {
-		return usageErr("kb add --dir: %s: missing or unreadable README.md: %s", srcDir, err)
+		return usageErr("%s: missing or unreadable README.md: %s", srcDir, err)
 	}
 	fm, _, err := entry.ParseFrontMatter(readmeData)
 	if err != nil {
 		var ve *entry.ValidationError
 		if errors.As(err, &ve) {
-			return usageErr("kb add --dir: %s: %s", readmePath, ve.Reason)
+			return usageErr("%s: %s", readmePath, ve.Reason)
 		}
-		return usageErr("kb add --dir: %s: %s", readmePath, err)
+		return usageErr("%s: %s", readmePath, err)
 	}
 	if strings.TrimSpace(fm.Title) == "" || strings.TrimSpace(fm.Summary) == "" {
-		return usageErr("kb add: %s: front matter with title and summary is required", readmePath)
+		return usageErr("%s: front matter with title and summary is required", readmePath)
 	}
 	warnMissingMeta(stderr, name+"/README.md", fm)
 
 	files, names, err := collectDirFiles(srcDir)
 	if err != nil {
-		return usageErr("kb add --dir: %s", err)
+		return usageErr("%s", err)
 	}
 
 	// docs/*.md files may carry no front matter at all; only a structurally broken "---" fence
@@ -257,7 +261,7 @@ func runAddDir(cmd *cobra.Command, stdout, stderr io.Writer, argPath string) (re
 		if _, _, err := entry.ParseFrontMatter(files[n].data); err != nil {
 			var ve *entry.ValidationError
 			if !errors.As(err, &ve) {
-				return usageErr("kb add --dir: %s/%s: %s", name, n, err)
+				return usageErr("%s/%s: %s", name, n, err)
 			}
 		}
 	}
@@ -273,48 +277,56 @@ func runAddDir(cmd *cobra.Command, stdout, stderr io.Writer, argPath string) (re
 		return err
 	}
 
-	st, err := openStoreForWrite(root)
+	st, err := d.openStoreForWrite(cmd.Context(), root)
 	if err != nil {
-		return usageErr("kb add --dir: %s", err)
+		return err
 	}
 	defer st.Close()
 
-	embedder, err := newEmbedder(cmd)
+	embedder, err := d.newEmbedder(cmd)
 	if err != nil {
-		return usageErr("kb add: %s", err)
+		return err
 	}
 	force, err := ensureEmbedMetaForReindex(cmd.Context(), st, embedder, false, stderr)
 	if err != nil {
-		return usageErr("kb add: %s", strings.TrimPrefix(err.Error(), "kb reindex: "))
+		return err
 	}
 
-	if err := checkAddDestination(st, relPath, destDir, copyNeeded); err != nil {
+	// Check the model before anything is written, so an unusable embedder fails fast with nothing
+	// to roll back (exit 2, same as the reindex path).
+	if p, ok := embedder.(pinger); ok {
+		if err := p.Ping(cmd.Context()); err != nil {
+			return errs.Wrap(err, unavailableOr(err), "cli.add", "embedder not usable, nothing copied: %v", err)
+		}
+	}
+
+	if err := checkAddDestination(cmd.Context(), st, relPath, destDir, copyNeeded); err != nil {
 		return err
 	}
 	if copyNeeded {
 		if err := os.MkdirAll(entry.DataRoot(root), 0o755); err != nil {
-			return usageErr("kb add: create data directory: %s", err)
+			return usageErr("create data directory: %s", err)
 		}
 		// Claim the destination exclusively before arming cleanup; never remove another writer's files.
 		if err := os.Mkdir(destDir, 0o755); err != nil {
-			return usageErr("kb add: %s", err)
+			return usageErr("%s", err)
 		}
 		defer func() {
 			if retErr != nil {
-				rollbackAdded(st, relPath, destDir, stderr)
+				rollbackAdded(cmd.Context(), st, relPath, destDir, stderr)
 			}
 		}()
 		if err := copyTree(files, destDir); err != nil {
-			return usageErr("kb add: %s", err)
+			return usageErr("%s", err)
 		}
 	}
 
 	e, err := entry.Resolve(root, name)
 	if err != nil {
-		return usageErr("kb add --dir: %s", err)
+		return usageErr("%s", err)
 	}
 	if e.Err != nil {
-		return usageErr("kb add --dir: %s", e.Err)
+		return usageErr("%s", e.Err)
 	}
 
 	sum, err := reindex.One(cmd.Context(), reindex.Options{
@@ -327,14 +339,11 @@ func runAddDir(cmd *cobra.Command, stdout, stderr io.Writer, argPath string) (re
 		Force:     force,
 	}, e)
 	if err != nil {
-		if errors.Is(err, embed.ErrUnavailable) {
-			return embedderErr("kb add --dir: %s", err)
-		}
-		return usageErr("kb add --dir: %s", err)
+		return err
 	}
 
 	if sum.Failed > 0 {
-		return usageErr("kb add: %s: indexing failed; see warnings above", relPath)
+		return usageErr("%s: indexing failed; see warnings above", relPath)
 	}
 
 	fmt.Fprintf(stdout, "added %s (%d chunks)\n", relPath, sum.Chunks)
@@ -359,12 +368,12 @@ func warnMissingMeta(stderr io.Writer, path string, fm entry.FrontMatter) {
 func placeFile(root, srcPath, basename string) (relPath, destPath string, copyNeeded bool, err error) {
 	absRoot, err := filepath.Abs(entry.DataRoot(root))
 	if err != nil {
-		return "", "", false, usageErr("kb add: %s", err)
+		return "", "", false, usageErr("%s", err)
 	}
 	absRoot = filepath.Clean(absRoot)
 	absSrc, err := filepath.Abs(srcPath)
 	if err != nil {
-		return "", "", false, usageErr("kb add: %s", err)
+		return "", "", false, usageErr("%s", err)
 	}
 	absSrc = filepath.Clean(absSrc)
 
@@ -376,7 +385,7 @@ func placeFile(root, srcPath, basename string) (relPath, destPath string, copyNe
 
 	rel = filepath.ToSlash(rel)
 	if filepath.ToSlash(filepath.Dir(rel)) != "." {
-		return "", "", false, usageErr("kb add: %s: must be directly under data/, not a subdirectory", rel)
+		return "", "", false, usageErr("%s: must be directly under data/, not a subdirectory", rel)
 	}
 	return entry.DataDir + "/" + rel, absSrc, false, nil
 }
@@ -385,12 +394,12 @@ func placeFile(root, srcPath, basename string) (relPath, destPath string, copyNe
 func placeDir(root, srcDir, name string) (relPath, destDir string, copyNeeded bool, err error) {
 	absRoot, err := filepath.Abs(entry.DataRoot(root))
 	if err != nil {
-		return "", "", false, usageErr("kb add --dir: %s", err)
+		return "", "", false, usageErr("%s", err)
 	}
 	absRoot = filepath.Clean(absRoot)
 	absSrc, err := filepath.Abs(srcDir)
 	if err != nil {
-		return "", "", false, usageErr("kb add --dir: %s", err)
+		return "", "", false, usageErr("%s", err)
 	}
 	absSrc = filepath.Clean(absSrc)
 
@@ -402,7 +411,7 @@ func placeDir(root, srcDir, name string) (relPath, destDir string, copyNeeded bo
 
 	rel = filepath.ToSlash(rel)
 	if rel != name {
-		return "", "", false, usageErr("kb add --dir: %s: must be directly under data/, not a subdirectory", rel)
+		return "", "", false, usageErr("%s: must be directly under data/, not a subdirectory", rel)
 	}
 	return entry.DataDir + "/" + name + "/README.md", absSrc, false, nil
 }
@@ -564,35 +573,46 @@ type addFile struct {
 	mode fs.FileMode
 }
 
-func checkAddDestination(st *store.Store, rel, dest string, copying bool) error {
-	row, err := st.GetEntryByPath(rel)
+func checkAddDestination(ctx context.Context, st store.Index, rel, dest string, copying bool) error {
+	row, err := st.Entry(ctx, rel)
 	if err != nil {
-		return usageErr("kb add: %s", err)
+		return err
 	}
 	_, statErr := os.Lstat(dest)
 	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
-		return usageErr("kb add: %s", statErr)
+		return usageErr("%s", statErr)
 	}
 	if row != nil {
 		if errors.Is(statErr, fs.ErrNotExist) {
-			return usageErr("kb add: %s: indexed but missing on disk; run kb reindex --all", rel)
+			return usageErr("%s: indexed but missing on disk; run kb reindex --all", rel)
 		}
-		return usageErr("kb add: %s: already indexed; use kb edit %s", rel, rel)
+		return usageErr("%s: already indexed; use kb edit %s", rel, rel)
 	}
 	if copying && statErr == nil {
-		return usageErr("kb add: %s: exists but is not indexed; use kb reindex %s", rel, rel)
+		return usageErr("%s: exists but is not indexed; use kb reindex %s", rel, rel)
 	}
 	return nil
 }
 
-// Roll back only paths this invocation created. In-place input is always preserved.
-func rollbackAdded(st *store.Store, rel, dest string, stderr io.Writer) {
+// rollbackAdded removes only paths this invocation created; in-place input is always preserved.
+// The index cleanup runs on a context that ignores cancellation: a cancelled ctx is the usual
+// reason the command failed, and the cleanup must still happen.
+func rollbackAdded(ctx context.Context, st store.Index, rel, dest string, stderr io.Writer) {
 	if err := os.RemoveAll(dest); err != nil {
 		fmt.Fprintf(stderr, "kb add: cleanup %s failed: %s\n", dest, err)
 		return
 	}
 	fmt.Fprintf(stderr, "kb add: removed copied %s after failure\n", rel)
-	if err := st.DeleteEntry(context.Background(), rel); err != nil {
+	if err := st.DeleteEntry(context.WithoutCancel(ctx), rel); err != nil {
 		fmt.Fprintf(stderr, "kb add: cleanup index failed: %s; run kb reindex --all\n", err)
 	}
+}
+
+// unavailableOr keeps an embedder failure's kind, treating the embed.ErrUnavailable sentinel as
+// Unavailable (exit 2).
+func unavailableOr(err error) errs.Kind {
+	if errors.Is(err, embed.ErrUnavailable) {
+		return errs.Unavailable
+	}
+	return errs.KindOf(err)
 }

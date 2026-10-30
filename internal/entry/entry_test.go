@@ -55,8 +55,8 @@ func TestParseFrontMatter(t *testing.T) {
 	}
 }
 
-// TestParseFrontMatterTolerance exercises the specific shapes plan.md and real entries use that a
-// naive line-based parser could trip on: values containing an em dash and further colons after
+// TestParseFrontMatterTolerance exercises shapes real entries use that a naive line-based parser
+// could trip on: values containing an em dash and further colons after
 // the key, quoted strings, and CRLF line endings.
 func TestParseFrontMatterTolerance(t *testing.T) {
 	t.Run("dash and colon in value", func(t *testing.T) {
@@ -299,8 +299,7 @@ func TestDiscover(t *testing.T) {
 	}
 }
 
-// TestDiscoverToleratesOneBadEntry is the case the coordinator's P2.1 review flagged: Discover
-// must not abort the whole scan because one entry's front matter is broken. Both entries come
+// TestDiscoverToleratesOneBadEntry: Discover must not abort the whole scan because one entry's front matter is broken. Both entries come
 // back; the bad one carries a *ValidationError in Err and a zero-valued Meta, and the good one is
 // unaffected.
 func TestDiscoverToleratesOneBadEntry(t *testing.T) {
@@ -417,7 +416,7 @@ func TestDiscoverMatchesRealRepoListing(t *testing.T) {
 	}
 }
 
-// TestResolve covers every <entry> argument form from the CLI section of plan.md.
+// TestResolve covers every <entry> argument form the CLI accepts.
 func TestResolve(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel, content string) {

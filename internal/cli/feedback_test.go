@@ -1,15 +1,14 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/nickstrad/kb/internal/embed/ollama"
-	"github.com/nickstrad/kb/internal/store"
 )
 
 // headerID is the search id from the first line of `kb search` human output ("search N · M hits"),
@@ -33,7 +32,7 @@ func searchID(t *testing.T, args ...string) string {
 // feedbackRows counts search_feedback rows, optionally for one (search, rank).
 func feedbackRows(t *testing.T, root, where string, args ...any) int {
 	t.Helper()
-	st, err := store.Open(filepath.Join(root, ".kb", "kb.sqlite"))
+	st, err := sqlite.Open(context.Background(), filepath.Join(root, ".kb", "kb.sqlite"), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -52,7 +51,7 @@ func feedbackRows(t *testing.T, root, where string, args ...any) int {
 // TestFeedbackArgValidation: every malformed invocation is a usage error (exit 1) with a message
 // that says how to fix it, and none of them writes a row.
 func TestFeedbackArgValidation(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
 	t.Setenv("KB_CALLER", "")
 	id := searchID(t, "widget", "--caller", "claude")
@@ -93,10 +92,9 @@ func TestFeedbackArgValidation(t *testing.T) {
 	}
 }
 
-// TestFeedbackByID records a hit verdict and a whole-search verdict on a zero-result search, the
-// case the old two-argument form could not express at all.
+// TestFeedbackByID records a hit verdict, and a whole-search verdict on a zero-result search.
 func TestFeedbackByID(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
 
 	id := searchID(t, "widget")
@@ -134,7 +132,7 @@ func TestFeedbackByID(t *testing.T) {
 // TestFeedbackLast: --last resolves the caller exactly as kb search does (flag, then $KB_CALLER),
 // picks that caller's newest search, and says which search it judged.
 func TestFeedbackLast(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
 	t.Setenv("KB_CALLER", "")
 
@@ -187,7 +185,7 @@ func TestFeedbackLast(t *testing.T) {
 // hit rate and an MRR of 0 (100% coverage, 100% zero-result), where before it was unjudged and its
 // hit rate NULL.
 func TestFeedbackNoneCountsInStats(t *testing.T) {
-	root := newSearchTestRepo(t, ollama.DefaultModel, ollama.DefaultDim)
+	root := newSearchTestRepo(t, testModel768, testDim768)
 	t.Setenv("KB_ROOT", root)
 
 	zero := searchID(t, "not-in-the-fixture", "--caller", "claude")
@@ -228,15 +226,15 @@ func TestFeedbackNoneCountsInStats(t *testing.T) {
 	}
 }
 
-// TestFeedbackHelpReadsAsNextStep: kb help and kb search --help present feedback as the step after
-// every search, and the feedback help names every verdict form and the --last limitation.
-func TestFeedbackHelpReadsAsNextStep(t *testing.T) {
+// TestFeedbackHelpNamesEveryVerdict: kb help and kb search --help show the feedback command forms
+// as optional, and the feedback help names every verdict form and the --last limitation.
+func TestFeedbackHelpNamesEveryVerdict(t *testing.T) {
 	for _, args := range [][]string{{"help"}, {"search", "--help"}} {
 		stdout, stderr, exit := runKB(t, args)
 		if exit != 0 {
 			t.Fatalf("kb %v: exit = %d; stderr=%s", args, exit, stderr)
 		}
-		for _, want := range []string{"search N · M hits", "kb feedback N <rank> --useful", "--none"} {
+		for _, want := range []string{"search N · M hits", "kb feedback N <rank> --useful", "--none", "optional"} {
 			if !strings.Contains(stdout, want) {
 				t.Errorf("kb %v help missing %q:\n%s", args, want, stdout)
 			}
@@ -247,7 +245,7 @@ func TestFeedbackHelpReadsAsNextStep(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("exit = %d; stderr=%s", exit, stderr)
 	}
-	for _, want := range []string{"after every search", "--none", "--last", "same caller name", "kb feedback 42 --none"} {
+	for _, want := range []string{"optional", "--none", "--last", "same caller name", "kb feedback 42 --none"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("feedback help missing %q:\n%s", want, stdout)
 		}

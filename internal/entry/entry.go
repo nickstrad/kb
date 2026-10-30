@@ -27,6 +27,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Kind values stored in the entries table.
@@ -364,8 +366,41 @@ func ParseFrontMatter(src []byte) (FrontMatter, []byte, error) {
 	if strings.TrimSpace(fm.Title) == "" || strings.TrimSpace(fm.Summary) == "" {
 		return fm, body, &ValidationError{Reason: "front matter must set both title and summary"}
 	}
+	if reason := checkText("title", fm.Title, MaxTitleRunes); reason != "" {
+		return fm, body, &ValidationError{Reason: reason}
+	}
+	if reason := checkText("summary", fm.Summary, MaxSummaryRunes); reason != "" {
+		return fm, body, &ValidationError{Reason: reason}
+	}
 
 	return fm, body, nil
+}
+
+// MaxTitleRunes and MaxSummaryRunes cap the front-matter title and summary. Both are shown on one
+// line in search results and indexed (the title in every chunk's FTS row, the summary as chunk
+// 0), so a runaway value bloats every hit. The caps are generous: a title is a headline, a summary
+// one sentence or two.
+const (
+	MaxTitleRunes   = 200
+	MaxSummaryRunes = 1000
+)
+
+// checkText returns why a title or summary value is unacceptable, or "": it must be valid UTF-8,
+// hold no control characters (NUL, ESC, DEL, C1 and the like; a tab too, since it is one line of
+// display text) and be at most max runes.
+func checkText(field, v string, max int) string {
+	if !utf8.ValidString(v) {
+		return field + " is not valid UTF-8"
+	}
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return fmt.Sprintf("%s contains a control character (%U)", field, r)
+		}
+	}
+	if n := utf8.RuneCountInString(v); n > max {
+		return fmt.Sprintf("%s is %d characters; the limit is %d", field, n, max)
+	}
+	return ""
 }
 
 // parseTags reads an inline list ("[a, b]") or returns nil for a block list, whose items arrive on

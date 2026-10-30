@@ -135,7 +135,7 @@ func assertInvariants(t *testing.T, e entry.Entry, chunks []Chunk) {
 			t.Errorf("chunk %d: Ord = %d, want %d (Ord must be sequential)", i, c.Ord, i)
 		}
 
-		// scripts/ must never be chunked (P2.3 deliverable requirement).
+		// scripts/ is never chunked.
 		if strings.Contains(c.SourceFile, "/scripts/") || strings.HasSuffix(c.SourceFile, ".sh") {
 			t.Errorf("chunk %d sourced from a script file: %s", i, c.SourceFile)
 		}
@@ -155,6 +155,13 @@ func assertInvariants(t *testing.T, e entry.Entry, chunks []Chunk) {
 		}
 
 		context := title + " › " + c.Heading
+		if c.SourceFile != e.Path {
+			// A docs file with a title of its own: "<entry> › <file title> › <heading>".
+			first, _, _ := strings.Cut(c.Text, "\n")
+			if strings.HasPrefix(first, title+" › ") && strings.HasSuffix(first, " › "+c.Heading) && first != context {
+				context = first
+			}
+		}
 		if c.Text != context && !strings.HasPrefix(c.Text, context+"\n") {
 			t.Errorf("chunk %d (heading %q): text does not start with the context line %q: %.60q",
 				i, c.Heading, context, c.Text)

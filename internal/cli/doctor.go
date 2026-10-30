@@ -1,5 +1,5 @@
 // `kb doctor`: check the driver, the embedder, and the drift between the database, the files and
-// index.md. P4.4 implements it.
+// index.md.
 //
 // Every check prints exactly one line while it runs — "ok   <check>: <detail>",
 // "FAIL <check>: <detail>" or "warn <check>: <detail>" — except entries/db-vs-files, which print
@@ -21,10 +21,11 @@ import (
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/index"
 	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 )
 
 // newDoctorCmd builds `kb doctor`.
-func newDoctorCmd(stdout, stderr io.Writer) *cobra.Command {
+func newDoctorCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:           "doctor",
 		Short:         "Check driver, embedder and index health",
@@ -32,7 +33,7 @@ func newDoctorCmd(stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(cmd.Context(), cmd, stdout, Root())
+			return runDoctor(cmd.Context(), cmd, d, stdout, Root())
 		},
 	}
 }
@@ -61,19 +62,19 @@ func (d *doctorState) warn(check, detail string) {
 
 // runDoctor runs every check in turn and prints the final "doctor: N failed, M warnings" line.
 // It returns a non-nil error (ExitUsage) only when at least one check FAILed.
-func runDoctor(ctx context.Context, cmd *cobra.Command, stdout io.Writer, root string) error {
+func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writer, root string) error {
 	d := &doctorState{stdout: stdout}
 
 	dbPath := DBPath(root)
-	var st *store.Store
+	var st store.Store
 	if _, statErr := os.Stat(dbPath); statErr != nil {
 		d.fail("database", fmt.Sprintf("none at %s; run kb reindex --all", dbPath))
-	} else if opened, err := store.Open(dbPath); err != nil {
+	} else if opened, err := dp.openStore(ctx, dbPath, false); err != nil {
 		d.fail("driver", err.Error())
 	} else {
 		st = opened
 		defer st.Close()
-		checkDriver(d, st)
+		checkDriver(ctx, d, st)
 	}
 
 	entries, err := entry.Discover(root)
@@ -88,97 +89,82 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, stdout io.Writer, root s
 		}
 	}
 
-	embedder, err := newEmbedder(cmd)
+	embedder, err := dp.newEmbedder(cmd)
 	if err != nil {
 		d.fail("embedder", err.Error())
 	} else {
 		if st != nil {
-			checkEmbedMeta(d, st, embedder)
+			checkEmbedMeta(ctx, d, st, embedder)
 		}
 		checkEmbedder(ctx, d, embedder)
 	}
 	checkEntries(d, entries)
 	if st != nil {
-		checkDBVsFiles(d, root, st, goodEntries)
+		checkDBVsFiles(ctx, d, root, st, goodEntries)
 	}
 	checkIndexMD(d, root, goodEntries)
-	checkBinary(d)
+	checkVersion(d)
 
 	fmt.Fprintf(stdout, "doctor: %d failed, %d warnings\n", d.failed, d.warned)
 	if d.failed > 0 {
-		return usageErr("kb doctor: %d check(s) failed", d.failed)
+		return usageErr("%d check(s) failed", d.failed)
 	}
 	return nil
 }
 
-// checkDriver confirms the open database's driver has fts5 and sqlite-vec, and prints their
-// versions. store.Open has already refused to open a database missing either, so a failure here
-// would mean the pragma queries themselves failed, not that the extensions are absent.
-func checkDriver(d *doctorState, st *store.Store) {
-	rows, err := st.DB().Query("PRAGMA compile_options")
+// checkDriver prints the SQLite and sqlite-vec versions. Open has already refused a driver
+// without FTS5 or sqlite-vec, so a failure here means the queries themselves failed.
+func checkDriver(ctx context.Context, d *doctorState, st store.Store) {
+	di, ok := st.(interface {
+		DriverInfo(context.Context) (sqlite.DriverInfo, error)
+	})
+	if !ok {
+		d.ok("driver", "not a SQLite store")
+		return
+	}
+	info, err := di.DriverInfo(ctx)
 	if err != nil {
-		d.fail("driver", fmt.Sprintf("read compile_options: %s", err))
+		d.fail("driver", err.Error())
 		return
 	}
-	hasFTS5 := false
-	for rows.Next() {
-		var opt string
-		if err := rows.Scan(&opt); err != nil {
-			rows.Close()
-			d.fail("driver", fmt.Sprintf("read compile_options: %s", err))
-			return
-		}
-		if strings.Contains(opt, "ENABLE_FTS5") {
-			hasFTS5 = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		d.fail("driver", fmt.Sprintf("read compile_options: %s", err))
-		return
-	}
-	rows.Close()
-	if !hasFTS5 {
+	if !info.FTS5 {
 		d.fail("driver", "sqlite compiled without ENABLE_FTS5; rebuild with `go build -tags fts5 ./cmd/kb`")
 		return
 	}
-
-	var vecVer string
-	if err := st.DB().QueryRow("select vec_version()").Scan(&vecVer); err != nil {
-		d.fail("driver", fmt.Sprintf("vec_version(): %s", err))
-		return
-	}
-	var sqliteVer string
-	if err := st.DB().QueryRow("select sqlite_version()").Scan(&sqliteVer); err != nil {
-		d.fail("driver", fmt.Sprintf("sqlite_version(): %s", err))
-		return
-	}
-	d.ok("driver", fmt.Sprintf("fts5 enabled, sqlite %s, sqlite-vec %s", sqliteVer, vecVer))
+	d.ok("driver", fmt.Sprintf("fts5 enabled, sqlite %s, sqlite-vec %s", info.SQLite, info.Vec))
 }
 
 // checkEmbedMeta compares the stored embed_meta row against the configured embedder.
-func checkEmbedMeta(d *doctorState, st *store.Store, embedder embed.Embedder) {
-	model, dim, ok, err := st.EmbedMeta()
+func checkEmbedMeta(ctx context.Context, d *doctorState, st store.Index, embedder embed.Embedder) {
+	m, ok, err := st.EmbedMeta(ctx)
 	if err != nil {
 		d.fail("embed_meta", err.Error())
 		return
 	}
 	if !ok {
+		if entries, err := st.Entries(ctx); err == nil && len(entries) > 0 {
+			noun, verb := "entries", "are"
+			if len(entries) == 1 {
+				noun, verb = "entry", "is"
+			}
+			d.fail("embed_meta", fmt.Sprintf("not set, but %d %s %s indexed (no vectors yet: upgraded or never embedded); run kb reindex --all", len(entries), noun, verb))
+			return
+		}
 		d.fail("embed_meta", "not set (empty database); run kb reindex --all")
 		return
 	}
-	storable := dim == store.VecDim || (model == store.FTSOnlyModel && dim == 0)
-	if model != embedder.Model() || dim != embedder.Dim() || !storable {
+	storable := (m.Dim > 0 && m.Dim <= sqlite.MaxVecDim) || (m.Model == store.FTSOnlyModel && m.Dim == 0)
+	if m.Model != embedder.Model() || m.Dim != embedder.Dim() || !storable {
 		d.fail("embed_meta", fmt.Sprintf(
 			"database has %s (%d dims), configured embedder is %s (%d dims); run kb reindex --all",
-			model, dim, embedder.Model(), embedder.Dim()))
+			m.Model, m.Dim, embedder.Model(), embedder.Dim()))
 		return
 	}
-	d.ok("embed_meta", fmt.Sprintf("model=%s dim=%d", model, dim))
+	d.ok("embed_meta", fmt.Sprintf("model=%s dim=%d", m.Model, m.Dim))
 }
 
 // checkEmbedder pings the configured embedder when it supports it (the pinger interface, defined
-// in reindex.go, is satisfied by the Ollama and OpenAI-style clients). The none embedder has
+// in reindex.go, is satisfied by embed/local, which loads the model). The none embedder has
 // nothing to reach. A test embedder (internal/embed/fake) does not implement Ping, so it is
 // reported as a warning rather than skipped silently or faked as ok.
 func checkEmbedder(ctx context.Context, d *doctorState, embedder embed.Embedder) {
@@ -195,11 +181,7 @@ func checkEmbedder(ctx context.Context, d *doctorState, embedder embed.Embedder)
 		d.fail("embedder", err.Error())
 		return
 	}
-	where := ""
-	if u, ok := embedder.(interface{ BaseURL() string }); ok {
-		where = " at " + u.BaseURL()
-	}
-	d.ok("embedder", fmt.Sprintf("reachable%s, model %s", where, embedder.Model()))
+	d.ok("embedder", fmt.Sprintf("loaded, model %s", embedder.Model()))
 }
 
 // checkEntries reports every entry whose front matter failed to parse or validate as a FAIL, and
@@ -226,8 +208,8 @@ func checkEntries(d *doctorState, entries []entry.Entry) {
 
 // checkDBVsFiles compares every good (Err == nil) entry's on-disk body_hash against the database,
 // and reports database rows whose file no longer exists on disk.
-func checkDBVsFiles(d *doctorState, root string, st *store.Store, goodEntries []entry.Entry) {
-	rows, err := st.ListEntries()
+func checkDBVsFiles(ctx context.Context, d *doctorState, root string, st store.Index, goodEntries []entry.Entry) {
+	rows, err := st.Entries(ctx)
 	if err != nil {
 		d.fail("db-vs-files", err.Error())
 		return
@@ -292,27 +274,15 @@ func checkIndexMD(d *doctorState, root string, goodEntries []entry.Entry) {
 	d.ok("index.md", "up to date")
 }
 
-// checkBinary is informational only: it warns when /usr/local/bin/kb, which scripts/install.sh
-// links to the freshly built binary, does not resolve to the kb that is running now, so a stale
-// or foreign install shows up.
-func checkBinary(d *doctorState) {
-	const linkPath = "/usr/local/bin/kb"
-	target, err := filepath.EvalSymlinks(linkPath)
-	if err != nil {
-		d.warn("binary", fmt.Sprintf("%s: %s; run scripts/install.sh", linkPath, err))
-		return
+// checkVersion reports which kb is running and where it lives. It is informational: kb can be
+// installed anywhere (go install, a release download), so there is no expected path to check.
+func checkVersion(d *doctorState) {
+	where := "unknown path"
+	if self, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(self); err == nil {
+			self = resolved
+		}
+		where = self
 	}
-	self, err := os.Executable()
-	if err == nil {
-		self, err = filepath.EvalSymlinks(self)
-	}
-	if err != nil {
-		d.warn("binary", fmt.Sprintf("cannot resolve the running executable: %s", err))
-		return
-	}
-	if target != self {
-		d.warn("binary", fmt.Sprintf("%s -> %s, but this kb is %s; run scripts/install.sh", linkPath, target, self))
-		return
-	}
-	d.ok("binary", fmt.Sprintf("%s -> %s", linkPath, target))
+	d.ok("version", fmt.Sprintf("kb %s at %s", Version, where))
 }

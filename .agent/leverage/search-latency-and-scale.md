@@ -1,0 +1,11 @@
+# Search latency and scale
+> Each search = model load + query embed + FTS + vec0 KNN + log write; the KNN is brute force, so its cost grows linearly with chunk count.
+
+- **Category:** resource/performance
+- **Status:** watch
+- **Where:** `internal/search/search.go` (`ListLimit` 20, `vecOverFetch` 60 for tag filters, RRF), sqlite-vec `vec0` (no ANN index), `internal/search/log.go`.
+- **Why it matters:** agents search often; the latency adds up per task. Tag filters over-fetch and can miss results when a tag is rare. Cross-store search (Phase 3) multiplies the work.
+- **Evidence:** about 0.2 s per search on a small corpus, mostly the model load. KNN cost on 10k+ chunks is unmeasured. `TestVecOverFetchBoundary` pins the 60/61 edge. W2 pass: hybrid and vec searches first check `sqlite_master` for `chunks_vec` (one indexed lookup) and skip the query embedding when it is missing, so an upgraded-but-not-reindexed store pays no model load.
+- **Coverage today:** boundary tables for ListLimit, CandidateLimit, PerEntryCap and vecOverFetch; harness hostile queries.
+- **Next checks:** a benchmark at 1k/10k/50k chunks (FTS vs KNN vs total); whether an `entry_tags` join (5.2) fixes rare-tag recall; the per-store cost of cross-store fan-out; whether binary/int8 quantized vec0 columns are worth it at scale.
+- **Last reviewed:** 2026-10-29 · W2 wave-end pass

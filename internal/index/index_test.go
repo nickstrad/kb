@@ -116,6 +116,15 @@ func TestGenerateRowFormats(t *testing.T) {
 			t.Errorf("generated output is missing row:\n%q\ngot:\n%s", want, got)
 		}
 	}
+	// The update-knowledge-store skill no longer exists; the export must not point readers at it.
+	if strings.Contains(got, "update-knowledge-store") || strings.Contains(got, "skill/") {
+		t.Errorf("generated output still references the deleted skill:\n%s", got)
+	}
+	// The kb source is a standalone module now; the export must not describe a kb/ folder that
+	// no longer exists.
+	if strings.Contains(got, "kb/README.md") || strings.Contains(got, "data/kb.md") {
+		t.Errorf("generated output still describes the old kb/ layout:\n%s", got)
+	}
 }
 
 // TestGenerateSortOrder pins the ordering rule: by displayed link text in byte order, so a

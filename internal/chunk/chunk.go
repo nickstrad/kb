@@ -1,11 +1,12 @@
 // Package chunk turns an entry's Markdown files into the chunks the indexer stores and searches.
 //
-// The full rules live in plan.md ("Chunking rules"), all six implemented here:
+// The chunking rules:
 //
 //  1. strip front matter (every file in the entry, not only the front door — see stripFrontMatter);
 //  2. chunk 0 is "<title>: <summary>" with an empty heading;
 //  3. one chunk per "##" section of each indexed file, text prefixed with a context line
-//     "<title> › <heading>"; text before the first "##" (the lede) is its own chunk with
+//     "<title> › <heading>" (for a file other than the entry's front door that has a title of its
+//     own, "<title> › <file title> › <heading>" — see fileTitle); text before the first "##" (the lede) is its own chunk with
 //     heading "(intro)"; a section — the lede or any "##" section — whose body is blank after
 //     trimming produces no chunk at all (a heading with nothing before the next heading, or at
 //     EOF, is not indexed just to carry its own context line); "###" and deeper stay inside their
@@ -75,17 +76,26 @@ func Split(e entry.Entry, files map[string][]byte) ([]Chunk, error) {
 	ord := 1
 
 	for _, f := range e.Files {
-		body, err := stripFrontMatter(files[f])
+		body, fmTitle, err := stripFrontMatter(files[f])
 		if err != nil {
 			return nil, fmt.Errorf("chunk %s: strip front matter of %s: %w", e.Path, f, err)
 		}
-		for _, sec := range splitSections(string(body)) {
+		prefix := title
+		text := string(body)
+		if f != e.Path {
+			var ft string
+			ft, text = fileTitle(fmTitle, text)
+			if ft != "" && !strings.EqualFold(ft, title) {
+				prefix = title + " › " + ft
+			}
+		}
+		for _, sec := range splitSections(text) {
 			text := strings.TrimSpace(sec.body)
 			if text == "" {
 				continue // rule 3: a blank lede, or a "##" section with nothing in it, produces no chunk at all
 			}
 
-			contextLine := title + " › " + sec.heading
+			contextLine := prefix + " › " + sec.heading
 			full := contextLine + "\n" + text
 
 			if len(full) <= MaxChunkChars {
@@ -104,21 +114,55 @@ func Split(e entry.Entry, files map[string][]byte) ([]Chunk, error) {
 }
 
 // stripFrontMatter removes a leading YAML front-matter block from one file's raw bytes, for use
-// while chunking a single file. Only the entry's front door (README.md, or the lone file of a
-// file entry) is required to carry front matter and have a valid title/summary; a secondary file
-// (docs/*.md) is stripped the same way when it happens to have its own front matter — real
-// docs/*.md files in this repo do — but a *entry.ValidationError from that secondary file's own
-// content (e.g. it has no title) is not a chunking failure and is ignored here: the body was
-// still split off correctly. Any other error (a malformed, unclosed fence) is real and propagates.
-func stripFrontMatter(raw []byte) ([]byte, error) {
-	_, body, err := entry.ParseFrontMatter(raw)
+// while chunking a single file, and also returns the title that block set ("" if none). Only the
+// entry's front door (README.md, or the lone file of a file entry) is required to carry front
+// matter and have a valid title/summary; a secondary file (docs/*.md) is stripped the same way
+// when it happens to have its own front matter — real docs/*.md files in this repo do — but a
+// *entry.ValidationError from that secondary file's own content (e.g. it has no summary) is not a
+// chunking failure and is ignored here: the body was still split off correctly. Any other error
+// (a malformed, unclosed fence) is real and propagates.
+func stripFrontMatter(raw []byte) ([]byte, string, error) {
+	fm, body, err := entry.ParseFrontMatter(raw)
 	if err != nil {
 		var ve *entry.ValidationError
 		if !errors.As(err, &ve) {
-			return nil, err
+			return nil, "", err
 		}
 	}
-	return body, nil
+	return body, strings.TrimSpace(fm.Title), nil
+}
+
+// fileTitle returns the title a secondary file (docs/*.md) names itself by, and its body without
+// the H1 line the context line now repeats. The title is the front-matter title, else the file's
+// leading H1 ("# Title" as its first non-blank line). A leading H1 is dropped from the body when
+// it supplied the title or restates the front-matter title (case-insensitively), so the intro
+// chunk does not carry the title twice; a leading H1 that says something different stays as text.
+// A file with neither title source returns "" and its body unchanged.
+func fileTitle(fmTitle, body string) (string, string) {
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		h := ""
+		if strings.HasPrefix(trimmed, "# ") {
+			h = strings.TrimSpace(trimmed[2:])
+			if isHashesOnly(h) {
+				h = ""
+			}
+		}
+		switch {
+		case h != "" && (fmTitle == "" || strings.EqualFold(h, fmTitle)):
+			if fmTitle != "" {
+				h = fmTitle
+			}
+			return h, strings.Join(append(lines[:i:i], lines[i+1:]...), "\n")
+		default:
+			return fmTitle, body
+		}
+	}
+	return fmTitle, body
 }
 
 // rawSection is one "##" section of a file (or its lede) before paragraph-level splitting.

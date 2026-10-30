@@ -1,0 +1,77 @@
+name: release
+
+# Tag v* builds and uploads release tarballs. workflow_dispatch is a dry run: it builds and
+# smoke-tests every target and keeps the tarballs as workflow artifacts, but uploads no release.
+#
+# Zig fallback: if a native runner (for example ubuntu-24.04-arm) is unavailable, build the Linux
+# targets from a macOS job instead: `brew install zig`, then
+#   CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC="zig cc -target aarch64-linux-gnu" go build ...
+#   CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC="zig cc -target x86_64-linux-gnu"  go build ...
+# Not the default (DEFAULTS #9).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # gh release upload
+
+jobs:
+  build:
+    name: ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: darwin, goarch: arm64, runner: macos-14, cc: "" }
+          - { goos: darwin, goarch: amd64, runner: macos-14, cc: "clang -arch x86_64" }
+          - { goos: linux, goarch: amd64, runner: ubuntu-latest, cc: "" }
+          - { goos: linux, goarch: arm64, runner: ubuntu-24.04-arm, cc: "" }
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: Set tag
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then TAG="${GITHUB_REF_NAME}"; else TAG="dev-${GITHUB_SHA::7}"; fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Build
+        env:
+          MATRIX_CC: ${{ matrix.cc }}
+        run: |
+          if [ -n "$MATRIX_CC" ]; then export CC="$MATRIX_CC"; fi
+          go build -tags fts5 -trimpath -ldflags "-s -w -X main.version=$TAG" -o kb ./cmd/kb
+      - name: Smoke test
+        run: |
+          if [ "$GOOS/$GOARCH" = darwin/amd64 ]; then
+            # Rosetta may be missing on the runner.
+            /usr/bin/pgrep oahd >/dev/null 2>&1 || softwareupdate --install-rosetta --agree-to-license || true
+            arch -x86_64 ./kb version
+          else
+            ./kb version
+          fi
+      - name: Package
+        run: |
+          NAME="kb-$TAG-$GOOS-$GOARCH"
+          mkdir -p dist
+          tar -czf "dist/$NAME.tar.gz" kb
+          (cd dist && if command -v sha256sum >/dev/null; then sha256sum "$NAME.tar.gz"; else shasum -a 256 "$NAME.tar.gz"; fi > "$NAME.tar.gz.sha256")
+      - name: Upload workflow artifact
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kb-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+      - name: Upload release assets
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber

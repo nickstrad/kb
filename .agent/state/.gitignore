@@ -1,0 +1,5 @@
+# Agent run logs are temporary and per-run: keep only the docs.
+*
+!.gitignore
+!README.md
+!TEMPLATE.md

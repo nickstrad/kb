@@ -1,0 +1,192 @@
+package store
+
+import (
+	"errors"
+	"fmt"
+	"time"
+)
+
+// FTSOnlyModel is the embed_meta model of an index built with no embedder. Its dim is 0 and it
+// has no vectors. It matches embed.NoneModel.
+const FTSOnlyModel = "none"
+
+// EmbedMeta names the embedder an index was built with.
+type EmbedMeta struct {
+	Model string
+	Dim   int
+}
+
+// ErrEmbedMetaMismatch is matched with errors.Is; the concrete value is *EmbedMetaMismatchError.
+var ErrEmbedMetaMismatch = errors.New("embedding model mismatch")
+
+// EmbedMetaMismatchError reports the stored embed_meta against the configured embedder.
+type EmbedMetaMismatchError struct {
+	StoredModel string
+	StoredDim   int
+	WantModel   string
+	WantDim     int
+}
+
+func (e *EmbedMetaMismatchError) Error() string {
+	return fmt.Sprintf("%s: this database was indexed with %s (%d dims) but this run uses %s (%d dims); rebuild it with `kb reindex --all`",
+		ErrEmbedMetaMismatch, e.StoredModel, e.StoredDim, e.WantModel, e.WantDim)
+}
+
+// Unwrap makes errors.Is(err, ErrEmbedMetaMismatch) true.
+func (e *EmbedMetaMismatchError) Unwrap() error { return ErrEmbedMetaMismatch }
+
+// EntryRow is a stored entry. Updated and Verified are "" when unset; Tags is decoded.
+type EntryRow struct {
+	ID        int64
+	Path      string
+	Kind      string
+	Title     string
+	Summary   string
+	Tags      []string
+	Updated   string
+	Verified  string
+	BodyHash  string
+	IndexedAt string
+}
+
+// ChunkRow is a stored chunk.
+type ChunkRow struct {
+	ID         int64
+	EntryID    int64
+	Ord        int
+	SourceFile string
+	Heading    string
+	Text       string
+	TextHash   string
+}
+
+// EntryInput is an entry about to be written. Path ("data/foo.md") is the unique key; Kind is
+// entry.KindFile or entry.KindDir.
+type EntryInput struct {
+	Path     string
+	Kind     string
+	Title    string
+	Summary  string
+	Tags     []string
+	Updated  string
+	Verified string
+	BodyHash string
+}
+
+// ChunkInput is one chunk plus its vector. Embedding is exactly embed_meta.dim long, or nil on
+// an FTS-only index.
+type ChunkInput struct {
+	Ord        int
+	SourceFile string
+	Heading    string
+	Text       string
+	TextHash   string
+	Embedding  []float32
+}
+
+// FTSOp joins the terms of an FTS query.
+type FTSOp int
+
+const (
+	OpAnd FTSOp = iota // every term must match
+	OpOr               // any term may match
+)
+
+// FTSQuery is one full-text query. Terms are raw user fields (search splits on whitespace); the
+// backend quotes and sanitises each one. Tag, when set, keeps only entries carrying it.
+type FTSQuery struct {
+	Terms []string
+	Op    FTSOp
+	Tag   string
+	Limit int
+}
+
+// FTSResult is the ranked rows plus the backend-native expression that ran ("" if none did).
+type FTSResult struct {
+	Rows  []FTSRow
+	Match string
+}
+
+// FTSRow is one row of the full-text list, in rank order. Score is the backend's relevance
+// score; for SQLite it is bm25(), negative and lower-is-better.
+type FTSRow struct {
+	ChunkID int64
+	Score   float64
+}
+
+// KNNQuery asks for the K nearest chunks to Vec. With a Tag the backend may fetch OverFetch
+// candidates before filtering, since it cannot filter inside the vector index.
+type KNNQuery struct {
+	Vec       []float32
+	K         int
+	Tag       string
+	OverFetch int
+}
+
+// VecRow is one row of the vector list, in ascending distance order.
+type VecRow struct {
+	ChunkID  int64
+	Distance float64
+}
+
+// ChunkMeta is the display data of one chunk.
+type ChunkMeta struct {
+	EntryPath string
+	Heading   string
+	Text      string
+}
+
+// WholeSearchRank is the feedback rank of a whole-search verdict (kb feedback N --none). No
+// result has rank 0, so the row makes its search judged and never joins a result.
+const WholeSearchRank = 0
+
+// OpenWindow is how far back an open (kb show) looks for the search it follows.
+const OpenWindow = 30 * time.Minute
+
+// SearchRecord is one search as the log stores it. A nil *Ms means that stage did not run,
+// which the log keeps distinct from 0 ms.
+type SearchRecord struct {
+	Query      string
+	Mode       string
+	K          int
+	Tag        string // "" = no tag filter
+	EmbedModel string // "" = nothing was embedded
+	NFTS       int
+	NVec       int
+	FTSMs      *int64
+	VecMs      *int64
+	EmbedMs    *int64
+	TotalMs    int64
+	Caller     string
+	KBVersion  string
+	CorpusRev  string
+	Results    []LoggedHit // what the caller was shown; rank = index + 1
+	Candidates []LoggedHit // the fused list; fused_rank = index + 1
+}
+
+// LoggedHit is one result or candidate row. A nil rank or score means the chunk was not in
+// that list.
+type LoggedHit struct {
+	ChunkID     int64
+	EntryPath   string
+	Heading     string
+	FTSRank     *int
+	FTSScore    *float64
+	VecRank     *int
+	VecDistance *float64
+	RRFScore    float64
+}
+
+// LastSearch is the newest logged search for one caller (kb feedback --last).
+type LastSearch struct {
+	ID        int64
+	Query     string
+	TS        string // ISO-8601 UTC
+	NReturned int
+}
+
+// Table is one analytic query's output. Values are int64, float64, string or nil.
+type Table struct {
+	Columns []string
+	Rows    [][]any
+}

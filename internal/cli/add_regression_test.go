@@ -10,16 +10,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nickstrad/kb/internal/embed"
-	"github.com/nickstrad/kb/internal/embed/ollama"
-	"github.com/nickstrad/kb/internal/store"
 )
 
 type unavailableAddEmbedder struct{}
 
 func (unavailableAddEmbedder) Model() string { return "fake-add-test" }
-func (unavailableAddEmbedder) Dim() int      { return store.VecDim }
+func (unavailableAddEmbedder) Dim() int      { return testDim768 }
 func (unavailableAddEmbedder) Embed(context.Context, []string) ([][]float32, error) {
-	return nil, ollama.ErrUnavailable
+	return nil, embed.ErrUnavailable
 }
 
 func TestAddRejectsMissingFrontMatterBeforeCopy(t *testing.T) {
@@ -56,7 +54,7 @@ func TestAddRollsBackCopiedFilesOnFailure(t *testing.T) {
 		for _, inPlace := range []bool{false, true} {
 			t.Run(map[bool]string{false: "file", true: "dir"}[dir]+map[bool]string{false: "-copy", true: "-inplace"}[inPlace], func(t *testing.T) {
 				useFakeEmbedder(t)
-				newEmbedder = func(*cobra.Command) (embed.Embedder, error) { return unavailableAddEmbedder{}, nil }
+				testDeps.embedder = func(*cobra.Command) (embed.Embedder, error) { return unavailableAddEmbedder{}, nil }
 				root := newTempRoot(t)
 				sourceRoot := t.TempDir()
 				if inPlace {
@@ -92,7 +90,7 @@ func TestAddRollsBackCopiedFilesOnFailure(t *testing.T) {
 					}
 				}
 				st := openTestStore(t, root)
-				row, err := st.GetEntryByPath(rel)
+				row, err := st.Entry(context.Background(), rel)
 				if err != nil || row != nil {
 					t.Fatalf("indexed failed add: %v %v", row, err)
 				}
@@ -210,7 +208,7 @@ func TestAddDoesNotDependOnMarkdownExport(t *testing.T) {
 		t.Fatalf("copy missing: %v", err)
 	}
 	st := openTestStore(t, root)
-	row, err := st.GetEntryByPath("data/index-failure.md")
+	row, err := st.Entry(context.Background(), "data/index-failure.md")
 	if row == nil || err != nil {
 		t.Fatalf("row=%v err=%v", row, err)
 	}

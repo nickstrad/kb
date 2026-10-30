@@ -18,7 +18,7 @@ import (
 const maxSummaryWidth = 72
 
 // newListCmd builds `kb list [--tag t]`.
-func newListCmd(stdout, stderr io.Writer) *cobra.Command {
+func newListCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	var tag string
 	cmd := &cobra.Command{
 		Use:           "list",
@@ -38,7 +38,7 @@ func newListCmd(stdout, stderr io.Writer) *cobra.Command {
 func runList(stdout io.Writer, root, tag string) error {
 	entries, err := entry.Discover(root)
 	if err != nil {
-		return usageErr("kb list: %s", err.Error())
+		return usageErr("%s", err.Error())
 	}
 
 	w := tabwriter.NewWriter(stdout, 0, 2, 2, ' ', 0)

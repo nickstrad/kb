@@ -5,8 +5,8 @@
 //
 //	go build -tags fts5 ./cmd/kb
 //
-// version is stamped by scripts/install.sh with -ldflags "-X main.version=<git short hash>";
-// a plain go build leaves it as "dev".
+// Release builds stamp version with -ldflags "-X main.version=<tag>". Otherwise kb reports the
+// version and VCS revision Go records in the build info (see cli.ResolveVersion).
 package main
 
 import (
@@ -21,7 +21,7 @@ import (
 var version = "dev"
 
 func main() {
-	cli.Version = version
+	cli.Version = cli.ResolveVersion(version)
 	// Ctrl-C and SIGTERM cancel the context every command handler reads through cmd.Context(),
 	// so an in-flight embedding call or query stops instead of being killed mid-transaction.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

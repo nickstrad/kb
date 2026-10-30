@@ -1,4 +1,4 @@
-// `kb rm`: remove an entry's files, drop its database rows. P4.2 implements it.
+// `kb rm`: remove an entry's files, drop its database rows.
 package cli
 
 import (
@@ -12,10 +12,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/errs"
 )
 
 // newRmCmd builds `kb rm <entry> [--yes]`.
-func newRmCmd(stdout, stderr io.Writer) *cobra.Command {
+func newRmCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
 		Use:   "rm <entry>",
@@ -26,7 +27,7 @@ func newRmCmd(stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRm(cmd.Context(), stdout, stderr, Root(), args[0], yes)
+			return runRm(cmd.Context(), d, stdout, stderr, Root(), args[0], yes)
 		},
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "confirm removing a directory entry and everything in it")
@@ -35,15 +36,15 @@ func newRmCmd(stdout, stderr io.Writer) *cobra.Command {
 
 // runRm resolves the entry, removes its file(s) from disk, drops its row from the database (if one
 // exists), and reports what was removed.
-func runRm(ctx context.Context, stdout, stderr io.Writer, root, arg string, yes bool) error {
+func runRm(ctx context.Context, d *deps, stdout, stderr io.Writer, root, arg string, yes bool) error {
 	e, err := entry.Resolve(root, arg)
 	if err != nil {
-		return usageErr("kb rm: %s", err)
+		return usageErr("%s", err)
 	}
 
-	st, ok, err := openStoreIfExists(root)
+	st, ok, err := d.openStoreIfExists(ctx, root)
 	if err != nil {
-		return usageErr("kb rm: %s", err)
+		return err
 	}
 	if ok {
 		defer st.Close()
@@ -54,31 +55,31 @@ func runRm(ctx context.Context, stdout, stderr io.Writer, root, arg string, yes 
 	case entry.KindFile:
 		target := filepath.Join(root, filepath.FromSlash(e.Path))
 		if err := os.Remove(target); err != nil {
-			return usageErr("kb rm: %s", err)
+			return usageErr("%s", err)
 		}
 		removed = fmt.Sprintf("removed %s", e.Path)
 
 	case entry.KindDir:
 		if !yes {
-			return usageErr("kb rm: %s/ is a directory entry; pass --yes to remove %s/ and everything in it", e.Dir, e.Dir)
+			return usageErr("%s/ is a directory entry; pass --yes to remove %s/ and everything in it", e.Dir, e.Dir)
 		}
 		target := filepath.Join(root, e.Dir)
 		n, err := countFiles(target)
 		if err != nil {
-			return usageErr("kb rm: %s", err)
+			return usageErr("%s", err)
 		}
 		if err := os.RemoveAll(target); err != nil {
-			return usageErr("kb rm: %s", err)
+			return usageErr("%s", err)
 		}
 		removed = fmt.Sprintf("removed %s/ and %d files", e.Dir, n)
 
 	default:
-		return usageErr("kb rm: %s: unknown entry kind %q", e.Path, e.Kind)
+		return errs.New(errs.Internal, "cli.rm", "%s: unknown entry kind %q", e.Path, e.Kind)
 	}
 
 	if ok {
 		if err := st.DeleteEntry(ctx, e.Path); err != nil {
-			return usageErr("kb rm: %s", err)
+			return err
 		}
 	}
 

@@ -6,7 +6,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,19 +13,19 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/nickstrad/kb/internal/search"
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/store"
 )
 
 // newFeedbackCmd builds
 // `kb feedback (<search_id> | --last) [<rank>] --useful|--not-useful|--none [--note "..."] [--caller name]`.
-func newFeedbackCmd(stdout, stderr io.Writer) *cobra.Command {
+func newFeedbackCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	var opts feedbackOpts
 	cmd := &cobra.Command{
 		Use:   "feedback (<search_id> | --last) [<rank>] --useful|--not-useful|--none",
 		Short: "Judge a search: mark one hit useful or not, or the whole search --none",
-		Long: "Record a verdict on an earlier search. Run it after every search, including one that\n" +
-			"found nothing: an unjudged search counts as unknown in kb stats, not as a miss.\n\n" +
+		Long: "Record a verdict on an earlier search. Feedback is optional; kb stats uses it to show\n" +
+			"where the store falls short, and counts an unjudged search as unknown, not as a miss.\n\n" +
 			"search_id is the number on the first line of `kb search` output (search N · M hits, also\n" +
 			"printed as search_id=N at the end); rank is the #rank of the hit. --useful and\n" +
 			"--not-useful judge one hit and need its rank. --none judges the whole search as having\n" +
@@ -48,7 +47,7 @@ func newFeedbackCmd(stdout, stderr io.Writer) *cobra.Command {
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.args = args
-			return runFeedback(cmd, stdout, opts)
+			return runFeedback(cmd, d, stdout, opts)
 		},
 	}
 	cmd.Flags().BoolVar(&opts.useful, "useful", false, "the hit at <rank> answered the question")
@@ -74,7 +73,7 @@ type feedbackOpts struct {
 // runFeedback validates the arguments before touching the database, resolves the target search
 // (an explicit id, or the caller's newest search for --last), records the verdict and prints one
 // confirmation line.
-func runFeedback(cmd *cobra.Command, stdout io.Writer, opts feedbackOpts) error {
+func runFeedback(cmd *cobra.Command, d *deps, stdout io.Writer, opts feedbackOpts) error {
 	// Exactly one verdict: none says nothing, two say contradictory things.
 	verdicts := 0
 	for _, set := range []bool{opts.useful, opts.notUseful, opts.none} {
@@ -83,18 +82,18 @@ func runFeedback(cmd *cobra.Command, stdout io.Writer, opts feedbackOpts) error 
 		}
 	}
 	if verdicts != 1 {
-		return usageErr("kb feedback: pass exactly one of --useful, --not-useful or --none")
+		return usageErr("pass exactly one of --useful, --not-useful or --none")
 	}
 
 	// Split the positionals: with --last there is no search id, so the only one left is the rank.
 	var idArg, rankArg string
 	switch {
 	case opts.last && len(opts.args) == 2:
-		return usageErr("kb feedback: --last replaces the search id; pass at most a rank")
+		return usageErr("--last replaces the search id; pass at most a rank")
 	case opts.last && len(opts.args) == 1:
 		rankArg = opts.args[0]
 	case !opts.last && len(opts.args) == 0:
-		return usageErr("kb feedback: pass the search id from the first line of `kb search` output, or --last")
+		return usageErr("pass the search id from the first line of `kb search` output, or --last")
 	case !opts.last:
 		idArg = opts.args[0]
 		if len(opts.args) == 2 {
@@ -102,25 +101,25 @@ func runFeedback(cmd *cobra.Command, stdout io.Writer, opts feedbackOpts) error 
 		}
 	}
 	if opts.none && rankArg != "" {
-		return usageErr("kb feedback: --none judges the whole search and takes no rank; drop %q", rankArg)
+		return usageErr("--none judges the whole search and takes no rank; drop %q", rankArg)
 	}
 	if !opts.none && rankArg == "" {
-		return usageErr("kb feedback: --useful and --not-useful need the #rank of a hit; use --none to judge the whole search")
+		return usageErr("--useful and --not-useful need the #rank of a hit; use --none to judge the whole search")
 	}
 
 	var searchID int64
 	if idArg != "" {
 		id, err := strconv.ParseInt(idArg, 10, 64)
 		if err != nil || id < 1 {
-			return usageErr("kb feedback: search id must be a positive integer, got %q", idArg)
+			return usageErr("search id must be a positive integer, got %q", idArg)
 		}
 		searchID = id
 	}
-	rank := search.WholeSearchRank
+	rank := store.WholeSearchRank
 	if rankArg != "" {
 		r, err := strconv.Atoi(rankArg)
 		if err != nil || r < 1 {
-			return usageErr("kb feedback: rank must be a positive integer, got %q", rankArg)
+			return usageErr("rank must be a positive integer, got %q", rankArg)
 		}
 		rank = r
 	}
@@ -128,46 +127,46 @@ func runFeedback(cmd *cobra.Command, stdout io.Writer, opts feedbackOpts) error 
 	if opts.last && caller == "unknown" {
 		// "unknown" is also what every caller-less search was logged as, so its newest search could
 		// belong to anyone; refuse it rather than guess.
-		return usageErr("kb feedback: --last needs to know who searched; pass --caller (claude, codex) or set KB_CALLER, as for kb search")
+		return usageErr("--last needs to know who searched; pass --caller (claude, codex) or set KB_CALLER, as for kb search")
 	}
 
-	// Check for the file before opening: store.Open creates an empty database, which
+	// Check for the file before opening: opening read-write creates an empty database, which
 	// would turn "you never indexed anything" into "no search with id N".
+	ctx := cmd.Context()
 	dbPath := DBPath(Root())
 	if _, err := os.Stat(dbPath); err != nil {
-		return usageErr("kb feedback: no search database at %s; run `kb reindex --all` first", dbPath)
+		return errs.Wrap(err, errs.NotFound, "cli.feedback", "no search database at %s; run `kb reindex --all` first", dbPath)
 	}
-	st, err := store.Open(dbPath)
+	st, err := d.openStore(ctx, dbPath, false)
 	if err != nil {
-		return usageErr("kb feedback: %s", err)
+		return err
 	}
 	defer st.Close()
 
-	s := &search.Searcher{DB: st.DB()}
-	ctx := cmd.Context()
 	target := ""
 	if opts.last {
-		last, err := s.Last(ctx, caller)
-		if errors.Is(err, search.ErrNoSearch) {
-			return usageErr("kb feedback --last: no search logged for caller %q; run kb search --caller %s first, or pass a search id", caller, caller)
+		last, err := st.LastSearch(ctx, caller)
+		if errs.KindOf(err) == errs.NotFound {
+			return errs.Wrap(err, errs.NotFound, "cli.feedback",
+				"--last: no search logged for caller %q; run kb search --caller %s first, or pass a search id", caller, caller)
 		}
 		if err != nil {
-			return usageErr("kb feedback: %s", err)
+			return err
 		}
 		searchID = last.ID
 		target = fmt.Sprintf(" (newest search for %s, %s: %q)", caller, last.TS, last.Query)
 	}
 
 	if opts.none {
-		if err := s.FeedbackNone(ctx, searchID, opts.note); err != nil {
-			return usageErr("kb feedback: %s", err)
+		if err := st.FeedbackNone(ctx, searchID, opts.note); err != nil {
+			return err
 		}
 		fmt.Fprintf(stdout, "recorded: search %d none (nothing useful)%s\n", searchID, target)
 		return nil
 	}
 
-	if err := s.Feedback(ctx, searchID, rank, opts.useful, opts.note); err != nil {
-		return usageErr("kb feedback: %s", err)
+	if err := st.Feedback(ctx, searchID, rank, opts.useful, opts.note); err != nil {
+		return err
 	}
 	usefulValue := 0
 	if opts.useful {

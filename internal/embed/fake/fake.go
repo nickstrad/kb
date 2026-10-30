@@ -1,4 +1,4 @@
-// Package fake is a deterministic Embedder for tests: no network, no Ollama, same vector for the
+// Package fake is a deterministic Embedder for tests: no model, no I/O, same vector for the
 // same text on every run. The vectors carry no semantics, so tests may assert on identity and on
 // plumbing, never on relevance.
 package fake

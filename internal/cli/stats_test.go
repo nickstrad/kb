@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,8 +16,7 @@ import (
 	"github.com/nickstrad/kb/internal/store"
 )
 
-// statsFixture is a small real SQLite database (built the same way internal/stats' own fixture is)
-// with two searches: one old, one recent, by two different callers, one judged useful.
+// statsFixture is a small real SQLite database with two searches: one old, one recent, by two different callers, one judged useful.
 type statsFixture struct {
 	root      string
 	oldID     int64
@@ -34,14 +34,14 @@ func buildStatsFixture(t *testing.T) *statsFixture {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, ".kb", "kb.sqlite")
 
-	st, err := store.Open(dbPath)
+	st, err := sqlite.Open(context.Background(), dbPath, sqlite.Options{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
 
 	emb := fake.New("fake-embed", 768)
-	if err := st.EnsureEmbedMeta(emb.Model(), emb.Dim()); err != nil {
+	if err := st.EnsureEmbedMeta(context.Background(), store.EmbedMeta{Model: emb.Model(), Dim: emb.Dim()}); err != nil {
 		t.Fatalf("embed meta: %v", err)
 	}
 	ctx := context.Background()
@@ -50,7 +50,7 @@ func buildStatsFixture(t *testing.T) *statsFixture {
 	if err != nil {
 		t.Fatalf("embed: %v", err)
 	}
-	if _, err := st.ReplaceEntryChunks(ctx, store.EntryInput{
+	if _, err := st.ReplaceEntry(ctx, store.EntryInput{
 		Path: "widget.md", Kind: "file", Title: "Widget", Summary: "s", Tags: []string{"test"}, BodyHash: "h",
 	}, []store.ChunkInput{{
 		Ord: 0, SourceFile: "widget.md", Heading: "", Text: text, TextHash: "th", Embedding: vecs[0],
@@ -60,7 +60,7 @@ func buildStatsFixture(t *testing.T) *statsFixture {
 
 	f := &statsFixture{root: root, oldCaller: "alice", newCaller: "bob"}
 
-	sAlice := &search.Searcher{DB: st.DB()}
+	sAlice := &search.Searcher{Store: st, Log: st}
 	oldOut := &search.Outcome{
 		Mode: search.ModeHybrid, K: 5, NFTS: 1, NVec: 1, TotalMs: 20,
 		Returned: []search.Candidate{
@@ -69,12 +69,12 @@ func buildStatsFixture(t *testing.T) *statsFixture {
 		},
 	}
 	oldOut.Candidates = append([]search.Candidate{}, oldOut.Returned...)
-	id, err := sAlice.Log(ctx, search.Request{Query: "widget config", Caller: f.oldCaller}, oldOut)
+	id, err := sAlice.Record(ctx, search.Request{Query: "widget config", Caller: f.oldCaller}, oldOut)
 	if err != nil {
 		t.Fatalf("log old search: %v", err)
 	}
 	f.oldID = id
-	if err := sAlice.Feedback(ctx, f.oldID, 1, true, "good"); err != nil {
+	if err := st.Feedback(ctx, f.oldID, 1, true, "good"); err != nil {
 		t.Fatalf("feedback: %v", err)
 	}
 	oldTS := time.Now().UTC().Add(-30 * 24 * time.Hour)
@@ -82,7 +82,7 @@ func buildStatsFixture(t *testing.T) *statsFixture {
 		t.Fatalf("set old ts: %v", err)
 	}
 
-	sBob := &search.Searcher{DB: st.DB()}
+	sBob := &search.Searcher{Store: st, Log: st}
 	newOut := &search.Outcome{
 		Mode: search.ModeFTS, K: 5, NFTS: 1, NVec: 0, TotalMs: 10,
 		Returned: []search.Candidate{
@@ -90,7 +90,7 @@ func buildStatsFixture(t *testing.T) *statsFixture {
 		},
 	}
 	newOut.Candidates = append([]search.Candidate{}, newOut.Returned...)
-	id, err = sBob.Log(ctx, search.Request{Query: "widget config", Caller: f.newCaller}, newOut)
+	id, err = sBob.Record(ctx, search.Request{Query: "widget config", Caller: f.newCaller}, newOut)
 	if err != nil {
 		t.Fatalf("log recent search: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestStatsOverviewHasExpectedColumns(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%s", exit, stderr)
 	}
-	for _, col := range []string{"mode", "searches", "judged", "coverage_pct", "hit_rate_pct", "mrr", "zero_result_pct", "p50_ms", "p95_ms", "avg_embed_ms"} {
+	for _, col := range []string{"mode", "searches", "judged", "coverage_pct", "hit_rate_pct", "mrr", "zero_result_pct", "opened_pct", "p50_ms", "p95_ms", "avg_embed_ms"} {
 		if !strings.Contains(stdout, col) {
 			t.Errorf("overview header missing column %q:\n%s", col, stdout)
 		}
@@ -201,13 +201,13 @@ func TestStatsFloatsShortestForm(t *testing.T) {
 	if hybridFields == nil || ftsFields == nil {
 		t.Fatalf("missing hybrid/fts rows in overview output:\n%s", stdout)
 	}
-	// Columns: mode searches judged coverage_pct hit_rate_pct mrr zero_result_pct p50_ms p95_ms avg_embed_ms.
+	// Columns: mode searches judged coverage_pct hit_rate_pct mrr zero_result_pct opened_pct p50_ms p95_ms avg_embed_ms.
 	// hybrid is alice's old, judged, useful-at-rank-1 search: everything judged, everything useful.
-	if want := []string{"hybrid", "1", "1", "100", "100", "1", "0", "20", "20", "0"}; !equalFields(hybridFields, want) {
+	if want := []string{"hybrid", "1", "1", "100", "100", "1", "0", "0", "20", "20", "0"}; !equalFields(hybridFields, want) {
 		t.Errorf("hybrid row = %v, want %v", hybridFields, want)
 	}
 	// fts is bob's recent, unjudged search: coverage/hit-rate/mrr/avg_embed_ms are all NULL or zero.
-	if want := []string{"fts", "1", "0", "0", "-", "-", "0", "10", "10", "-"}; !equalFields(ftsFields, want) {
+	if want := []string{"fts", "1", "0", "0", "-", "-", "0", "0", "10", "10", "-"}; !equalFields(ftsFields, want) {
 		t.Errorf("fts row = %v, want %v", ftsFields, want)
 	}
 }
@@ -307,6 +307,35 @@ func TestStatsAdHocSQL(t *testing.T) {
 	}
 	if raw["query"] != "sql" {
 		t.Errorf(`query = %v, want "sql"`, raw["query"])
+	}
+}
+
+// TestStatsSQLFilterDecision covers each branch of the `--sql` with `--since`/`--caller` check:
+// --sql refuses either filter, and a filter without --sql is fine.
+func TestStatsSQLFilterDecision(t *testing.T) {
+	f := buildStatsFixture(t)
+	t.Setenv("KB_ROOT", f.root)
+
+	cases := []struct {
+		name string
+		args []string
+		exit int
+	}{
+		{"--sql --since", []string{"--sql", "select 1", "--since", "7d"}, ExitUsage},
+		{"--sql --caller", []string{"--sql", "select 1", "--caller", "bob"}, ExitUsage},
+		{"--sql alone", []string{"--sql", "select 1"}, ExitOK},
+		{"overview --since", []string{"overview", "--since", "7d"}, ExitOK},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, stderr, exit := runKB(t, append([]string{"stats"}, c.args...))
+			if exit != c.exit {
+				t.Fatalf("exit = %d, want %d; stderr=%s", exit, c.exit, stderr)
+			}
+			if refused := strings.Contains(stderr, "do not apply to --sql"); refused != (c.exit == ExitUsage) {
+				t.Errorf("--sql filter complaint present = %v, want %v; stderr=%s", refused, c.exit == ExitUsage, stderr)
+			}
+		})
 	}
 }
 
@@ -424,7 +453,7 @@ func TestStatsHelpShowsDefinitionsAndQueries(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; stderr=%s", exit, stderr)
 	}
 	if !strings.Contains(stdout, "judged searches") || !strings.Contains(stdout, "unknown, not a failure") {
-		t.Errorf("stats --help missing D4 definitions:\n%s", stdout)
+		t.Errorf("stats --help missing the hit/judged definitions:\n%s", stdout)
 	}
 	for _, name := range []string{"overview", "sources", "trend", "entries", "gaps"} {
 		if !strings.Contains(stdout, name) {
@@ -433,5 +462,27 @@ func TestStatsHelpShowsDefinitionsAndQueries(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "Decision:") {
 		t.Errorf("stats --help missing help paragraphs (no Decision: sentence found):\n%s", stdout)
+	}
+}
+
+// TestStatsErrorHasOneStatsPrefix: a file that is not a SQLite database makes stats fail inside
+// the stats package; the user sees one "kb stats:" prefix, not "kb stats: stats:".
+func TestStatsErrorHasOneStatsPrefix(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("KB_ROOT", root)
+	p := DBPath(root)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(strings.Repeat("not sqlite ", 500)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, exit := runKB(t, []string{"stats", "--sql", "select 1"})
+	if exit != 1 {
+		t.Fatalf("exit = %d, want 1; stderr=%s", exit, stderr)
+	}
+	if !strings.HasPrefix(stderr, "kb stats: ") || strings.Contains(stderr, "stats: stats:") {
+		t.Errorf("stderr = %q, want a single kb stats: prefix", stderr)
 	}
 }

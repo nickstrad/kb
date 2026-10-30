@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // FuzzParseFrontMatter checks ParseFrontMatter's documented contract on arbitrary bytes:
@@ -14,7 +16,9 @@ import (
 //     FrontMatter, the source minus the BOM as body, and no error;
 //  3. an error that is not a *ValidationError (the unclosed fence) returns the whole original
 //     source as body;
-//  4. a nil error means title and summary are both set and each is one line.
+//  4. a nil error means title and summary are both set and each is one line;
+//  5. a nil error means title and summary are valid UTF-8 with no control characters, within
+//     MaxTitleRunes and MaxSummaryRunes.
 //
 // Run: go test ./internal/entry/ -run '^$' -fuzz FuzzParseFrontMatter -fuzztime 60s
 func FuzzParseFrontMatter(f *testing.F) {
@@ -28,6 +32,9 @@ func FuzzParseFrontMatter(f *testing.F) {
 		"no front matter at all\n---\n",
 		"---\n---\n",
 		"",
+		"---\ntitle: \x00\x01\x02\nsummary: s\n---\n",
+		"---\ntitle: a\xffb\nsummary: s\n---\n",
+		"---\ntitle: " + strings.Repeat("T", MaxTitleRunes+1) + "\nsummary: s\n---\n",
 	} {
 		f.Add([]byte(seed))
 	}
@@ -62,6 +69,13 @@ func FuzzParseFrontMatter(f *testing.F) {
 				if strings.Contains(v, "\n") {
 					t.Fatalf("nil error but %s spans lines: %q", name, v)
 				}
+				if !utf8.ValidString(v) || strings.IndexFunc(v, unicode.IsControl) >= 0 {
+					t.Fatalf("nil error but %s has invalid UTF-8 or a control character: %q", name, v)
+				}
+			}
+			if utf8.RuneCountInString(fm.Title) > MaxTitleRunes || utf8.RuneCountInString(fm.Summary) > MaxSummaryRunes {
+				t.Fatalf("nil error but title (%d) or summary (%d) is over its cap",
+					utf8.RuneCountInString(fm.Title), utf8.RuneCountInString(fm.Summary))
 			}
 		}
 	})

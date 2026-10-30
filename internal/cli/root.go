@@ -1,12 +1,13 @@
-// Package cli is the kb command tree: one file per command, plus this file for the shared parts —
-// the root command, root/database path resolution, the exit codes and the error reporting.
+// Package cli is the kb command tree: one file per command, plus this file for the shared parts
+// (the root command, root and database paths, deps) and report.go for errors and exit codes.
 //
-// The tree is rebuilt from scratch on every Execute call, so no command state survives a run and
-// tests can invoke the CLI repeatedly against different roots. The only package-level variable is
-// Version, which the build stamps once and nothing mutates afterwards.
+// The tree is rebuilt on every Execute call, so no command state survives a run and tests can
+// invoke the CLI repeatedly. The only package-level variables are Version, stamped once at start,
+// and defaultRoot, stamped at build time. Everything a test may replace arrives through deps.
 //
-// Exit codes (plan.md, "CLI"): 0 success, ExitUsage for a usage or validation failure,
-// ExitEmbedder when the embedder is unavailable.
+// Exit codes (the CLI contract): 0 success, ExitUsage (1) for a well-formed failure, ExitEmbedder
+// (2) when the embedder is unavailable, ExitInternal (3) for a bug, which is logged as an
+// incident.
 package cli
 
 import (
@@ -18,6 +19,11 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed/local"
+	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 )
 
 // Exit codes. ExitOK is not returned through an error, it is the zero value of Execute.
@@ -25,7 +31,40 @@ const (
 	ExitOK       = 0
 	ExitUsage    = 1
 	ExitEmbedder = 2
+	ExitInternal = 3
 )
+
+// deps is everything a command needs from the outside world that a test may replace.
+type deps struct {
+	// embedder, when set, replaces the embedder the --embedder/--embed-model flags would build.
+	embedder      func(cmd *cobra.Command) (embed.Embedder, error)
+	modelCacheDir func() (string, error)
+	pullModel     func(ctx context.Context, spec local.Spec, cacheDir string) error
+	openStore     func(ctx context.Context, path string, readOnly bool) (store.Store, error)
+	editor        func(ctx context.Context, path string) error
+	// userCacheDir is where the incident log goes when there is no <root>/.kb.
+	userCacheDir func() (string, error)
+}
+
+// productionDeps are the real implementations.
+func productionDeps() *deps {
+	return &deps{
+		modelCacheDir: local.DefaultCacheDir,
+		pullModel:     local.Pull,
+		openStore:     openSQLite,
+		editor:        runEditor,
+		userCacheDir:  os.UserCacheDir,
+	}
+}
+
+// openSQLite is deps.openStore in production.
+func openSQLite(ctx context.Context, path string, readOnly bool) (store.Store, error) {
+	st, err := sqlite.Open(ctx, path, sqlite.Options{ReadOnly: readOnly})
+	if err != nil {
+		return nil, err // not `return sqlite.Open(...)`: a nil *Store would become a non-nil interface
+	}
+	return st, nil
+}
 
 // defaultRoot is the knowledge repository kb works on when KB_ROOT is unset. scripts/install.sh
 // stamps it from $KB_DEFAULT_ROOT with -ldflags "-X .../internal/cli.defaultRoot=<dir>"; an
@@ -43,43 +82,9 @@ func DefaultRoot() string {
 	return "knowledge"
 }
 
-// Version is printed by `kb version`; the install script stamps it with the repo's short hash.
+// Version is printed by `kb version` and recorded with every logged search; main sets it from
+// ResolveVersion.
 var Version = "dev"
-
-// exitError carries an explicit exit code for one failure.
-type exitError struct {
-	code int
-	msg  string
-}
-
-func (e *exitError) Error() string { return e.msg }
-
-// usageErr is a usage or validation failure: ExitUsage.
-func usageErr(format string, args ...any) error {
-	return &exitError{code: ExitUsage, msg: fmt.Sprintf(format, args...)}
-}
-
-// embedderErr is an "embedder unavailable" failure: ExitEmbedder.
-func embedderErr(format string, args ...any) error {
-	return &exitError{code: ExitEmbedder, msg: fmt.Sprintf(format, args...)}
-}
-
-// notImplemented is what every command this skeleton has not filled in yet returns. It exits 1,
-// like a usage error, so scripts cannot mistake it for success.
-func notImplemented(command string) error {
-	return &exitError{code: ExitUsage, msg: fmt.Sprintf("kb %s: not implemented yet", command)}
-}
-
-// report prints one failure to stderr and returns its exit code.
-func report(stderr io.Writer, err error) int {
-	var ee *exitError
-	if errors.As(err, &ee) {
-		fmt.Fprintf(stderr, "%s\n", ee.msg)
-		return ee.code
-	}
-	fmt.Fprintf(stderr, "kb: %s\n", err.Error())
-	return ExitUsage
-}
 
 // Root returns the knowledge repository root: $KB_ROOT when it is set and non-empty, else
 // DefaultRoot.
@@ -102,7 +107,7 @@ func DBPath(root string) string {
 func EnsureDBDir(root string) error {
 	dir := filepath.Join(root, ".kb")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return usageErr("create %s: %s", dir, err)
+		return usageErr("create %s: %v", dir, err)
 	}
 	return nil
 }
@@ -122,56 +127,102 @@ func Caller(flag string) string {
 // carries the process's cancellation (main wires it to SIGINT and SIGTERM) and reaches every
 // handler through cmd.Context().
 func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	cmd := newRootCmd(stdout, stderr)
+	return execute(ctx, productionDeps(), args, stdout, stderr)
+}
+
+// execute is Execute with explicit deps. It holds the codebase's only recover: any panic (an
+// assert.Violation or a runtime error) becomes an incident and ExitInternal, never a crash with
+// Go's exit 2, which would read as "embedder unavailable".
+func execute(ctx context.Context, d *deps, args []string, stdout, stderr io.Writer) (code int) {
+	cmd := newRootCmd(d, stdout, stderr)
 	cmd.SetArgs(args)
-	if err := cmd.ExecuteContext(ctx); err != nil {
-		return report(stderr, err)
+	ran := cmd
+	defer func() {
+		if r := recover(); r != nil {
+			code = reportPanic(stderr, d, ran, args, r)
+		}
+	}()
+	ran, err := cmd.ExecuteContextC(ctx)
+	if err == nil {
+		return ExitOK
 	}
-	return ExitOK
+	var re runError
+	if !errors.As(err, &re) {
+		// cobra failed before running the command: unknown command or flag, bad argument count.
+		err = usageErr("%v", err)
+	} else {
+		err = re.err
+	}
+	return report(stderr, d, ran, args, err)
+}
+
+// runError marks an error returned by a command's RunE, as opposed to one cobra produced while
+// parsing, which is always a usage error.
+type runError struct{ err error }
+
+func (e runError) Error() string { return e.err.Error() }
+func (e runError) Unwrap() error { return e.err }
+
+// markRunErrors wraps every RunE in the tree so execute can tell its errors from cobra's.
+func markRunErrors(c *cobra.Command) {
+	if run := c.RunE; run != nil {
+		c.RunE = func(cmd *cobra.Command, args []string) error {
+			if err := run(cmd, args); err != nil {
+				return runError{err}
+			}
+			return nil
+		}
+	}
+	for _, sub := range c.Commands() {
+		markRunErrors(sub)
+	}
 }
 
 // newRootCmd builds the whole command tree for one invocation.
-func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
+func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "kb",
 		Short: "Search and maintain the knowledge repository",
-		Long: "kb indexes knowledge entries under data/ in $KB_ROOT (default " + DefaultRoot() + ")\n" +
-			"into .kb/kb.sqlite and searches it with FTS5 and sqlite-vec at once.\n\n" +
-			"Every search is three steps:\n" +
-			"  kb search \"<query>\" --caller claude   prints \"search N · M hits\" first\n" +
-			"  kb show <path>                        reads a hit's entry\n" +
-			"  kb feedback N <rank> --useful         judges it (--not-useful, or N --none when\n" +
-			"                                        nothing helped, zero results included)\n" +
-			"An unjudged search counts as unknown in kb stats; feedback is what gives its numbers meaning.\n\n" +
-			"Embeddings come from Ollama by default, or from OpenRouter when OPENROUTER_API_KEY (or\n" +
-			"KB_OPENROUTER_API_KEY) is set. --embedder / KB_EMBEDDER picks one explicitly\n" +
-			"(ollama, openrouter, openai, none); none indexes and searches with FTS only.\n" +
-			"--embed-model / KB_EMBED_MODEL overrides the model. Changing either on an existing\n" +
-			"index needs kb reindex --all.",
+		Long: "kb is a knowledge store for agents and people: Markdown entries, indexed for hybrid\n" +
+			"full-text and vector search. kb help is the reference for using it.\n\n" +
+			"Store: the knowledge repository is $KB_ROOT, else " + DefaultRoot() + ". Entries live\n" +
+			"under data/ there; the index and search log live in .kb/kb.sqlite.\n\n" +
+			"Use it in two steps:\n" +
+			"  kb search \"<query>\" --caller claude   ranked hits, opening with \"search N · M hits\"\n" +
+			"  kb show <path>                        read a hit's entry\n" +
+			"kb feedback is optional: kb feedback N <rank> --useful (or --not-useful, or N --none)\n" +
+			"records whether a search helped, which kb stats reports on.\n\n" +
+			"Embeddings are computed in-process by a local model (default " + local.DefaultModel + "),\n" +
+			"downloaded once per machine by kb model pull, or automatically by kb reindex and\n" +
+			"kb add. Search never downloads: without the model it falls back to full-text search\n" +
+			"(exit 2). --embed-model picks another supported model (kb model list); --embedder\n" +
+			"none indexes and searches with full-text search only. Changing either on an\n" +
+			"existing index needs kb reindex --all.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
-	// Flag parse failures are usage errors; wrap them so the exit code is ours.
-	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageErr("kb: %s", err.Error()) })
-	cmd.PersistentFlags().String("embedder", "", "ollama, openrouter, openai or none (default $KB_EMBEDDER, else openrouter when an OpenRouter key is set, else ollama)")
-	cmd.PersistentFlags().String("embed-model", "", "embedding model (default $KB_EMBED_MODEL, else the embedder's default)")
+	cmd.PersistentFlags().Bool("debug", false, "print extra detail on stderr: the full error chain, and best-effort steps that failed quietly")
+	cmd.PersistentFlags().String("embedder", embedderLocal, "local (in-process model) or none (full-text search only)")
+	cmd.PersistentFlags().String("embed-model", local.DefaultModel, "embedding model for --embedder local (see kb model list)")
 
 	cmd.AddCommand(
-		newAddCmd(stdout, stderr),
-		newEditCmd(stdout, stderr),
-		newRmCmd(stdout, stderr),
-		newShowCmd(stdout, stderr),
-		newListCmd(stdout, stderr),
-		newSearchCmd(stdout, stderr),
-		newReindexCmd(stdout, stderr),
-		newIndexCmd(stdout, stderr),
-		newDoctorCmd(stdout, stderr),
-		newFeedbackCmd(stdout, stderr),
-		newStatsCmd(stdout, stderr),
+		newAddCmd(d, stdout, stderr),
+		newEditCmd(d, stdout, stderr),
+		newRmCmd(d, stdout, stderr),
+		newShowCmd(d, stdout, stderr),
+		newListCmd(d, stdout, stderr),
+		newSearchCmd(d, stdout, stderr),
+		newReindexCmd(d, stdout, stderr),
+		newIndexCmd(d, stdout, stderr),
+		newDoctorCmd(d, stdout, stderr),
+		newFeedbackCmd(d, stdout, stderr),
+		newStatsCmd(d, stdout, stderr),
 		newVersionCmd(stdout),
+		newModelCmd(d, stdout, stderr),
 	)
+	markRunErrors(cmd)
 	return cmd
 }
 

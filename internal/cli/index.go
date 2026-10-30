@@ -11,7 +11,7 @@ import (
 )
 
 // newIndexCmd builds `kb index`.
-func newIndexCmd(stdout, stderr io.Writer) *cobra.Command {
+func newIndexCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:           "index",
 		Short:         "Export an optional index.md snapshot",
@@ -31,14 +31,14 @@ func newIndexCmd(stdout, stderr io.Writer) *cobra.Command {
 func runIndex(stdout, stderr io.Writer, root string) error {
 	good, broken, err := discoverGoodEntries(root, stderr)
 	if err != nil {
-		return usageErr("kb index: %s", err)
+		return usageErr("%s", err)
 	}
 	if err := index.Write(root, good, index.Today()); err != nil {
-		return usageErr("kb index: %s", err)
+		return usageErr("%s", err)
 	}
 	fmt.Fprintf(stdout, "index.md regenerated (%d entries)\n", len(good))
 	if broken > 0 {
-		return usageErr("kb index: %d of %d entries had errors; see warnings above", broken, broken+len(good))
+		return usageErr("%d of %d entries had errors; see warnings above", broken, broken+len(good))
 	}
 	return nil
 }

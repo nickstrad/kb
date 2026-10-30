@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -78,12 +79,12 @@ func logSearcher(t *testing.T) *Searcher {
 	t.Helper()
 
 	emb := fake.New("fake-embed", 768)
-	st, err := store.Open(filepath.Join(t.TempDir(), "kb.sqlite"))
+	st, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "kb.sqlite"), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	if err := st.EnsureEmbedMeta(emb.Model(), emb.Dim()); err != nil {
+	if err := st.EnsureEmbedMeta(context.Background(), store.EmbedMeta{Model: emb.Model(), Dim: emb.Dim()}); err != nil {
 		t.Fatalf("embed meta: %v", err)
 	}
 
@@ -117,7 +118,7 @@ func logSearcher(t *testing.T) *Searcher {
 		if strings.Contains(e.path, "/") {
 			kind = "dir"
 		}
-		if _, err := st.ReplaceEntryChunks(ctx, store.EntryInput{
+		if _, err := st.ReplaceEntry(ctx, store.EntryInput{
 			Path:     e.path,
 			Kind:     kind,
 			Title:    e.title,
@@ -129,7 +130,7 @@ func logSearcher(t *testing.T) *Searcher {
 		}
 	}
 
-	return &Searcher{DB: st.DB(), Embedder: emb, KBVersion: "deadbee"}
+	return &Searcher{Store: st, Log: st, Embedder: emb, KBVersion: "deadbee"}
 }
 
 // searchRow is one searches row, read back for the assertions below.
@@ -143,6 +144,7 @@ type searchRow struct {
 	TagFilter  sql.NullString
 	EmbedModel sql.NullString
 	KBVersion  sql.NullString
+	CorpusRev  sql.NullString
 	FTSMs      sql.NullInt64
 	VecMs      sql.NullInt64
 	EmbedMs    sql.NullInt64
@@ -153,10 +155,10 @@ func readSearch(t *testing.T, db *sql.DB, id int64) searchRow {
 	t.Helper()
 	var r searchRow
 	err := db.QueryRow(`SELECT mode, k, caller, n_returned, n_fts, n_vec,
-		tag_filter, embed_model, kb_version, fts_ms, vec_ms, embed_ms, total_ms
+		tag_filter, embed_model, kb_version, corpus_rev, fts_ms, vec_ms, embed_ms, total_ms
 		FROM searches WHERE id = ?`, id).
 		Scan(&r.Mode, &r.K, &r.Caller, &r.NReturned, &r.NFTS, &r.NVec,
-			&r.TagFilter, &r.EmbedModel, &r.KBVersion,
+			&r.TagFilter, &r.EmbedModel, &r.KBVersion, &r.CorpusRev,
 			&r.FTSMs, &r.VecMs, &r.EmbedMs, &r.TotalMs)
 	if err != nil {
 		t.Fatalf("read searches row %d: %v", id, err)
@@ -195,7 +197,7 @@ func logIDs(t *testing.T, db *sql.DB, query string, args ...any) map[int64]bool 
 	return out
 }
 
-// TestSearchAndLogPerMode is the core of P3.3: every mode, including the degraded one, writes a
+// TestSearchAndLogPerMode: every mode, including the degraded one, writes a
 // complete and self-consistent set of log rows.
 func TestSearchAndLogPerMode(t *testing.T) {
 	for _, tc := range []struct {
@@ -216,7 +218,7 @@ func TestSearchAndLogPerMode(t *testing.T) {
 			if tc.nilEmbedder {
 				s.Embedder = nil
 			}
-			db := s.DB
+			db := dbOf(s)
 
 			req := Request{Query: "widget", Mode: tc.mode, K: 8, Caller: "test-caller"}
 			out, err := s.SearchAndLog(context.Background(), req)
@@ -267,6 +269,9 @@ func TestSearchAndLogPerMode(t *testing.T) {
 			}
 			if row.KBVersion.String != "deadbee" {
 				t.Errorf("kb_version = %q, want %q", row.KBVersion.String, "deadbee")
+			}
+			if row.CorpusRev.Valid {
+				t.Errorf("corpus_rev = %q, want NULL when not recorded", row.CorpusRev.String)
 			}
 			if !row.TotalMs.Valid {
 				t.Error("total_ms is NULL")
@@ -342,7 +347,7 @@ func TestLogStageTimingsNullPerMode(t *testing.T) {
 			if err != nil {
 				t.Fatalf("SearchAndLog: %v", err)
 			}
-			row := readSearch(t, s.DB, out.Result.SearchID)
+			row := readSearch(t, dbOf(s), out.Result.SearchID)
 			for _, col := range []struct {
 				name string
 				got  sql.NullInt64
@@ -375,7 +380,7 @@ func TestLogStageTimingsNullPerMode(t *testing.T) {
 // and the per-list rank/score columns of a chunk that appeared in only one list.
 func TestLogNullableColumns(t *testing.T) {
 	s := logSearcher(t)
-	db := s.DB
+	db := dbOf(s)
 
 	// A vec-only search: every logged row must have NULL fts_rank and fts_score.
 	out, err := s.SearchAndLog(context.Background(), Request{Query: "widget", Mode: ModeVec, K: 5, Tag: "linux"})
@@ -416,11 +421,11 @@ func TestLogNullableColumns(t *testing.T) {
 	}
 }
 
-// TestSearchLogModeBreakdown is the P3 acceptance query: `select mode, count(*) from searches
+// TestSearchLogModeBreakdown: `select mode, count(*) from searches
 // group by 1` shows every mode that ran.
 func TestSearchLogModeBreakdown(t *testing.T) {
 	s := logSearcher(t)
-	db := s.DB
+	db := dbOf(s)
 	ctx := context.Background()
 
 	for _, mode := range []string{ModeHybrid, ModeFTS, ModeVec} {
@@ -468,276 +473,8 @@ func TestSearchNotLoggedOnError(t *testing.T) {
 	if _, err := s.SearchAndLog(context.Background(), Request{Query: "widget", Mode: "sideways", K: 8}); err == nil {
 		t.Fatal("SearchAndLog with an unknown mode returned no error")
 	}
-	if n := count(t, s.DB, "SELECT count(*) FROM searches"); n != 0 {
+	if n := count(t, dbOf(s), "SELECT count(*) FROM searches"); n != 0 {
 		t.Errorf("searches rows = %d after a failed search, want 0", n)
-	}
-}
-
-// TestFeedback covers the happy path, the upsert, and every way a rank can be wrong.
-func TestFeedback(t *testing.T) {
-	s := logSearcher(t)
-	db := s.DB
-	ctx := context.Background()
-
-	out, err := s.SearchAndLog(ctx, Request{Query: "widget", Mode: ModeHybrid, K: 8, Caller: "test"})
-	if err != nil {
-		t.Fatalf("SearchAndLog: %v", err)
-	}
-	id := out.Result.SearchID
-	n := len(out.Returned)
-
-	if err := s.Feedback(ctx, id, 1, true, "exactly what I needed"); err != nil {
-		t.Fatalf("Feedback: %v", err)
-	}
-	var useful int
-	var note sql.NullString
-	if err := db.QueryRow("SELECT useful, note FROM search_feedback WHERE search_id = ? AND rank = 1", id).
-		Scan(&useful, &note); err != nil {
-		t.Fatalf("read feedback: %v", err)
-	}
-	if useful != 1 || note.String != "exactly what I needed" {
-		t.Errorf("useful/note = %d / %q", useful, note.String)
-	}
-
-	// The last rank is in range; an empty note is stored as NULL.
-	if err := s.Feedback(ctx, id, n, false, ""); err != nil {
-		t.Fatalf("Feedback on the last rank: %v", err)
-	}
-	if err := db.QueryRow("SELECT useful, note FROM search_feedback WHERE search_id = ? AND rank = ?", id, n).
-		Scan(&useful, &note); err != nil {
-		t.Fatalf("read feedback: %v", err)
-	}
-	if useful != 0 || note.Valid {
-		t.Errorf("useful/note = %d / %v, want 0 / NULL", useful, note)
-	}
-
-	// Re-marking the same rank replaces the verdict instead of failing on the primary key.
-	if err := s.Feedback(ctx, id, 1, false, "changed my mind"); err != nil {
-		t.Fatalf("Feedback upsert: %v", err)
-	}
-	if got := count(t, db, "SELECT count(*) FROM search_feedback WHERE search_id = ?", id); got != 2 {
-		t.Errorf("feedback rows = %d, want 2", got)
-	}
-	if err := db.QueryRow("SELECT useful FROM search_feedback WHERE search_id = ? AND rank = 1", id).Scan(&useful); err != nil {
-		t.Fatalf("read feedback: %v", err)
-	}
-	if useful != 0 {
-		t.Errorf("useful = %d after the upsert, want 0", useful)
-	}
-
-	for _, tc := range []struct {
-		name     string
-		searchID int64
-		rank     int
-		wantMsg  string
-	}{
-		{name: "rank zero", searchID: id, rank: 0, wantMsg: fmt.Sprintf("search %d has %d results", id, n)},
-		{name: "rank too high", searchID: id, rank: n + 1, wantMsg: fmt.Sprintf("search %d has %d results", id, n)},
-		{name: "negative rank", searchID: id, rank: -3, wantMsg: "out of range"},
-		{name: "unknown search", searchID: id + 999, rank: 1, wantMsg: fmt.Sprintf("no search with id %d", id+999)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := s.Feedback(ctx, tc.searchID, tc.rank, true, "")
-			if err == nil {
-				t.Fatal("Feedback accepted an invalid argument")
-			}
-			if !strings.Contains(err.Error(), tc.wantMsg) {
-				t.Errorf("error = %q, want it to contain %q", err, tc.wantMsg)
-			}
-		})
-	}
-	if got := count(t, db, "SELECT count(*) FROM search_feedback"); got != 2 {
-		t.Errorf("feedback rows = %d after the rejections, want 2", got)
-	}
-}
-
-// feedbackRow reads one search_feedback row back; ok is false when the row does not exist.
-func feedbackRow(t *testing.T, db *sql.DB, searchID int64, rank int) (useful int, note sql.NullString, ok bool) {
-	t.Helper()
-	err := db.QueryRow("SELECT useful, note FROM search_feedback WHERE search_id = ? AND rank = ?", searchID, rank).
-		Scan(&useful, &note)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, note, false
-	}
-	if err != nil {
-		t.Fatalf("read feedback (%d, %d): %v", searchID, rank, err)
-	}
-	return useful, note, true
-}
-
-// TestFeedbackNone covers the whole-search verdict: it is the one verdict a zero-result search can
-// take, it is stored as a single rank-0 not-useful row, it upserts, it refuses to contradict a
-// useful verdict, and a later useful verdict withdraws it.
-func TestFeedbackNone(t *testing.T) {
-	s := logSearcher(t)
-	db := s.DB
-	ctx := context.Background()
-
-	// A zero-result search: no fixture chunk contains this token, and fts never embeds.
-	zero, err := s.SearchAndLog(ctx, Request{Query: "nonexistentzebra", Mode: ModeFTS, K: 8, Caller: "test"})
-	if err != nil {
-		t.Fatalf("SearchAndLog zero: %v", err)
-	}
-	if len(zero.Returned) != 0 {
-		t.Fatalf("zero-result fixture returned %d hits", len(zero.Returned))
-	}
-	zeroID := zero.Result.SearchID
-
-	// Its ranks cannot be marked, and the error points at --none.
-	if err := s.Feedback(ctx, zeroID, 1, false, ""); err == nil || !strings.Contains(err.Error(), "--none") {
-		t.Errorf("Feedback on a zero-result search = %v, want an error suggesting --none", err)
-	}
-	if err := s.FeedbackNone(ctx, zeroID, "nothing about zebras"); err != nil {
-		t.Fatalf("FeedbackNone on a zero-result search: %v", err)
-	}
-	useful, note, ok := feedbackRow(t, db, zeroID, WholeSearchRank)
-	if !ok || useful != 0 || note.String != "nothing about zebras" {
-		t.Errorf("rank-0 row = useful %d note %q present %t, want 0 / \"nothing about zebras\" / true", useful, note.String, ok)
-	}
-
-	// A second --none replaces the row (one row, new note; an empty note is NULL), not a PK error.
-	if err := s.FeedbackNone(ctx, zeroID, ""); err != nil {
-		t.Fatalf("FeedbackNone upsert: %v", err)
-	}
-	if got := count(t, db, "SELECT count(*) FROM search_feedback WHERE search_id = ?", zeroID); got != 1 {
-		t.Errorf("feedback rows for the zero-result search = %d, want 1", got)
-	}
-	if _, note, _ := feedbackRow(t, db, zeroID, WholeSearchRank); note.Valid {
-		t.Errorf("note after an empty-note upsert = %q, want NULL", note.String)
-	}
-
-	// A search with hits: --none coexists with not-useful verdicts on individual hits.
-	hits, err := s.SearchAndLog(ctx, Request{Query: "widget", Mode: ModeFTS, K: 8, Caller: "test"})
-	if err != nil {
-		t.Fatalf("SearchAndLog hits: %v", err)
-	}
-	id := hits.Result.SearchID
-	if len(hits.Returned) < 2 {
-		t.Fatalf("hits fixture returned %d hits, want at least 2", len(hits.Returned))
-	}
-	if err := s.Feedback(ctx, id, 1, false, "wrong entry"); err != nil {
-		t.Fatalf("Feedback not-useful: %v", err)
-	}
-	if err := s.FeedbackNone(ctx, id, "none of these"); err != nil {
-		t.Fatalf("FeedbackNone after a not-useful verdict: %v", err)
-	}
-	if _, _, ok := feedbackRow(t, db, id, WholeSearchRank); !ok {
-		t.Error("rank-0 row missing after FeedbackNone")
-	}
-	// A later not-useful verdict leaves the --none row in place: the two agree.
-	if err := s.Feedback(ctx, id, 2, false, ""); err != nil {
-		t.Fatalf("Feedback not-useful rank 2: %v", err)
-	}
-	if _, _, ok := feedbackRow(t, db, id, WholeSearchRank); !ok {
-		t.Error("a not-useful verdict withdrew the --none row")
-	}
-
-	// A later useful verdict withdraws --none: rows (0), (1,false), (2,false) become (1,false),
-	// (2,true).
-	if err := s.Feedback(ctx, id, 2, true, "rank 2 did help"); err != nil {
-		t.Fatalf("Feedback useful: %v", err)
-	}
-	if _, _, ok := feedbackRow(t, db, id, WholeSearchRank); ok {
-		t.Error("the rank-0 row survived a useful verdict")
-	}
-	if got := count(t, db, "SELECT count(*) FROM search_feedback WHERE search_id = ?", id); got != 2 {
-		t.Errorf("feedback rows = %d after the useful verdict, want 2", got)
-	}
-
-	// Now --none contradicts rank 2 and is refused, naming the command that resolves it, and
-	// writes nothing.
-	err = s.FeedbackNone(ctx, id, "")
-	wantFix := fmt.Sprintf("kb feedback %d 2 --not-useful", id)
-	if err == nil || !strings.Contains(err.Error(), wantFix) {
-		t.Errorf("FeedbackNone with a useful verdict = %v, want it to name %q", err, wantFix)
-	}
-	if _, _, ok := feedbackRow(t, db, id, WholeSearchRank); ok {
-		t.Error("a refused FeedbackNone still wrote the rank-0 row")
-	}
-
-	if err := s.FeedbackNone(ctx, id+999, ""); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("no search with id %d", id+999)) {
-		t.Errorf("FeedbackNone on an unknown search = %v, want a no-search error", err)
-	}
-	// The zero-result search's row is untouched by everything above.
-	if got := count(t, db, "SELECT count(*) FROM search_feedback"); got != 3 {
-		t.Errorf("total feedback rows = %d, want 3 (zero:0, hits:1, hits:2)", got)
-	}
-}
-
-// TestLast: the newest search is per caller and by id, and a caller with no search is ErrNoSearch.
-func TestLast(t *testing.T) {
-	s := logSearcher(t)
-	ctx := context.Background()
-
-	var ids []int64
-	for _, req := range []Request{
-		{Query: "widget alpha", Caller: "claude"},
-		{Query: "widget beta", Caller: "codex"},
-		{Query: "widget gamma", Caller: "claude"},
-		{Query: "widget delta", Caller: "codex"},
-	} {
-		req.Mode, req.K = ModeFTS, 8
-		out, err := s.SearchAndLog(ctx, req)
-		if err != nil {
-			t.Fatalf("SearchAndLog %q: %v", req.Query, err)
-		}
-		ids = append(ids, out.Result.SearchID)
-	}
-
-	// claude searched 1st and 3rd, codex 2nd and 4th: each caller's newest is its later search,
-	// even though all four may share one ts second.
-	for _, tc := range []struct {
-		caller string
-		wantID int64
-		wantQ  string
-	}{
-		{"claude", ids[2], "widget gamma"},
-		{"codex", ids[3], "widget delta"},
-	} {
-		got, err := s.Last(ctx, tc.caller)
-		if err != nil {
-			t.Fatalf("Last(%q): %v", tc.caller, err)
-		}
-		if got.ID != tc.wantID || got.Query != tc.wantQ || got.NReturned == 0 || got.TS == "" {
-			t.Errorf("Last(%q) = %+v, want id %d query %q with hits and a ts", tc.caller, got, tc.wantID, tc.wantQ)
-		}
-	}
-
-	_, err := s.Last(ctx, "nobody")
-	if !errors.Is(err, ErrNoSearch) || !strings.Contains(err.Error(), `"nobody"`) {
-		t.Errorf("Last(nobody) = %v, want ErrNoSearch naming the caller", err)
-	}
-}
-
-// TestLogCascadeDelete: deleting a searches row takes its results, candidates and feedback with
-// it, so the log can be pruned with one DELETE. (foreign_keys=ON is a store.Open pragma; this is
-// also what proves it reaches the pooled connections.)
-func TestLogCascadeDelete(t *testing.T) {
-	s := logSearcher(t)
-	db := s.DB
-	ctx := context.Background()
-
-	out, err := s.SearchAndLog(ctx, Request{Query: "widget", Mode: ModeHybrid, K: 8, Caller: "test"})
-	if err != nil {
-		t.Fatalf("SearchAndLog: %v", err)
-	}
-	id := out.Result.SearchID
-	if err := s.Feedback(ctx, id, 1, true, "keep"); err != nil {
-		t.Fatalf("Feedback: %v", err)
-	}
-	for _, table := range []string{"search_results", "search_candidates", "search_feedback"} {
-		if n := count(t, db, "SELECT count(*) FROM "+table); n == 0 {
-			t.Fatalf("%s is empty before the delete", table)
-		}
-	}
-
-	if _, err := db.ExecContext(ctx, "DELETE FROM searches WHERE id = ?", id); err != nil {
-		t.Fatalf("delete search: %v", err)
-	}
-	for _, table := range []string{"searches", "search_results", "search_candidates", "search_feedback"} {
-		if n := count(t, db, "SELECT count(*) FROM "+table); n != 0 {
-			t.Errorf("%s has %d rows after the parent search was deleted, want 0", table, n)
-		}
 	}
 }
 
@@ -748,7 +485,7 @@ func TestLogCascadeDelete(t *testing.T) {
 // hard to provoke on demand.
 func TestLogRollbackOnFailure(t *testing.T) {
 	s := logSearcher(t)
-	db := s.DB
+	db := dbOf(s)
 
 	if _, err := db.Exec(`CREATE TRIGGER boom BEFORE INSERT ON search_candidates
 		BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
@@ -775,22 +512,5 @@ func TestLogRollbackOnFailure(t *testing.T) {
 		if n := count(t, db, "SELECT count(*) FROM "+table); n != 0 {
 			t.Errorf("%s has %d rows after the failed log write, want 0", table, n)
 		}
-	}
-}
-
-// TestGitShortHash: a real repository yields a hash, anything else yields "" rather than an error.
-func TestGitShortHash(t *testing.T) {
-	if got := GitShortHash(t.TempDir()); got != "" {
-		t.Errorf("GitShortHash(non-repo) = %q, want \"\"", got)
-	}
-	if got := GitShortHash("/nonexistent-path-for-kb-test"); got != "" {
-		t.Errorf("GitShortHash(missing dir) = %q, want \"\"", got)
-	}
-	// The module lives inside the knowledge repo, so the working directory is a git checkout
-	// unless the tree was exported without .git; skip rather than fail in that case.
-	if got := GitShortHash("."); got == "" {
-		t.Skip("not running inside a git checkout")
-	} else if len(got) < 4 || strings.ContainsAny(got, " \n") {
-		t.Errorf("GitShortHash(.) = %q, want a bare short hash", got)
 	}
 }

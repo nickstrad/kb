@@ -1,5 +1,5 @@
 // `kb reindex`: rebuild the index from the files, skipping entries whose content hash is
-// unchanged. P2.4 implements it.
+// unchanged.
 package cli
 
 import (
@@ -12,16 +12,16 @@ import (
 
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/reindex"
 	"github.com/nickstrad/kb/internal/store"
 )
 
-// reindexBatchSize is the number of chunk texts sent to the embedder per call (plan.md: "batched,
-// 16 texts per Ollama call").
+// reindexBatchSize is the number of chunk texts sent to the embedder per call.
 const reindexBatchSize = 16
 
 // newReindexCmd builds `kb reindex [<entry>|--all]`.
-func newReindexCmd(stdout, stderr io.Writer) *cobra.Command {
+func newReindexCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	var all bool
 	cmd := &cobra.Command{
 		Use:   "reindex [entry]",
@@ -35,11 +35,11 @@ func newReindexCmd(stdout, stderr io.Writer) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			switch {
 			case all && len(args) > 0:
-				return usageErr("kb reindex: pass an <entry> or --all, not both")
+				return usageErr("pass an <entry> or --all, not both")
 			case !all && len(args) == 0:
-				return usageErr("kb reindex: pass an <entry> or --all")
+				return usageErr("pass an <entry> or --all")
 			}
-			return runReindex(cmd, stdout, stderr, all, args)
+			return runReindex(cmd, d, stdout, stderr, all, args)
 		},
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "reindex every entry in the repository")
@@ -48,26 +48,20 @@ func newReindexCmd(stdout, stderr io.Writer) *cobra.Command {
 
 // runReindex opens the store, resolves the embedder, decides Force per the embed_meta check, runs
 // reindex.All or reindex.One, and prints the summary.
-func runReindex(cmd *cobra.Command, stdout, stderr io.Writer, all bool, args []string) error {
+func runReindex(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, all bool, args []string) error {
+	ctx := cmd.Context()
 	root := Root()
-	if err := EnsureDBDir(root); err != nil {
-		return err
-	}
-	st, err := store.Open(DBPath(root))
+	st, err := d.openStoreForWrite(ctx, root)
 	if err != nil {
-		return usageErr("kb reindex: %s", err)
+		return err
 	}
 	defer st.Close()
 
-	// The default per-call budget (BaseTimeout 30s + PerTextTimeout*n) already gives a 16-text
-	// batch 190s (30s + 10s*16), well above the 16-39s this box has measured for one such batch,
-	// so it is left at New's defaults rather than raised.
-	embedder, err := newEmbedder(cmd)
+	// The default per-call budget already gives a 16-text batch far more time than it takes.
+	embedder, err := d.newEmbedder(cmd)
 	if err != nil {
-		return usageErr("kb reindex: %s", err)
+		return err
 	}
-	ctx := cmd.Context()
-
 	force, err := ensureEmbedMetaForReindex(ctx, st, embedder, all, stderr)
 	if err != nil {
 		return err
@@ -89,86 +83,74 @@ func runReindex(cmd *cobra.Command, stdout, stderr io.Writer, all bool, args []s
 		var e entry.Entry
 		e, err = entry.Resolve(root, args[0])
 		if err != nil {
-			return usageErr("kb reindex: %s", err)
+			return usageErr("%v", err)
 		}
 		sum, err = reindex.One(ctx, opts, e)
 	}
 	if err != nil {
-		// reindex propagates the embedder's error wrapped with %w, so the shared sentinel is
-		// still reachable here whichever embedder is configured.
-		if errors.Is(err, embed.ErrUnavailable) {
-			return embedderErr("kb reindex: %s", err)
+		// SIGINT/SIGTERM cancel ctx (main's NotifyContext). Every entry commits on its own, so
+		// what finished is indexed and the rest is still stale: say that.
+		if errors.Is(err, context.Canceled) || errs.KindOf(err) == errs.Interrupted {
+			return interruptedErr(err, sum)
 		}
-		return usageErr("kb reindex: %s", err)
+		return err
 	}
 
 	fmt.Fprintln(stdout, sum.String())
-
 	if sum.Failed > 0 {
-		return usageErr("kb reindex: %d of %d entries failed; see warnings above", sum.Failed, sum.Scanned)
+		return usageErr("%d of %d entries failed; see warnings above", sum.Failed, sum.Scanned)
 	}
 	return nil
 }
 
+// interruptedErr is the message for a reindex cut short by SIGINT or SIGTERM: a known edge case,
+// so it exits 1 (report's interrupted rule), naming what was kept.
+func interruptedErr(err error, sum reindex.Summary) error {
+	return errs.Wrap(err, errs.Interrupted, "cli.reindex",
+		"interrupted (%d entries reindexed before it); finished entries are saved, rerun kb reindex to finish", sum.Reindexed)
+}
+
 // ensureEmbedMetaForReindex checks the stored embed_meta against embedder. On a fresh database it
-// records it and returns Force=false. On a mismatch, only `kb reindex --all` may recover: it
-// prints the mismatch error to stderr (its message already tells the user to run
-// `kb reindex --all`, per store.EmbedMetaMismatchError), confirms the embedder actually works with
-// a Ping BEFORE wiping anything, wipes the derived index with ResetForReindex, records the new
-// embed_meta, and returns Force=true. Force=true is technically redundant once ResetForReindex has
-// emptied the entries table (there is no stored body_hash left to compare against), but it
-// documents the intent and protects against a future ResetForReindex that stops short of deleting
-// every entries row.
-//
-// The Ping check matters because ResetForReindex is destructive: it erases the entire derived
-// index (every entry, chunk, FTS row and vector), which only kb reindex --all can then rebuild.
-// Discovering that the embedder is unreachable only after that has already happened would leave
-// the database empty with no way back except re-running against files that, luckily, are still
-// the source of truth — but there is no reason to risk that when a Ping first tells us whether the
-// rebuild can even proceed. A failed Ping is reported as an embedder-unavailable error (exit code
-// 2) rather than a usage error, before ResetForReindex ever runs.
-//
-// embedder is the embed.Embedder interface, not the concrete *ollama.Client, because this helper
-// is shared with `kb edit` (internal/cli/setup*.go's newEmbedder hook returns the interface so
-// tests can substitute a fake); Ping is not part of embed.Embedder, so it is reached with an
-// optional-interface type assertion (the pinger type below) rather than a parameter type change.
-// In production the Ollama and OpenAI-style clients implement it; embed.None does not need to. Only the
-// all=true, mismatch path below ever calls Ping, and that is also the only path that is
-// destructive enough to warrant it.
-//
-// Reindexing a single <entry> cannot recover from a mismatch on its own: doing so would leave the
-// rest of the database indexed under the old model with no way to tell the two apart, so it is
-// reported as a usage error instead, same as the store's error already suggests.
-func ensureEmbedMetaForReindex(ctx context.Context, st *store.Store, embedder embed.Embedder, all bool, stderr io.Writer) (force bool, err error) {
-	err = st.EnsureEmbedMeta(embedder.Model(), embedder.Dim())
+// records it and returns force=false. On a mismatch with all=true it prints the mismatch to
+// stderr, Pings the embedder (if it is a pinger), wipes the derived index with ResetIndex, records
+// the new embed_meta and returns force=true, so every entry is re-embedded. The Ping comes first
+// because ResetIndex is destructive: an unusable embedder must fail (exit 2) while the old index
+// is intact. With all=false a mismatch is returned as is (a Conflict): reindexing one entry would
+// leave the rest under the old model.
+func ensureEmbedMetaForReindex(ctx context.Context, st store.Index, embedder embed.Embedder, all bool, stderr io.Writer) (force bool, err error) {
+	want := store.EmbedMeta{Model: embedder.Model(), Dim: embedder.Dim()}
+	err = st.EnsureEmbedMeta(ctx, want)
 	if err == nil {
 		return false, nil
 	}
-
 	var mismatch *store.EmbedMetaMismatchError
 	if !errors.As(err, &mismatch) || !all {
-		return false, usageErr("kb reindex: %s", err)
+		return false, err
 	}
-
-	fmt.Fprintln(stderr, err.Error())
+	fmt.Fprintln(stderr, mismatch.Error())
 
 	if p, ok := embedder.(pinger); ok {
 		if pingErr := p.Ping(ctx); pingErr != nil {
-			return false, embedderErr("kb reindex: refusing to reset the index, the embedder is not usable: %s", pingErr)
+			if errors.Is(pingErr, context.Canceled) {
+				return false, interruptedErr(pingErr, reindex.Summary{})
+			}
+			return false, embedderErr("refusing to reset the index, the embedder is not usable: %v", pingErr)
 		}
 	}
-
-	if err := st.ResetForReindex(ctx); err != nil {
-		return false, usageErr("kb reindex: %s", err)
+	if err := st.ResetIndex(ctx); err != nil {
+		if errors.Is(err, context.Canceled) || errs.KindOf(err) == errs.Interrupted {
+			return false, interruptedErr(err, reindex.Summary{})
+		}
+		return false, err
 	}
-	if err := st.EnsureEmbedMeta(embedder.Model(), embedder.Dim()); err != nil {
-		return false, usageErr("kb reindex: %s", err)
+	if err := st.EnsureEmbedMeta(ctx, want); err != nil {
+		return false, err
 	}
 	return true, nil
 }
 
-// pinger is satisfied by the Ollama and OpenAI-style clients (see ensureEmbedMetaForReindex's doc): an embedder that
-// can check, before any destructive work, whether it is actually reachable and usable.
+// pinger is an embedder that can check, before any destructive work, that it is reachable and
+// usable. Ping is optional, so it is not part of embed.Embedder.
 type pinger interface {
 	Ping(ctx context.Context) error
 }

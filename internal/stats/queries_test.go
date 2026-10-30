@@ -1,56 +1,15 @@
 package stats
 
 import (
-	"database/sql"
+	"context"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/marcboeker/go-duckdb/v2"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 )
-
-// testSchemaDDL is the plan's "DuckDB schema" section verbatim. It is duplicated here rather than
-// imported from the loader on purpose: these tests pin the *query semantics* against a hand-built
-// fixture, so they must keep passing (or fail loudly) independently of how Load fills the tables.
-const testSchemaDDL = `
-CREATE TABLE searches (
-  id          BIGINT PRIMARY KEY,
-  ts          TIMESTAMP NOT NULL,      -- parsed from the RFC3339 text in SQLite (UTC)
-  query       VARCHAR NOT NULL,
-  mode        VARCHAR NOT NULL,        -- hybrid | fts | vec | fts-fallback
-  k           INTEGER NOT NULL,
-  tag_filter  VARCHAR,
-  embed_model VARCHAR,
-  n_fts       INTEGER NOT NULL,
-  n_vec       INTEGER NOT NULL,
-  n_returned  INTEGER NOT NULL,
-  fts_ms      INTEGER, vec_ms INTEGER, embed_ms INTEGER, total_ms INTEGER,
-  caller      VARCHAR NOT NULL,
-  kb_version  VARCHAR
-);
-CREATE TABLE search_results (
-  search_id BIGINT NOT NULL, rank INTEGER NOT NULL, chunk_id BIGINT,
-  entry_path VARCHAR NOT NULL, heading VARCHAR NOT NULL,
-  fts_rank INTEGER, fts_score DOUBLE, vec_rank INTEGER, vec_distance DOUBLE,
-  rrf_score DOUBLE NOT NULL
-);
-CREATE TABLE search_candidates (
-  search_id BIGINT NOT NULL, fused_rank INTEGER NOT NULL, chunk_id BIGINT,
-  entry_path VARCHAR NOT NULL, heading VARCHAR NOT NULL,
-  fts_rank INTEGER, fts_score DOUBLE, vec_rank INTEGER, vec_distance DOUBLE,
-  rrf_score DOUBLE NOT NULL, returned BOOLEAN NOT NULL
-);
-CREATE TABLE search_feedback (
-  search_id BIGINT NOT NULL, rank INTEGER NOT NULL, useful BOOLEAN NOT NULL,
-  note VARCHAR, ts TIMESTAMP NOT NULL
-);
-CREATE TABLE entries (
-  path VARCHAR PRIMARY KEY, kind VARCHAR NOT NULL, title VARCHAR NOT NULL,
-  tags VARCHAR NOT NULL,                -- JSON array text, verbatim from SQLite
-  updated VARCHAR, verified VARCHAR
-);
-`
 
 // The fixture. Nine searches, hand-built so every number the five queries produce can be worked
 // out on paper; the workings live in the comments beside each expectation below.
@@ -76,16 +35,16 @@ CREATE TABLE entries (
 // search 1's first useful result is at rank 3 (MRR 1/3, not 1), searches 3 and 8 are judged only
 // not-useful, and searches 4, 5, 7 and 9 are unjudged (unknown, not failed).
 const fixtureSQL = `
-INSERT INTO searches VALUES
- (1, TIMESTAMP '2026-09-07 09:00:00', 'postgres tuning',     'hybrid',       5, NULL,       'nomic', 5, 5, 3,    5,   20,   40, 100, 'claude', 'abc123'),
- (2, TIMESTAMP '2026-09-08 10:00:00', 'Postgres Tuning ',    'hybrid',       5, 'postgres', 'nomic', 4, 4, 2,    6,   25,   50, 120, 'codex',  'abc123'),
- (3, TIMESTAMP '2026-09-09 11:00:00', 'duckdb appender',     'fts',          5, NULL,       NULL,    6, 0, 2,    8, NULL, NULL,  30, 'claude', 'abc123'),
- (4, TIMESTAMP '2026-09-10 12:00:00', 'ollama offline',      'fts-fallback', 5, NULL,       'nomic', 3, 0, 2,    9, NULL,  150, 200, 'codex',  'abc123'),
- (5, TIMESTAMP '2026-09-11 13:00:00', 'zero hits topic',     'hybrid',       5, NULL,       'nomic', 0, 0, 0,    4,   10,   30,  60, 'claude', 'abc123'),
- (6, TIMESTAMP '2026-09-14 09:00:00', 'vector search',       'vec',          5, NULL,       'nomic', 0, 5, 2, NULL,   35,   45,  90, 'claude', 'def456'),
- (7, TIMESTAMP '2026-09-15 10:00:00', 'ssh daemon dies',     'hybrid',       5, NULL,       'nomic', 5, 5, 3,    7,   22,   42, 110, 'codex',  'def456'),
- (8, TIMESTAMP '2026-09-16 11:00:00', 'duckdb appender',     'hybrid',       5, NULL,       'nomic', 2, 3, 1,    5,   18,   38,  95, 'codex',  'def456'),
- (9, TIMESTAMP '2026-09-17 12:00:00', 'nothing written yet', 'fts',          5, NULL,       NULL,    1, 0, 1,    5, NULL, NULL,  20, 'claude', NULL);
+INSERT INTO searches (id, ts, query, mode, k, tag_filter, embed_model, n_fts, n_vec, n_returned, fts_ms, vec_ms, embed_ms, total_ms, caller, corpus_rev) VALUES
+ (1, '2026-09-07T09:00:00Z', 'postgres tuning',     'hybrid',       5, NULL,       'nomic', 5, 5, 3,    5,   20,   40, 100, 'claude', 'abc123'),
+ (2, '2026-09-08T10:00:00Z', 'Postgres Tuning ',    'hybrid',       5, 'postgres', 'nomic', 4, 4, 2,    6,   25,   50, 120, 'codex',  'abc123'),
+ (3, '2026-09-09T11:00:00Z', 'duckdb appender',     'fts',          5, NULL,       NULL,    6, 0, 2,    8, NULL, NULL,  30, 'claude', 'abc123'),
+ (4, '2026-09-10T12:00:00Z', 'ollama offline',      'fts-fallback', 5, NULL,       'nomic', 3, 0, 2,    9, NULL,  150, 200, 'codex',  'abc123'),
+ (5, '2026-09-11T13:00:00Z', 'zero hits topic',     'hybrid',       5, NULL,       'nomic', 0, 0, 0,    4,   10,   30,  60, 'claude', 'abc123'),
+ (6, '2026-09-14T09:00:00Z', 'vector search',       'vec',          5, NULL,       'nomic', 0, 5, 2, NULL,   35,   45,  90, 'claude', 'def456'),
+ (7, '2026-09-15T10:00:00Z', 'ssh daemon dies',     'hybrid',       5, NULL,       'nomic', 5, 5, 3,    7,   22,   42, 110, 'codex',  'def456'),
+ (8, '2026-09-16T11:00:00Z', 'duckdb appender',     'hybrid',       5, NULL,       'nomic', 2, 3, 1,    5,   18,   38,  95, 'codex',  'def456'),
+ (9, '2026-09-17T12:00:00Z', 'nothing written yet', 'fts',          5, NULL,       NULL,    1, 0, 1,    5, NULL, NULL,  20, 'claude', NULL);
 
 -- Provenance: a row with both ranks is 'both', one rank is 'fts-only' / 'vec-only'. The
 -- fts-fallback search (4) has no vector list at all, so both its rows are fts-only.
@@ -110,27 +69,28 @@ INSERT INTO search_results VALUES
 -- Candidates exist but no query may read them: orphan.md appears here only as a candidate that
 -- lost the fusion, so the entries query must still report it as never returned.
 INSERT INTO search_candidates VALUES
- (1, 1, 101, 'postgres.md',        'Tuning',   1, -5.0,    1, 0.10, 0.033, TRUE),
- (1, 2, 102, 'droplet.md',         'Disks',    2, -4.0, NULL, NULL, 0.016, TRUE),
- (1, 3, 103, 'postgres-tuning.md', 'WAL',   NULL, NULL,    1, 0.12, 0.016, TRUE),
- (1, 4, 109, 'orphan.md',          'Nobody',   3, -0.5,    3, 0.40, 0.008, FALSE),
- (8, 1, 104, 'duckdb.md',          'Appender', 1, -4.5,    1, 0.13, 0.033, TRUE),
- (8, 2, 109, 'orphan.md',          'Nobody',   2, -0.2, NULL, NULL, 0.016, FALSE);
+ (1, 1, 101, 'postgres.md',        'Tuning',   1, -5.0,    1, 0.10, 0.033, 1),
+ (1, 2, 102, 'droplet.md',         'Disks',    2, -4.0, NULL, NULL, 0.016, 1),
+ (1, 3, 103, 'postgres-tuning.md', 'WAL',   NULL, NULL,    1, 0.12, 0.016, 1),
+ (1, 4, 109, 'orphan.md',          'Nobody',   3, -0.5,    3, 0.40, 0.008, 0),
+ (8, 1, 104, 'duckdb.md',          'Appender', 1, -4.5,    1, 0.13, 0.033, 1),
+ (8, 2, 109, 'orphan.md',          'Nobody',   2, -0.2, NULL, NULL, 0.016, 0);
 
 INSERT INTO search_feedback VALUES
- (1, 1, FALSE, NULL,                          TIMESTAMP '2026-09-07 09:05:00'),
- (1, 3, TRUE,  'answered on the third hit',   TIMESTAMP '2026-09-07 09:06:00'),
- (2, 1, TRUE,  NULL,                          TIMESTAMP '2026-09-08 10:05:00'),
- (3, 1, FALSE, 'wrong entry',                 TIMESTAMP '2026-09-09 11:05:00'),
+ (1, 1, 0, NULL,                          '2026-09-07T09:05:00Z'),
+ (1, 3, 1,  'answered on the third hit',   '2026-09-07T09:06:00Z'),
+ (2, 1, 1,  NULL,                          '2026-09-08T10:05:00Z'),
+ (3, 1, 0, 'wrong entry',                 '2026-09-09T11:05:00Z'),
  -- droplet.md's only verdict anywhere: it makes that entry judged-and-never-useful (rate 0.0),
  -- which must read differently from an entry nobody ever rated (rate NULL). Search 3 was already
  -- judged, so this row moves nothing in overview or trend, and search 3 is fts, so it is outside
  -- the sources scope too.
- (3, 2, FALSE, 'that is the disk section',     TIMESTAMP '2026-09-09 11:06:00'),
- (6, 2, TRUE,  NULL,                          TIMESTAMP '2026-09-14 09:05:00'),
- (8, 1, FALSE, 'still not the appender docs', TIMESTAMP '2026-09-16 11:05:00');
+ (3, 2, 0, 'that is the disk section',     '2026-09-09T11:06:00Z'),
+ (6, 2, 1,  NULL,                          '2026-09-14T09:05:00Z'),
+ (8, 1, 0, 'still not the appender docs', '2026-09-16T11:05:00Z');
 
-INSERT INTO entries VALUES
+INSERT INTO entries (path, kind, title, summary, tags, updated, verified, body_hash, indexed_at)
+SELECT column1, column2, column3, '', column4, column5, column6, '', '' FROM (VALUES
  ('droplet.md',         'file', 'Droplet',         '["droplet"]',  '2026-09-01', NULL),
  ('duckdb.md',          'file', 'DuckDB',          '["duckdb"]',   '2026-09-02', '2026-09-02'),
  ('ollama.md',          'file', 'Ollama',          '["ollama"]',   '2026-09-03', NULL),
@@ -139,79 +99,57 @@ INSERT INTO entries VALUES
  ('postgres.md',        'file', 'Postgres',        '["postgres"]', '2026-09-06', NULL),
  ('ssh.md',             'file', 'SSH',             '["ssh"]',      '2026-09-07', NULL),
  ('systemd.md',         'file', 'systemd',         '["systemd"]',  '2026-09-08', NULL),
- ('vector.md',          'file', 'Vectors',         '["vector"]',   '2026-09-09', NULL);
+ ('vector.md',          'file', 'Vectors',         '["vector"]',   '2026-09-09', NULL));
 `
 
-// at builds a fixture timestamp; every fixture row is in September 2026 UTC.
-func at(day, hour, min int) time.Time {
-	return time.Date(2026, time.September, day, hour, min, 0, 0, time.UTC)
+// at builds a fixture timestamp as the log stores it; every fixture row is in September 2026 UTC.
+func at(day, hour, min int) string {
+	return time.Date(2026, time.September, day, hour, min, 0, 0, time.UTC).Format(time.RFC3339)
 }
 
-// openFixture returns an in-memory DuckDB holding the schema and the fixture above.
-func openFixture(t *testing.T) *sql.DB {
+// openFixture writes the fixture, plus any extra statements, into a real kb database and opens
+// it read-only.
+func openFixture(t *testing.T, extra ...string) *DB {
 	t.Helper()
-
-	connector, err := duckdb.NewConnector("", nil)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "kb.sqlite")
+	st, err := sqlite.Open(ctx, path, sqlite.Options{})
 	if err != nil {
-		t.Fatalf("duckdb connector: %v", err)
+		t.Fatalf("open store: %v", err)
 	}
-	db := sql.OpenDB(connector)
-	t.Cleanup(func() {
-		db.Close()
-		connector.Close()
-	})
-
-	for _, stmt := range []string{testSchemaDDL, fixtureSQL} {
-		if _, err := db.Exec(stmt); err != nil {
+	for _, stmt := range append([]string{fixtureSQL}, extra...) {
+		if _, err := st.DB().Exec(stmt); err != nil {
+			st.Close()
 			t.Fatalf("fixture setup: %v", err)
 		}
 	}
-	return db
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	ro, err := sqlite.Open(ctx, path, sqlite.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("Open read-only: %v", err)
+	}
+	t.Cleanup(func() { ro.Close() })
+	return New(ro)
 }
 
-// runQuery executes one registry query and returns its columns and rows as the driver hands them
-// back: int64, float64, string, bool, time.Time or nil, which is exactly what stats.Table holds.
-func runQuery(t *testing.T, db *sql.DB, sqlText string) ([]string, [][]any) {
-	t.Helper()
+// storeOf is the read-only store behind a fixture DB.
+func storeOf(d *DB) *sqlite.Store { return d.q.(*sqlite.Store) }
 
-	rows, err := db.Query(sqlText)
-	if err != nil {
-		t.Fatalf("query: %v", err)
-	}
-	defer rows.Close()
-
-	cols, err := rows.Columns()
-	if err != nil {
-		t.Fatalf("columns: %v", err)
-	}
-
-	var out [][]any
-	for rows.Next() {
-		vals := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		out = append(out, vals)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows: %v", err)
-	}
-	return cols, out
-}
-
-// checkQuery runs the named query and asserts its column names, in order, and every cell.
-func checkQuery(t *testing.T, db *sql.DB, name string, wantCols []string, wantRows [][]any) {
+// checkQuery runs the named query under f and asserts its column names, in order, and every cell.
+func checkQuery(t *testing.T, db *DB, name string, f Filter, wantCols []string, wantRows [][]any) {
 	t.Helper()
 
 	q, ok := Lookup(name)
 	if !ok {
 		t.Fatalf("Lookup(%q): not found", name)
 	}
-	cols, rows := runQuery(t, db, q.SQL)
+	tbl, err := db.Run(context.Background(), q, f)
+	if err != nil {
+		t.Fatalf("Run(%s): %v", name, err)
+	}
+	cols, rows := tbl.Columns, tbl.Rows
 
 	if !reflect.DeepEqual(cols, wantCols) {
 		t.Fatalf("%s columns = %v, want %v", name, cols, wantCols)
@@ -235,8 +173,8 @@ func checkQuery(t *testing.T, db *sql.DB, name string, wantCols []string, wantRo
 // once) = 3, so coverage = 100*3/5 = 60.0. Hits among the judged: 1 (useful at rank 3) and 2
 // (useful at rank 1); 8 was judged not-useful only. hit_rate = 100*2/3 = 66.666… -> 66.7.
 // MRR = (1/3 + 1/1 + 0)/3 = 1.33333…/3 = 0.44444… -> 0.444. Search 5 returned nothing, so
-// zero_result = 100*1/5 = 20.0. total_ms sorted = 60, 95, 100, 110, 120: quantile_cont(0.5) sits
-// at index 0.5*4 = 2 -> 100.0, quantile_cont(0.95) at 0.95*4 = 3.8 -> 110 + 0.8*(120-110) = 118.0.
+// zero_result = 100*1/5 = 20.0. total_ms sorted = 60, 95, 100, 110, 120: the 0.5 quantile sits
+// at index 0.5*4 = 2 -> 100.0, the 0.95 quantile at 0.95*4 = 3.8 -> 110 + 0.8*(120-110) = 118.0.
 // embed_ms = (40+50+30+42+38)/5 = 40.0.
 //
 // fts = searches 3, 9 (2). Judged: 3 only -> coverage 50.0. Search 3 was judged not-useful, so
@@ -255,14 +193,14 @@ func checkQuery(t *testing.T, db *sql.DB, name string, wantCols []string, wantRo
 // alphabetically: fts-fallback before vec.
 func TestOverview(t *testing.T) {
 	db := openFixture(t)
-	checkQuery(t, db, "overview",
+	checkQuery(t, db, "overview", Filter{},
 		[]string{"mode", "searches", "judged", "coverage_pct", "hit_rate_pct", "mrr",
-			"zero_result_pct", "p50_ms", "p95_ms", "avg_embed_ms"},
+			"zero_result_pct", "opened_pct", "p50_ms", "p95_ms", "avg_embed_ms"},
 		[][]any{
-			{"hybrid", int64(5), int64(3), 60.0, 66.7, 0.444, 20.0, 100.0, 118.0, 40.0},
-			{"fts", int64(2), int64(1), 50.0, 0.0, 0.0, 0.0, 25.0, 29.5, nil},
-			{"fts-fallback", int64(1), int64(0), 0.0, nil, nil, 0.0, 200.0, 200.0, 150.0},
-			{"vec", int64(1), int64(1), 100.0, 100.0, 0.5, 0.0, 90.0, 90.0, 45.0},
+			{"hybrid", int64(5), int64(3), 60.0, 66.7, 0.444, 20.0, 0.0, 100.0, 118.0, 40.0},
+			{"fts", int64(2), int64(1), 50.0, 0.0, 0.0, 0.0, 0.0, 25.0, 29.5, nil},
+			{"fts-fallback", int64(1), int64(0), 0.0, nil, nil, 0.0, 0.0, 200.0, 200.0, 150.0},
+			{"vec", int64(1), int64(1), 100.0, 100.0, 0.5, 0.0, 0.0, 90.0, 90.0, 45.0},
 		})
 }
 
@@ -284,7 +222,7 @@ func TestOverview(t *testing.T) {
 // is unknown rather than 0%. (6,2) and (3,1) are out of scope and must not appear anywhere.
 func TestSources(t *testing.T) {
 	db := openFixture(t)
-	checkQuery(t, db, "sources",
+	checkQuery(t, db, "sources", Filter{},
 		[]string{"source", "results", "share_pct", "judged", "useful", "useful_rate_pct", "avg_rank"},
 		[][]any{
 			{"both", int64(4), 36.4, int64(3), int64(1), 33.3, 1.0},
@@ -306,7 +244,7 @@ func TestSources(t *testing.T) {
 // total_ms sorted = 20, 90, 95, 110 -> p50 at 0.5*3 = 1.5 -> 90 + 0.5*(95-90) = 92.5.
 func TestTrend(t *testing.T) {
 	db := openFixture(t)
-	checkQuery(t, db, "trend",
+	checkQuery(t, db, "trend", Filter{},
 		[]string{"week", "searches", "distinct_queries", "hybrid_pct", "fallback_pct",
 			"coverage_pct", "hit_rate_pct", "mrr", "p50_ms"},
 		[][]any{
@@ -348,7 +286,7 @@ func TestTrend(t *testing.T) {
 // "postgres.md" because '-' (0x2D) < '.' (0x2E), and "ssh.md" before "systemd.md".
 func TestEntries(t *testing.T) {
 	db := openFixture(t)
-	checkQuery(t, db, "entries",
+	checkQuery(t, db, "entries", Filter{},
 		[]string{"path", "returned", "searches", "useful", "not_useful", "useful_rate_pct",
 			"avg_rank", "last_returned"},
 		[][]any{
@@ -384,7 +322,7 @@ func TestEntries(t *testing.T) {
 // times_asked DESC, then last_asked DESC: 09-17, 09-15, 09-11, 09-10.
 func TestGaps(t *testing.T) {
 	db := openFixture(t)
-	checkQuery(t, db, "gaps",
+	checkQuery(t, db, "gaps", Filter{},
 		[]string{"query", "times_asked", "last_asked", "callers", "judged", "not_useful",
 			"zero_results", "top_entry", "last_note"},
 		[][]any{
@@ -406,8 +344,8 @@ func TestGaps(t *testing.T) {
 // three hits nobody had rated. Both searches were unjudged before.
 const wholeSearchSQL = `
 INSERT INTO search_feedback VALUES
- (5, 0, FALSE, 'nothing on this topic yet',        TIMESTAMP '2026-09-11 13:05:00'),
- (7, 0, FALSE, 'all about sshd config, not tmux', TIMESTAMP '2026-09-15 10:05:00');
+ (5, 0, 0, 'nothing on this topic yet',        '2026-09-11T13:05:00Z'),
+ (7, 0, 0, 'all about sshd config, not tmux', '2026-09-15T10:05:00Z');
 `
 
 // TestWholeSearchVerdict pins what a rank-0 --none row does to every query, on top of the base
@@ -432,22 +370,19 @@ INSERT INTO search_feedback VALUES
 // zero_results and top_entry are unchanged (search 5 still returned nothing; search 7's rank 1 is
 // still ssh.md), and the ordering columns did not move.
 func TestWholeSearchVerdict(t *testing.T) {
-	db := openFixture(t)
-	if _, err := db.Exec(wholeSearchSQL); err != nil {
-		t.Fatalf("insert whole-search verdicts: %v", err)
-	}
+	db := openFixture(t, wholeSearchSQL)
 
-	checkQuery(t, db, "overview",
+	checkQuery(t, db, "overview", Filter{},
 		[]string{"mode", "searches", "judged", "coverage_pct", "hit_rate_pct", "mrr",
-			"zero_result_pct", "p50_ms", "p95_ms", "avg_embed_ms"},
+			"zero_result_pct", "opened_pct", "p50_ms", "p95_ms", "avg_embed_ms"},
 		[][]any{
-			{"hybrid", int64(5), int64(5), 100.0, 40.0, 0.267, 20.0, 100.0, 118.0, 40.0},
-			{"fts", int64(2), int64(1), 50.0, 0.0, 0.0, 0.0, 25.0, 29.5, nil},
-			{"fts-fallback", int64(1), int64(0), 0.0, nil, nil, 0.0, 200.0, 200.0, 150.0},
-			{"vec", int64(1), int64(1), 100.0, 100.0, 0.5, 0.0, 90.0, 90.0, 45.0},
+			{"hybrid", int64(5), int64(5), 100.0, 40.0, 0.267, 20.0, 0.0, 100.0, 118.0, 40.0},
+			{"fts", int64(2), int64(1), 50.0, 0.0, 0.0, 0.0, 0.0, 25.0, 29.5, nil},
+			{"fts-fallback", int64(1), int64(0), 0.0, nil, nil, 0.0, 0.0, 200.0, 200.0, 150.0},
+			{"vec", int64(1), int64(1), 100.0, 100.0, 0.5, 0.0, 0.0, 90.0, 90.0, 45.0},
 		})
 
-	checkQuery(t, db, "sources",
+	checkQuery(t, db, "sources", Filter{},
 		[]string{"source", "results", "share_pct", "judged", "useful", "useful_rate_pct", "avg_rank"},
 		[][]any{
 			{"both", int64(4), 36.4, int64(3), int64(1), 33.3, 1.0},
@@ -455,7 +390,7 @@ func TestWholeSearchVerdict(t *testing.T) {
 			{"vec-only", int64(3), 27.3, int64(1), int64(1), 100.0, 2.67},
 		})
 
-	checkQuery(t, db, "trend",
+	checkQuery(t, db, "trend", Filter{},
 		[]string{"week", "searches", "distinct_queries", "hybrid_pct", "fallback_pct",
 			"coverage_pct", "hit_rate_pct", "mrr", "p50_ms"},
 		[][]any{
@@ -463,7 +398,7 @@ func TestWholeSearchVerdict(t *testing.T) {
 			{at(14, 0, 0), int64(4), int64(4), 50.0, 0.0, 75.0, 33.3, 0.167, 92.5},
 		})
 
-	checkQuery(t, db, "entries",
+	checkQuery(t, db, "entries", Filter{},
 		[]string{"path", "returned", "searches", "useful", "not_useful", "useful_rate_pct",
 			"avg_rank", "last_returned"},
 		[][]any{
@@ -478,7 +413,7 @@ func TestWholeSearchVerdict(t *testing.T) {
 			{"orphan.md", int64(0), int64(0), int64(0), int64(0), nil, nil, nil},
 		})
 
-	checkQuery(t, db, "gaps",
+	checkQuery(t, db, "gaps", Filter{},
 		[]string{"query", "times_asked", "last_asked", "callers", "judged", "not_useful",
 			"zero_results", "top_entry", "last_note"},
 		[][]any{
@@ -496,7 +431,7 @@ func TestWholeSearchVerdict(t *testing.T) {
 }
 
 // TestLookup checks the registry itself: the five names in display order, a populated Summary and
-// Help on each, a Help paragraph that ends in the "Decision:" sentence the plan requires, and a
+// Help on each, a Help paragraph that ends in a "Decision:" sentence, and a
 // miss for a name nobody defined (which is what the CLI turns into a usage error).
 func TestLookup(t *testing.T) {
 	want := []string{"overview", "sources", "trend", "entries", "gaps"}
@@ -537,5 +472,96 @@ func TestLookup(t *testing.T) {
 	}
 	if _, ok := Lookup(""); ok {
 		t.Error(`Lookup("") = found, want not found`)
+	}
+}
+
+// TestOverviewOpenedPct: opened_pct is the share of all searches (judged or not) with at least
+// one search_opens row, per mode, and a search with several opens still counts once.
+//
+// None opened (the base fixture): 0.0 in every mode. Some: opens on searches 1 (two entries) and 2
+// make hybrid 2/5 = 40.0, fts 0/2 = 0.0. All: every search opened, 100.0 everywhere.
+func TestOverviewOpenedPct(t *testing.T) {
+	pick := func(t *testing.T, db *DB) map[string]any {
+		t.Helper()
+		q, _ := Lookup("overview")
+		tbl, err := db.Run(context.Background(), q, Filter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]any{}
+		for _, r := range tbl.Rows {
+			got[r[0].(string)] = r[7]
+		}
+		return got
+	}
+	t.Run("none", func(t *testing.T) {
+		got := pick(t, openFixture(t))
+		for mode, v := range got {
+			if v != 0.0 {
+				t.Errorf("%s opened_pct = %v, want 0.0", mode, v)
+			}
+		}
+	})
+	t.Run("some", func(t *testing.T) {
+		got := pick(t, openFixture(t, `INSERT INTO search_opens VALUES
+			(1, 'postgres.md', '2026-09-07T09:10:00Z'), (1, 'droplet.md', '2026-09-07T09:11:00Z'),
+			(2, 'postgres.md', '2026-09-08T10:10:00Z');`))
+		if got["hybrid"] != 40.0 || got["fts"] != 0.0 {
+			t.Errorf("opened_pct = %v, want hybrid 40.0 and fts 0.0", got)
+		}
+	})
+	t.Run("all", func(t *testing.T) {
+		got := pick(t, openFixture(t, `INSERT INTO search_opens
+			SELECT id, 'x.md', ts FROM searches;`))
+		for mode, v := range got {
+			if v != 100.0 {
+				t.Errorf("%s opened_pct = %v, want 100.0", mode, v)
+			}
+		}
+	})
+}
+
+// TestPercentileRounding pins Pct.Digits = 1 for overview and trend: two October hybrid searches
+// with fractional latencies 12.31 and 12.33 give p50 = 12.32 -> 12.3 (not 12 or 12.32) and
+// p95 = 12.31 + 0.95*0.02 = 12.329 -> 12.3 (not 12.33).
+func TestPercentileRounding(t *testing.T) {
+	db := openFixture(t, `
+INSERT INTO searches (id, ts, query, mode, k, n_fts, n_vec, n_returned, total_ms, caller) VALUES
+ (20, '2026-10-06T09:00:00Z', 'rounding a', 'hybrid', 5, 1, 1, 1, 12.31, 'claude'),
+ (21, '2026-10-07T09:00:00Z', 'rounding b', 'hybrid', 5, 1, 1, 1, 12.33, 'claude');`)
+	f := Filter{Since: mustParse(t, "2026-10-01T00:00:00Z")}
+	q, _ := Lookup("overview")
+	tbl, err := db.Run(context.Background(), q, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tbl.Rows) != 1 {
+		t.Fatalf("overview rows = %v, want one", tbl.Rows)
+	}
+	col := func(name string) int {
+		for i, c := range tbl.Columns {
+			if c == name {
+				return i
+			}
+		}
+		t.Fatalf("no column %q", name)
+		return -1
+	}
+	if got := tbl.Rows[0][col("p50_ms")]; got != 12.3 {
+		t.Errorf("overview p50_ms = %#v, want 12.3", got)
+	}
+	if got := tbl.Rows[0][col("p95_ms")]; got != 12.3 {
+		t.Errorf("overview p95_ms = %#v, want 12.3", got)
+	}
+	q, _ = Lookup("trend")
+	tbl, err = db.Run(context.Background(), q, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tbl.Rows) != 1 {
+		t.Fatalf("trend rows = %v, want one", tbl.Rows)
+	}
+	if got := tbl.Rows[0][col("p50_ms")]; got != 12.3 {
+		t.Errorf("trend p50_ms = %#v, want 12.3", got)
 	}
 }
