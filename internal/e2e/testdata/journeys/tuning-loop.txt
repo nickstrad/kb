@@ -1,0 +1,303 @@
+tuning-loop: judge searches, then measure a setting before adopting it.
+
+A small corpus and some judged searches. kb config --set shows what a setting would do,
+kb explain shows why a chunk ranks where it does, kb eval scores the log, --save-baseline
+keeps that score, and --set ... --compare says whether another setting beats it. None of
+this writes the config, and explain and eval never write the search log.
+
+  $ kb init --model fake:8
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ kb add --dir $WORK/notes/deploy
+  added data/deploy/README.md (2 chunks)
+  $ kb add $WORK/notes/backup.md
+  added data/backup.md (2 chunks)
+  $ kb add $WORK/notes/tmux.md
+  added data/tmux.md (2 chunks)
+  $ kb add $WORK/notes/oncall.md
+  added data/oncall.md (2 chunks)
+  $ kb add $WORK/notes/cache.md
+  added data/cache.md (2 chunks)
+  $ kb add $WORK/notes/flags.md
+  added data/flags.md (2 chunks)
+
+Tags match case-insensitively: --tag Docker finds an entry tagged docker.
+
+  $ kb search "container image" --mode fts --tag Docker --caller claude
+  search 1 · 2 hits
+  [1] data/backup.md › (intro) · updated 2026-02-02
+  Nightly backup › (intro)
+  # Nightly backup
+
+  The nightly backup writes a container image of the database to the archive volume.
+
+  [2] data/tmux.md › (intro) · updated 2026-02-03
+  Tmux survives logout › (intro)
+  # Tmux survives logout
+
+  Detach tmux and the session survives logout. Run the container image of the shell tools inside it.
+  search_id=1
+
+  $ kb search "container image" --mode fts --tag docker --caller claude
+  search 2 · 2 hits
+  [1] data/backup.md › (intro) · updated 2026-02-02
+  Nightly backup › (intro)
+  # Nightly backup
+
+  The nightly backup writes a container image of the database to the archive volume.
+
+  [2] data/tmux.md › (intro) · updated 2026-02-03
+  Tmux survives logout › (intro)
+  # Tmux survives logout
+
+  Detach tmux and the session survives logout. Run the container image of the shell tools inside it.
+  search_id=2
+
+Judge a few searches. Each query has a gold chunk marked useful.
+
+  $ kb feedback --last 1 --useful --caller claude
+  recorded: search 2 rank 1 useful=1 (newest search for claude, (time): "container image")
+
+  $ kb search "nightly backup" --mode fts --caller claude
+  search 3 · 2 hits
+  [1] data/backup.md · updated 2026-02-02
+  Nightly backup: How the nightly backup runs.
+
+  [2] data/backup.md › (intro) · updated 2026-02-02
+  Nightly backup › (intro)
+  # Nightly backup
+
+  The nightly backup writes a container image of the database to the archive volume.
+  search_id=3
+  $ kb feedback --last 1 --useful --caller claude
+  recorded: search 3 rank 1 useful=1 (newest search for claude, (time): "nightly backup")
+
+  $ kb search "tmux logout" --mode fts --caller claude
+  search 4 · 2 hits
+  [1] data/tmux.md · updated 2026-02-03
+  Tmux survives logout: Keep sessions alive after you log out.
+
+  [2] data/tmux.md › (intro) · updated 2026-02-03
+  Tmux survives logout › (intro)
+  # Tmux survives logout
+
+  Detach tmux and the session survives logout. Run the container image of the shell tools inside it.
+  search_id=4
+  $ kb feedback --last 1 --useful --caller claude
+  recorded: search 4 rank 1 useful=1 (newest search for claude, (time): "tmux logout")
+
+  $ kb search "pager acknowledge" --mode fts --caller claude
+  search 5 · 1 hit
+  [1] data/oncall.md › (intro) · updated 2026-02-04
+  On-call runbook › (intro)
+  # On-call runbook
+
+  Acknowledge the pager, then check the dashboards.
+  search_id=5
+  $ kb feedback --last 1 --useful --caller claude
+  recorded: search 5 rank 1 useful=1 (newest search for claude, (time): "pager acknowledge")
+
+  $ kb search "cache invalidation" --mode fts --caller claude
+  search 6 · 2 hits
+  [1] data/cache.md · updated 2026-02-05
+  Cache rules: When the cache is invalidated.
+
+  [2] data/cache.md › (intro) · updated 2026-02-05
+  Cache rules › (intro)
+  # Cache rules
+
+  Cache invalidation happens on every write.
+  search_id=6
+  $ kb feedback --last 1 --useful --caller claude
+  recorded: search 6 rank 1 useful=1 (newest search for claude, (time): "cache invalidation")
+
+  $ kb search "embedding model flag" --mode fts --caller claude
+  search 7 · 2 hits
+  [1] data/flags.md · updated 2026-02-06
+  Embedding flags: Flags that choose the embedding model.
+
+  [2] data/flags.md › (intro) · updated 2026-02-06
+  Embedding flags › (intro)
+  # Embedding flags
+
+  Pass the embedding model flag to choose the model for one run.
+  search_id=7
+  $ kb feedback --last 1 --useful --caller claude
+  recorded: search 7 rank 1 useful=1 (newest search for claude, (time): "embedding model flag")
+
+Settings and diagnostics. --set shows a result without writing it: the settings hash changes
+with it, and the config file does not.
+
+  $ kb config --json
+  {
+  ...
+        "rrf_k": 60,
+  ...
+  ~   "settings_hash": "[0-9a-f]{64}"
+  }
+
+  $ kb config --set search.rrf_k=20 --json
+  {
+  ...
+        "rrf_k": 20,
+  ...
+  ~   "settings_hash": "[0-9a-f]{64}"
+  }
+
+  $ grep rrf_k .kb/stores/default/config.toml
+  [stderr] grep: no line of .kb/stores/default/config.toml matches rrf_k
+  [exit 1]
+
+explain shows every candidate and where its score comes from. It does not write the search log.
+
+  $ kb explain "restart the service" --mode fts
+  ~ explain "restart the service" · mode fts · k 8 · settings [0-9a-f]{12}
+  settings: rrf_k=60 fts_weight=1 vec_weight=1 bm25 text=1 heading=2 title=3 list_limit=20 candidate_limit=40 per_entry_cap=3 exact=1
+  fts: match "restart" AND "the" AND "service" · AND
+  lists: fts 2 rows · vec 0 rows · 2 candidates
+  ...
+  ~ #1  rrf [0-9.]+  data/deploy/README.md  \[returned as hit #1\]
+  ...
+  ~ #2  rrf [0-9.]+  data/deploy/README.md › \(intro\)  \[returned as hit #2\]
+  ...
+
+  $ kb explain "restart the service" --mode fts --json
+  {
+  ...
+    "mode": "fts",
+  ...
+        "status": "returned",
+  ...
+  }
+
+The next search id continues the sequence: config, explain and eval wrote nothing to the log.
+
+  $ kb search "log in" --mode fts --caller claude
+  search 8 · 1 hit
+  [1] data/tmux.md · updated 2026-02-03
+  Tmux survives logout: Keep sessions alive after you log out.
+  search_id=8
+
+Score the log. Every judged query has its gold at rank 1, so the scores are perfect; the
+sample is small and the report says so.
+
+  $ kb eval --mode fts
+  ~ eval · mode fts · k 8 · settings [0-9a-f]{12}
+  searches: 8 logged · 6 useful · 0 --none · 0 not-useful only · 2 unjudged · 0 with opens
+  queries=6 hit@8=1.000 [1.000, 1.000] mrr=1.000 [1.000, 1.000] ndcg@8=1.000 [1.000, 1.000]
+  entry: queries=6 hit@8=1.000 [1.000, 1.000] mrr=1.000 [1.000, 1.000] ndcg@8=1.000 [1.000, 1.000]
+  gold not in index: 0 chunks (0 queries dropped) · 0 entries · 0 opens
+  negatives in top 8: 0
+  intervals: 95% bootstrap, 1000 resamples, seed 1
+  small sample: differences under ±CI are noise (6 queries < eval.min_judged 30)
+
+  $ kb eval --mode fts --save-baseline
+  ...
+  ~ saved baseline "default" \(6 queries, settings [0-9a-f]{12}\) to \$WORK/proj/.kb/stores/default/eval/default\.json
+
+  $ exists .kb/stores/default/eval/default.json
+
+Try a setting against the baseline. Nothing changes order here, so every query ties.
+
+  $ kb eval --mode fts --set search.bm25.title=5 --compare
+  ~ compare · baseline "default" \(.*\)
+  ~         now \(mode fts · settings [0-9a-f]{12} · fake:8 · 6 entries\) · k 8
+  ...
+    hit@8        1.000    1.000   +0.000  [+0.000, +0.000]  0/0/6     1.000
+  ...
+  ~ small sample: 6 paired queries < eval.min_judged 30; .*
+
+Adopt a setting by writing it to the store's config, then search once more: the log now holds
+two settings, and kb stats settings lists one row for each.
+
+  $ write .kb/stores/default/config.toml @cfg
+  $ kb search "log in" --mode fts --caller claude
+  search 9 · 1 hit
+  [1] data/tmux.md · updated 2026-02-03
+  Tmux survives logout: Keep sessions alive after you log out.
+  search_id=9
+
+  $ kb stats settings --json
+  {
+  ...
+  ~ \s+"searches": 1,
+  ...
+  ~ \s+"searches": 8,
+  ...
+    "searches_loaded": 9,
+  ...
+  }
+
+-- notes/deploy/README.md --
+---
+title: Deploying the service
+summary: Steps to deploy and restart the service.
+tags: [ops]
+updated: 2026-02-01
+---
+# Deploying the service
+
+Tag the release, then restart the service from the console.
+-- notes/backup.md --
+---
+title: Nightly backup
+summary: How the nightly backup runs.
+tags: [ops, Docker]
+updated: 2026-02-02
+---
+# Nightly backup
+
+The nightly backup writes a container image of the database to the archive volume.
+-- notes/tmux.md --
+---
+title: Tmux survives logout
+summary: Keep sessions alive after you log out.
+tags: [ops, docker]
+updated: 2026-02-03
+---
+# Tmux survives logout
+
+Detach tmux and the session survives logout. Run the container image of the shell tools inside it.
+-- notes/oncall.md --
+---
+title: On-call runbook
+summary: What to do when the pager goes off.
+tags: [ops]
+updated: 2026-02-04
+---
+# On-call runbook
+
+Acknowledge the pager, then check the dashboards.
+-- notes/cache.md --
+---
+title: Cache rules
+summary: When the cache is invalidated.
+tags: [dev]
+updated: 2026-02-05
+---
+# Cache rules
+
+Cache invalidation happens on every write.
+-- notes/flags.md --
+---
+title: Embedding flags
+summary: Flags that choose the embedding model.
+tags: [dev]
+updated: 2026-02-06
+---
+# Embedding flags
+
+Pass the embedding model flag to choose the model for one run.
+-- @cfg --
+version = 1
+
+[embed]
+model = "fake:8"
+
+[[sources]]
+path = "data"
+layout = "entries"
+
+[search]
+rrf_k = 20

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -60,6 +61,8 @@ func kbBinary(t *testing.T) string {
 	return kbPath
 }
 
+var vecOnce sync.Once
+
 var reFixture = regexp.MustCompile(`^([a-z]+)-v[0-9]+$`)
 
 // loadFixture implements "mkfixture <artefact>-v<N> PATH": it runs the frozen SQL of
@@ -72,6 +75,8 @@ func loadFixture(name, dst string) error {
 	if err != nil {
 		return fmt.Errorf("mkfixture: %w", err)
 	}
+	// The fixtures create vec0 tables, so sqlite-vec must be registered before the first connection.
+	vecOnce.Do(sqlite_vec.Auto)
 	db, err := sql.Open("sqlite3", dst)
 	if err != nil {
 		return err

@@ -47,6 +47,8 @@ type Hit struct {
 	// shown whole (no TextLimit). Also lists the ranks of hits merged into this one.
 	Expanded string
 	Also     []int
+	// Superseded marks a hit whose entry another entry supersedes (PLAN 5.3); the header says so.
+	Superseded bool
 }
 
 const (
@@ -221,6 +223,9 @@ func header(h Hit) string {
 	}
 	if h.Updated != "" {
 		s += " · updated " + h.Updated
+	}
+	if h.Superseded {
+		s += " · superseded"
 	}
 	if len(h.Also) > 0 {
 		ranks := make([]string, len(h.Also))

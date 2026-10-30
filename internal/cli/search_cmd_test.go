@@ -486,7 +486,7 @@ func TestPrintResultsJSONEncodeFailureIsInternal(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			res := &search.Result{Query: "q", Mode: search.ModeFTS, Hits: []search.Hit{{RRFScore: tc.score}}}
-			err := printResults(context.Background(), &buf, nil, res, true, true, 0, "none")
+			err := printResults(context.Background(), &buf, nil, res, true, true, 0, "none", nil)
 			if errs.KindOf(err) != errs.Internal {
 				t.Fatalf("printResults = %v, want an Internal error", err)
 			}

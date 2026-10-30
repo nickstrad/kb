@@ -141,6 +141,8 @@ func applyCap(cands []Candidate, entryOf map[int64]string, k int) []Candidate {
 |---|---|---|
 | `search.Fuse` | Post (guarded) | sorted by `RRFScore` desc, then FTS rank, vec rank, chunk id; `len <= Params.CandidateLimit`; no duplicate `ChunkID`; each candidate has `FTSRank` or `VecRank` set |
 | `search.applyCap` | Pre / Post (guarded) | `MinK <= k <= MaxK`; `perEntryCap >= 1`; `len(out) <= k`; no entry more than `perEntryCap` times; `out` is an order-preserving subsequence of `cands`; no returned chunk is `CapDropped` |
+| `search.demoteSuperseded` | Post (guarded) | after the re-sort, candidates are in `Fuse` order (`fusedBefore`) |
+| `render.Neighbors` | Post (guarded) | no neighbour is a primary-store hit; no neighbour is listed twice |
 | `search.Searcher.Search` (settings) | Pre | a non-zero `Settings.Params` is `valid()` (positive limits, finite non-negative weights): `config.Validate` guarantees it, so a violation is a caller that skipped validation |
 | `sqlite.Store.FTS` | Pre | `Limit > 0`; every bm25 column weight is finite and `>= 0` |
 | `search.Searcher.Search` | Post | `Mode` is one of the four `Mode*` constants; `Mode == ModeFTSFallback` ⇔ `FallbackErr != nil`; hit ranks are `1..len(Hits)`; `Result.Hits != nil` |
@@ -306,7 +308,7 @@ func FuzzFuse(f *testing.F) {
 
 `ClampK` is a three-row unit table, not a property.
 
-The table lists the properties, not every fuzz target. The `make fuzz` block in §9 names all 29 targets, including the ones this table does not describe (`FuzzExactTerms`, `FuzzExactMatch`, `FuzzMerge`, `FuzzSpell`, `FuzzSynonyms`, `FuzzPrior`, `FuzzSteps`, `FuzzExtract`, `FuzzTranscript` and others).
+The table lists the properties, not every fuzz target. The `make fuzz` block in §9 names all 30 targets, including the ones this table does not describe (`FuzzExactTerms`, `FuzzExactMatch`, `FuzzMerge`, `FuzzSpell`, `FuzzSynonyms`, `FuzzPrior`, `FuzzSteps`, `FuzzExtract`, `FuzzTranscript`, `FuzzRelated` and others).
 
 ### 5.3 Practicalities
 
@@ -409,7 +411,7 @@ Combine tags with commas: `-tags fts5,noassert`. There is no `integration` tag. 
 
 ## 9. Commands, Makefile, CI
 
-The repo `Makefile` has `test`, `e2e` and `e2e-update` today (PLAN E1). The block below is the target set; until a target exists, run its command by hand. CI (`.github/workflows/ci.yml`) runs vet, `go test -tags fts5 ./...`, the E2E step and `index-check` on every PR, and the model tests plus the repeated, shuffled E2E nightly; `make check` and `make fuzz` are not wired yet. `make fuzz` below runs all 29 fuzz targets (the list matches `grep -rn '^func Fuzz' internal`).
+The repo `Makefile` has `test`, `e2e` and `e2e-update` today (PLAN E1). The block below is the target set; until a target exists, run its command by hand. CI (`.github/workflows/ci.yml`) runs vet, `go test -tags fts5 ./...`, the E2E step and `index-check` on every PR, and the model tests plus the repeated, shuffled E2E nightly; `make check` and `make fuzz` are not wired yet. `make fuzz` below runs all 30 fuzz targets (the list matches `grep -rn '^func Fuzz' internal`).
 
 ```make
 TAGS    := fts5
@@ -451,6 +453,7 @@ fuzz:   # time-boxed; FUZZTIME=2m in CI. One -fuzz per run: the regex must match
 	go test -tags $(TAGS) ./internal/search    -run '^$$' -fuzz '^FuzzSynonyms$$'            -fuzztime $(FUZZTIME)
 	go test -tags $(TAGS) ./internal/store/sqlite -run '^$$' -fuzz '^FuzzSanitizeFTS$$'      -fuzztime $(FUZZTIME)
 	go test -tags $(TAGS) ./internal/store/sqlite -run '^$$' -fuzz '^FuzzStoreModel$$'       -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/store/sqlite -run '^$$' -fuzz '^FuzzRelated$$'          -fuzztime $(FUZZTIME)
 	go test -tags $(TAGS) ./internal/workspace -run '^$$' -fuzz '^FuzzParseRef$$'            -fuzztime $(FUZZTIME)
 	go test -tags $(TAGS) ./internal/workspace -run '^$$' -fuzz '^FuzzValidName$$'           -fuzztime $(FUZZTIME)
 	go test -tags $(TAGS) ./internal/workspace -run '^$$' -fuzz '^FuzzDiscoveryUnderLocation$$' -fuzztime $(FUZZTIME)

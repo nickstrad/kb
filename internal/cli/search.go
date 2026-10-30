@@ -34,6 +34,7 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		budget int
 		stores string
 		expand string
+		nbrs   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -60,7 +61,12 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"--stores '' searches this store only. Each store uses its own embedding model and\n" +
 			"this store's [search] settings; the lists are merged on ranks. Another store's hit\n" +
 			"shows as REF:path (read it with kb show REF:path). A store that cannot be searched\n" +
-			"is skipped with a warning. The search is logged in this store only.",
+			"is skipped with a warning. The search is logged in this store only.\n\n" +
+			"--neighbors adds a \"Related:\" section after the hits: the entries linked to each\n" +
+			"hit's entry (kb related), without the entries already returned as hits. It is not\n" +
+			"part of the logged result; --json carries it as \"neighbors\". Hits that name an\n" +
+			"entry another one supersedes are marked \"superseded\" and ranked down by\n" +
+			"[search] supersede_penalty (1 = off).",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -75,10 +81,12 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 				budget: budget,
 				stores: stores,
 				expand: expand,
+				nbrs:   nbrs,
 				fanOut: cmd.Flags().Changed("stores"),
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&nbrs, "neighbors", false, "append a Related: section with the entries linked to the hits (not logged)")
 	cmd.Flags().IntVarP(&k, "k", "k", search.DefaultK, "number of hits to return, 1..20 (config [search] k sets the default)")
 	cmd.Flags().StringVar(&mode, "mode", search.ModeHybrid, "hybrid, fts or vec")
 	cmd.Flags().StringVar(&tag, "tag", "", "only entries carrying this tag, matched case-insensitively (an alias is searched like the title)")
@@ -101,6 +109,7 @@ type searchOpts struct {
 	budget int
 	stores string // --stores as typed
 	expand string // --expand as typed
+	nbrs   bool   // --neighbors
 	fanOut bool   // --stores was given (else [search] stores applies)
 }
 
@@ -154,7 +163,13 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	if !cmd.Flags().Changed("expand") {
 		expand = cfg.Output.Expand
 	}
-	if err := printResults(ctx, stdout, lookups, out.Result, opts.asJSON, logged, budget, expand); err != nil {
+	var nbrs []render.NeighborLine
+	if opts.nbrs {
+		if nbrs, err = neighborLines(ctx, ss.st, out.Result.Hits); err != nil {
+			return err
+		}
+	}
+	if err := printResults(ctx, stdout, lookups, out.Result, opts.asJSON, logged, budget, expand, nbrs); err != nil {
 		return err
 	}
 	if !logged {
@@ -215,8 +230,11 @@ func callerFor(flag string, cfg config.Config) string {
 // expand is none, section or entry (--expand): the human form shows each hit's section or whole
 // entry as its text, once per entry or section, and --json adds an "expanded" field per hit.
 //
+// nbrs, when not nil, is the --neighbors section: after the hits in the human form, a "neighbors"
+// field in --json (an empty list when no hit has a neighbour).
+//
 // lookups holds each store's entry lookup by the hit's Store tag ("" = the primary store).
-func printResults(ctx context.Context, stdout io.Writer, lookups map[string]entryLookup, result *search.Result, asJSON, logged bool, budget int, expand string) error {
+func printResults(ctx context.Context, stdout io.Writer, lookups map[string]entryLookup, result *search.Result, asJSON, logged bool, budget int, expand string, nbrs []render.NeighborLine) error {
 	if asJSON {
 		var searchID *int64
 		var feedback *feedbackCommands
@@ -240,12 +258,13 @@ func printResults(ctx context.Context, stdout io.Writer, lookups map[string]entr
 		enc.SetEscapeHTML(false)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(struct {
-			SearchID *int64            `json:"search_id"`
-			Feedback *feedbackCommands `json:"feedback"`
-			Query    string            `json:"query"`
-			Mode     string            `json:"mode"`
-			Hits     []jsonHit         `json:"hits"`
-		}{searchID, feedback, result.Query, result.Mode, jhits}); err != nil {
+			SearchID  *int64            `json:"search_id"`
+			Feedback  *feedbackCommands `json:"feedback"`
+			Query     string            `json:"query"`
+			Mode      string            `json:"mode"`
+			Hits      []jsonHit         `json:"hits"`
+			Neighbors *[]jsonNeighbor   `json:"neighbors,omitempty"`
+		}{searchID, feedback, result.Query, result.Mode, jhits, jsonNeighbors(nbrs)}); err != nil {
 			// json rejects NaN and Inf floats, and a model can produce them.
 			return errs.Wrap(err, errs.Internal, "cli.search", "encode result: %v", err)
 		}
@@ -285,6 +304,9 @@ func printResults(ctx context.Context, stdout io.Writer, lookups map[string]entr
 		if text := render.Render(rendered, budget).Text; text != "" {
 			fmt.Fprintln(stdout, text)
 		}
+		if text := render.FormatNeighbors(nbrs); text != "" {
+			fmt.Fprintf(stdout, "\n%s\n", text)
+		}
 	}
 	if !logged {
 		fmt.Fprintln(stdout, "search_id=none (not logged)")
@@ -292,6 +314,62 @@ func printResults(ctx context.Context, stdout io.Writer, lookups map[string]entr
 	}
 	fmt.Fprintf(stdout, "search_id=%d\n", result.SearchID)
 	return nil
+}
+
+// jsonNeighbor is one --neighbors entry of the --json output: a link of the entry of hit Rank.
+type jsonNeighbor struct {
+	Rank      int    `json:"rank"`
+	Path      string `json:"path"`
+	Rel       string `json:"rel"`
+	Direction string `json:"direction"`
+}
+
+// jsonNeighbors is the flat --json form of lines; nil (the field is left out) when --neighbors was
+// not given, a pointer to an empty list when it was and no hit has a neighbour.
+func jsonNeighbors(lines []render.NeighborLine) *[]jsonNeighbor {
+	if lines == nil {
+		return nil
+	}
+	out := []jsonNeighbor{}
+	for _, l := range lines {
+		for _, k := range l.Links {
+			out = append(out, jsonNeighbor{l.Rank, k.Path, k.Rel, k.Direction})
+		}
+	}
+	return &out
+}
+
+// neighborLines reads the depth-1 links of the primary store's hits and lays out the --neighbors
+// section (render.Neighbors). A dangling link has no entry to show and is left out; an entry of
+// another store is not looked up. It never touches the search log.
+func neighborLines(ctx context.Context, st store.Relater, hits []search.Hit) ([]render.NeighborLine, error) {
+	rh := make([]render.Hit, len(hits))
+	links := map[string][]render.Link{}
+	for i, h := range hits {
+		rh[i] = render.Hit{Rank: h.Rank, Store: h.Store, Path: h.Path}
+		if _, done := links[h.Path]; done || h.Store != "" {
+			continue
+		}
+		rows, err := st.Related(ctx, h.Path, 1)
+		if err != nil {
+			if errs.KindOf(err) == errs.NotFound { // removed from the index since the search
+				continue
+			}
+			return nil, err
+		}
+		ls := []render.Link{}
+		for _, r := range rows {
+			if r.Path != "" && r.Path != h.Path {
+				ls = append(ls, render.Link{Rel: r.Rel, Direction: r.Direction, Path: r.Path})
+			}
+		}
+		links[h.Path] = ls
+	}
+	out := render.Neighbors(rh, links)
+	if out == nil {
+		out = []render.NeighborLine{}
+	}
+	return out, nil
 }
 
 // jsonHit is a --json hit: the search's fields plus, with --expand, the hit's section or entry.
@@ -376,7 +454,7 @@ func renderHits(ctx context.Context, lookups map[string]entryLookup, hits []sear
 	}
 	out := make([]render.Hit, len(hits))
 	for i, h := range hits {
-		out[i] = render.Hit{Rank: h.Rank, Store: h.Store, Path: h.Path, Heading: h.Heading, Text: h.Text}
+		out[i] = render.Hit{Rank: h.Rank, Store: h.Store, Path: h.Path, Heading: h.Heading, Text: h.Text, Superseded: h.Superseded}
 		if row, ok := rows[h.Store][h.Path]; ok {
 			out[i].Updated = row.Updated
 			out[i].Summary = row.Summary

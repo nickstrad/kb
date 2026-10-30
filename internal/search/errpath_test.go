@@ -58,6 +58,13 @@ func (f *faultyRetriever) ChunkMeta(ctx context.Context, ids []int64) (map[int64
 	return f.Retriever.ChunkMeta(ctx, ids)
 }
 
+func (f *faultyRetriever) Superseded(ctx context.Context, paths []string) (map[string]bool, error) {
+	if f.failOn == "Superseded" {
+		return nil, errDriver
+	}
+	return f.Retriever.Superseded(ctx, paths)
+}
+
 // TestSearchStoreErrors: a store failure at any stage aborts the search with the store's kind
 // kept (a driver failure stays Internal, so the CLI reports an incident, never a usage error).
 func TestSearchStoreErrors(t *testing.T) {
@@ -70,6 +77,7 @@ func TestSearchStoreErrors(t *testing.T) {
 		{"FTS#2", "quokka fluffernutter", ModeFTS}, // the OR retry
 		{"FTS#2", "quokka_widget", ModeFTS},        // the exact list (the main AND matched)
 		{"ChunkMeta", "quokka", ModeFTS},
+		{"Superseded", "quokka", ModeFTS},
 	} {
 		t.Run(tc.failOn+" "+tc.query, func(t *testing.T) {
 			s, _ := testSearcher(t)

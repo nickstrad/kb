@@ -10,7 +10,8 @@
   - Q62: `readCapped`'s limited-read branch (a file that grows between stat and read) is "defensive, unreached by tests; cover it only if a test seam for the reader appears".
   - `mutation-survivor-patterns.md` and H26 triage driver-only error paths outside sqlite as non-gaps by default, so real gaps there go unseen.
   - H20 shows what a seam buys: the fault driver gave 63 fault cases inside sqlite.
+  - Even inside sqlite the driver fails statements (prepare/exec/query), not row iteration: the `rows.Scan` and `rows.Err` branches of `Related` and `Superseded` (W11, Q125) survive mutation like every earlier scan loop. (W11 pass)
 - **Why it happens:** H20 built the fault driver as a `_test.go` file behind an unexported option, so only that package can reach it.
-- **Remedy:** (1) Move the fault driver into an internal test-support package (`internal/store/sqlite/sqlitetest`, or `internal/sqlfault` shared by sqlite and cache). (2) Let `cache.Open` take an options value with the same driver hook. (3) Leave `readCapped` as triaged unless an `open func` seam comes almost free. → **new item** (Sonnet), or the cache's leverage next-check. Do it before 3.2 adds more log writes.
+- **Remedy:** (1) Move the fault driver into an internal test-support package (`internal/store/sqlite/sqlitetest`, or `internal/sqlfault` shared by sqlite and cache). (2) Let `cache.Open` take an options value with the same driver hook. (3) Leave `readCapped` as triaged unless an `open func` seam comes almost free. (4) Let the driver fail the nth `Rows.Next` of a matched query (a `driver.Rows` wrapper), which closes Q125 and every scan-loop survivor. → **new item** (Sonnet), or the cache's leverage next-check. Do it before 3.2 adds more log writes.
 - **Cost/benefit:** small to medium. The cache's degrade-never-corrupt claim becomes testable per statement, and cli tests stop needing PRAGMA tricks.
-- **Last reviewed:** 2026-10-30 · testability first pass
+- **Last reviewed:** 2026-10-30 · W11 wave-end pass (Q125 folded in as symptom and remedy 4)

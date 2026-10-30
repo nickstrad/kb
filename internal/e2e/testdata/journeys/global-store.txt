@@ -1,0 +1,118 @@
+global-store: one machine-wide store shared by every project.
+
+The global location lives under $HOME/.local/share/kb (HOME is $WORK/home in a journey).
+A project reaches it with the store ref "global". Outside any project, kb has no location
+and says how to make one.
+
+  $ kb --global init --model fake:8
+  created location $WORK/home/.local/share/kb/.kb
+  created store "default" in $WORK/home/.local/share/kb (model fake:8)
+
+  $ exists $WORK/home/.local/share/kb/.kb/kb.toml
+
+  $ kb --global add $WORK/notes/shell-tips.md
+  added data/shell-tips.md (2 chunks)
+
+  $ kb init --model fake:8
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ kb add $WORK/notes/tmux.md
+  added data/tmux.md (2 chunks)
+
+  $ kb search "history search" --mode fts --caller claude --stores global
+  search 1 · 2 hits
+  [1] global:data/shell-tips.md · updated 2026-02-01
+  Shell history tips: Search your shell history with ctrl-r.
+
+  [2] global:data/shell-tips.md › (intro) · updated 2026-02-01
+  Shell history tips › (intro)
+  # Shell history tips
+
+  Use ctrl-r for history search in the shell.
+  search_id=1
+
+  $ kb show global:data/shell-tips.md
+  ---
+  title: Shell history tips
+  summary: Search your shell history with ctrl-r.
+  tags: [shell]
+  updated: 2026-02-01
+  ---
+  # Shell history tips
+
+  Use ctrl-r for history search in the shell.
+
+Outside any project there is no location to search.
+
+  $ cd $WORK/elsewhere
+
+  $ kb search "history search" --mode fts
+  [stderr] kb search: no kb location found in $WORK/elsewhere or its parents; run "kb init" here, or use --global / --root
+  [exit 1]
+
+  $ kb --global search "history search" --mode fts --caller claude
+  search 1 · 2 hits
+  [1] data/shell-tips.md · updated 2026-02-01
+  Shell history tips: Search your shell history with ctrl-r.
+
+  [2] data/shell-tips.md › (intro) · updated 2026-02-01
+  Shell history tips › (intro)
+  # Shell history tips
+
+  Use ctrl-r for history search in the shell.
+  search_id=1
+
+A global alias is a store ref in the global kb.toml. The project can use it by name.
+
+  $ cd $WORK/proj
+
+  $ write $WORK/home/.local/share/kb/.kb/kb.toml @globaltoml
+
+  $ kb --global stores
+  STORE      MODEL   ENTRIES  DATABASE
+  default *  fake:8  1        (size)
+
+  aliases:
+    tips  default  -> default@$WORK/home/.local/share/kb
+
+  $ kb search "history search" --mode fts --caller claude --stores tips
+  search 2 · 2 hits
+  [1] tips:data/shell-tips.md · updated 2026-02-01
+  Shell history tips: Search your shell history with ctrl-r.
+
+  [2] tips:data/shell-tips.md › (intro) · updated 2026-02-01
+  Shell history tips › (intro)
+  # Shell history tips
+
+  Use ctrl-r for history search in the shell.
+  search_id=2
+
+-- notes/shell-tips.md --
+---
+title: Shell history tips
+summary: Search your shell history with ctrl-r.
+tags: [shell]
+updated: 2026-02-01
+---
+# Shell history tips
+
+Use ctrl-r for history search in the shell.
+-- notes/tmux.md --
+---
+title: Tmux survives logout
+summary: Keep sessions alive after you log out of the remote host.
+tags: [ops]
+updated: 2026-02-01
+---
+# Tmux survives logout
+
+Start tmux on the remote host and detach.
+-- elsewhere/.keep --
+x
+-- @globaltoml --
+version = 1
+default_store = "default"
+
+[aliases]
+tips = "default"

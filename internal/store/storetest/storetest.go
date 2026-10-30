@@ -46,6 +46,7 @@ func Run(t *testing.T, newStore Factory) {
 			t.Run("tags: kept as written, filtered case-insensitively", func(t *testing.T) { tags(t, newStore(t, dim), dim) })
 			t.Run("aliases: round-trip, found as the title", func(t *testing.T) { aliases(t, newStore(t, dim), dim) })
 			t.Run("edges: written, resolved, kept, dangling", func(t *testing.T) { edgesContract(t, newStore(t, dim), dim) })
+			t.Run("related: both directions, cycles, depth bounds, supersede", func(t *testing.T) { related(t, newStore(t, dim), dim) })
 			t.Run("ResetIndex empties the index, keeps the log", func(t *testing.T) { reset(t, newStore(t, dim), dim) })
 			t.Run("SearchLog: log, feedback, LastSearch, RecordOpen", func(t *testing.T) { searchLog(t, newStore(t, dim), dim) })
 			t.Run("SearchLog: settings, ts and hit stores round-trip", func(t *testing.T) { searchLogRoundTrip(t, newStore(t, dim)) })

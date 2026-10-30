@@ -1,0 +1,71 @@
+model-and-cache: stores that share an embedding model share one embedding cache.
+
+Two stores use the same model and add the same file. The cache holds one embedding per distinct
+text, not one per store, so it has two entries (the file's two chunks) after both adds. kb model
+cache shows and clears it, and kb model list shows the real models, never the test-only fake:*.
+
+  $ kb init --model fake:8
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ kb init --name second --model fake:8
+  created store "second" in $WORK/proj (model fake:8)
+
+  $ kb add $WORK/notes/tmux.md
+  added data/tmux.md (2 chunks)
+
+  $ kb --store second add $WORK/notes/tmux.md
+  added data-second/tmux.md (2 chunks)
+
+  $ kb model cache
+  ~ embedding cache \$WORK/home/Library/Caches/kb/embed-cache\.sqlite: 2 entries, \d+ bytes
+  fake:8                                      8 dims  2 entries
+
+  $ kb model cache --clear
+  cleared the embedding cache $WORK/home/Library/Caches/kb/embed-cache.sqlite
+
+  $ kb model cache
+  ~ embedding cache \$WORK/home/Library/Caches/kb/embed-cache\.sqlite: 0 entries, \d+ bytes
+
+  $ write data-second/tmux.md @tmux-v2
+
+  $ kb --store second reindex --all
+  reindexed data-second/tmux.md (2 chunks, 1 embedded)
+  entries: 1 scanned, 1 reindexed, 0 skipped; chunks: 2; embed calls: 1
+
+  $ kb model cache
+  ~ embedding cache \$WORK/home/Library/Caches/kb/embed-cache\.sqlite: 1 entries, \d+ bytes
+  fake:8                                      8 dims  1 entries
+
+  $ kb model list
+  BAAI/bge-base-en-v1.5                     768 dims  not downloaded
+  BAAI/bge-small-en-v1.5                    384 dims  not downloaded (default)
+  nomic-ai/nomic-embed-text-v1.5            768 dims  not downloaded
+  sentence-transformers/all-MiniLM-L6-v2    384 dims  not downloaded
+
+The model path of a test-only model is an error: only real models have a directory.
+
+  $ kb model path
+  [stderr] kb model path: unknown embedding model "fake:8" (supported: BAAI/bge-base-en-v1.5, BAAI/bge-small-en-v1.5, nomic-ai/nomic-embed-text-v1.5, sentence-transformers/all-MiniLM-L6-v2)
+  [exit 1]
+
+-- notes/tmux.md --
+---
+title: Tmux survives logout
+summary: Keep sessions alive after you log out of the remote host.
+tags: [ops]
+updated: 2026-02-01
+---
+# Tmux survives logout
+
+Start tmux on the remote host and detach.
+-- @tmux-v2 --
+---
+title: Tmux survives logout
+summary: Keep sessions alive after you log out of the remote host.
+tags: [ops]
+updated: 2026-02-01
+---
+# Tmux survives logout
+
+Start tmux on the remote host and detach. Reattach with tmux attach.

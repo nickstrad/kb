@@ -135,6 +135,8 @@ func TestCommandsOnIndexStates(t *testing.T) {
 		{[]string{"eval", "--mode", "fts"}, want{0, "queries=0", ""}, want{1, "", older}, want{1, "", newer}, want{1, "", "no index"}},
 		{[]string{"stats", "overview"}, want{0, "", ""}, want{1, "", older}, want{1, "", newer}, want{1, "", "no search database"}},
 		{[]string{"reindex", "--all"}, want{0, "", ""}, want{1, "", older}, want{1, "", newer}, want{0, "", ""}},
+		{[]string{"related", "zzz.md"}, want{1, "", `no entry "zzz.md"`}, want{1, "", older}, want{1, "", newer}, want{1, "", "no index"}},
+		{[]string{"stale"}, want{0, "no entries", ""}, want{1, "", older}, want{1, "", newer}, want{1, "", "no index"}},
 		// exempt commands
 		{[]string{"doctor"}, want{0, "ok   driver", ""}, want{1, "FAIL migrate: ", ""}, want{1, "FAIL driver: ", ""}, want{0, "warn database: not indexed", ""}},
 		{[]string{"stores"}, want{0, "default", ""}, want{0, older, ""}, want{0, newer, ""}, want{0, "not indexed", ""}},

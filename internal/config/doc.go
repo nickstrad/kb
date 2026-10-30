@@ -24,7 +24,7 @@
 // list, PLAN 4.5), search.synonyms (the synonyms file, PLAN 5.5), search.spell (spell correction when the FTS list is short, PLAN 5.6), search.stores (the stores a search also reaches, PLAN 3.2: names, aliases,
 // NAME@LOC, global or a path), output.budget, output.expand (PLAN 4.2), output.context_budget (PLAN 4.3), log.open_window,
 // eval.min_judged (kb eval's small-sample caveat and the --sweep gate), eval.holdout (the share
-// kb eval --sweep holds out), agent.caller, edit.editor and
+// kb eval --sweep holds out), stale.days (kb stale's default --days), agent.caller, edit.editor and
 // [[sources]] (path or glob, layout, exclude: the store's corpus, relative to the location root;
 // none means nothing is indexed; see Source and validateSources). The
 // search.* tuning keys have upper bounds (Max* constants) so no value can overflow a score or
@@ -33,7 +33,7 @@
 // Keys reserved for later work: they are parsed and range-checked, so a config written today
 // stays valid, but no command acts on them yet: embed.workers,
 // search.list_weights.memory, search.phrase_boost (PLAN 4.6),
-// search.supersede_penalty, log.corpus_rev, [stale],
+// search.supersede_penalty, log.corpus_rev,
 // [prior] (prior.Validate accepts every value Validate does, PLAN 6.1/6.2).
 // embed.dim and embed.int8 change what the index holds, so a value other than the default is
 // rejected instead of being ignored.

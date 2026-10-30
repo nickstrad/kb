@@ -1,0 +1,155 @@
+upgrade: a store written by an older kb, refused, then migrated and used.
+
+The store's index database is a frozen schema-v6 file (the newest version before the one in
+this build) holding a few entries and five logged searches. kb refuses it and says what to run.
+migrate up backs the file up first, and the search log survives the upgrade.
+
+  $ kb init --model none
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model none)
+
+  $ rm .kb/stores/default/kb.sqlite
+
+  $ mkfixture index-v6 .kb/stores/default/kb.sqlite
+
+  $ kb search checkpoint --mode fts
+  [stderr] kb search: store database $WORK/proj/.kb/stores/default/kb.sqlite is at schema v6; this kb needs v7. Run: kb migrate up (with the same --store, if any)
+  [exit 1]
+
+  $ kb doctor
+  ok   config: $WORK/proj/.kb/stores/default/config.toml
+  ok   sources: 1 configured: "data" (entries)
+  FAIL migrate: $WORK/proj/.kb/stores/default/kb.sqlite is at schema v6, this kb needs v7 (index/0007-edges-tags-aliases); run kb migrate up
+  ok   model: none: FTS-only index and search
+  ok   entries: 0 entries valid
+  ok   index.md: absent (optional export)
+  ~ ok   version: kb \(version\) at .*
+  doctor: 1 failed, 0 warnings
+  [stderr] kb doctor: 1 check(s) failed
+  [exit 1]
+
+  $ kb migrate status
+  SCOPE          FILE         VERSION   STATE                         PATH
+  location       location     v1        current                       $WORK/proj/.kb/kb.toml
+  store default  config       v1        current                       $WORK/proj/.kb/stores/default/config.toml
+  store default  index        v6 -> v7  1 pending: run kb migrate up  $WORK/proj/.kb/stores/default/kb.sqlite
+  cache          embed-cache  -         not created yet               $WORK/home/Library/Caches/kb/embed-cache.sqlite
+
+  store default index:
+    index/0007-edges-tags-aliases  add edges, entry_tags (backfilled) and entries.aliases; edges and aliases fill on the next reindex  [needs kb reindex; effect reindex]
+  [exit 1]
+
+The dry run reports the steps and the backup it would write, and changes nothing: the status
+still says v6 and no backup file exists.
+
+  $ kb migrate up --dry-run
+  would migrate store default index: v6 -> v7 ($WORK/proj/.kb/stores/default/kb.sqlite)
+    backup would be written to $WORK/proj/.kb/stores/default/kb.sqlite.bak-v6-(time)
+    would apply index/0007-edges-tags-aliases: add edges, entry_tags (backfilled) and entries.aliases; edges and aliases fill on the next reindex
+  needs: kb reindex (store default: index/0007-edges-tags-aliases)
+
+  $ kb migrate status
+  SCOPE          FILE         VERSION   STATE                         PATH
+  location       location     v1        current                       $WORK/proj/.kb/kb.toml
+  store default  config       v1        current                       $WORK/proj/.kb/stores/default/config.toml
+  store default  index        v6 -> v7  1 pending: run kb migrate up  $WORK/proj/.kb/stores/default/kb.sqlite
+  cache          embed-cache  -         not created yet               $WORK/home/Library/Caches/kb/embed-cache.sqlite
+
+  store default index:
+    index/0007-edges-tags-aliases  add edges, entry_tags (backfilled) and entries.aliases; edges and aliases fill on the next reindex  [needs kb reindex; effect reindex]
+  [exit 1]
+
+  $ ! exists .kb/stores/default/kb.sqlite.bak-*
+
+migrate up backs the file up, applies the step and tells which step needs a reindex.
+
+  $ kb migrate up
+  migrated store default index: v6 -> v7 ($WORK/proj/.kb/stores/default/kb.sqlite)
+    backup: $WORK/proj/.kb/stores/default/kb.sqlite.bak-v6-(time)
+    applied index/0007-edges-tags-aliases: add edges, entry_tags (backfilled) and entries.aliases; edges and aliases fill on the next reindex
+  needs: kb reindex (store default: index/0007-edges-tags-aliases)
+
+  $ exists .kb/stores/default/kb.sqlite.bak-v6-*
+
+  $ kb migrate verify
+  ok   location kb.toml
+  ok   store default config.toml
+  ok   store default kb.sqlite
+
+  $ kb migrate status
+  SCOPE          FILE         VERSION  STATE            PATH
+  location       location     v1       current          $WORK/proj/.kb/kb.toml
+  store default  config       v1       current          $WORK/proj/.kb/stores/default/config.toml
+  store default  index        v7       current          $WORK/proj/.kb/stores/default/kb.sqlite
+  cache          embed-cache  -        not created yet  $WORK/home/Library/Caches/kb/embed-cache.sqlite
+
+The fixture's five logged searches are still there: the new search is number 6, and the
+overview counts all six.
+
+  $ kb search checkpoint --mode fts --caller claude
+  search 6 · 1 hit
+  [1] alpha.md › Body
+  checkpoint starvation
+  search_id=6
+
+  $ kb stats overview --json
+  {
+    "query": "overview",
+    "columns": [
+      "mode",
+      "searches",
+      "judged",
+      "coverage_pct",
+      "hit_rate_pct",
+      "mrr",
+      "zero_result_pct",
+      "opened_pct",
+      "p50_ms",
+      "p95_ms",
+      "avg_embed_ms"
+    ],
+    "rows": [
+      {
+        "avg_embed_ms": null,
+        "coverage_pct": 75,
+        "hit_rate_pct": 100,
+        "judged": 3,
+        "mode": "hybrid",
+        "mrr": 1,
+        "opened_pct": 75,
+        "p50_ms": null,
+        "p95_ms": null,
+        "searches": 4,
+        "zero_result_pct": 0
+      },
+      {
+        "avg_embed_ms": null,
+        "coverage_pct": 0,
+        "hit_rate_pct": null,
+        "judged": 0,
+        "mode": "fts",
+        "mrr": null,
+        "opened_pct": 0,
+        "p50_ms": (ms),
+        "p95_ms": (ms),
+        "searches": 1,
+        "zero_result_pct": 0
+      },
+      {
+        "avg_embed_ms": null,
+        "coverage_pct": 0,
+        "hit_rate_pct": null,
+        "judged": 0,
+        "mode": "vec",
+        "mrr": null,
+        "opened_pct": 0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "searches": 1,
+        "zero_result_pct": 100
+      }
+    ],
+    "searches_loaded": 6,
+    "since": null,
+    "caller": null
+  }

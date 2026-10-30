@@ -112,7 +112,8 @@ type Log struct {
 	OpenWindow string `toml:"open_window"` // a Go duration; kb show counts an open for searches this recent
 }
 
-// Stale is [stale]. Reserved.
+// Stale is [stale]. Days is the default --days of kb stale (PLAN 5.4): an entry dated that many
+// whole days ago or more is listed.
 type Stale struct {
 	Days int `toml:"days"`
 }

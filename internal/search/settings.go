@@ -25,6 +25,9 @@ type Params struct {
 	ExactWeight    float64           `json:"exact_weight"`    // multiplier of the exact-identifier list's RRF term
 	ExactList      bool              `json:"exact_list"`      // run the exact-identifier list for a query with an identifier
 	Spell          bool              `json:"spell"`           // correct unknown words when the FTS list is short (PLAN 5.6)
+	// SupersedePenalty multiplies the RRF score of a chunk whose entry another entry supersedes
+	// (PLAN 5.3); 1 leaves the order alone.
+	SupersedePenalty float64 `json:"supersede_penalty"`
 }
 
 // ParamsFrom maps [search] onto Params. The config must already be validated.
@@ -41,6 +44,8 @@ func ParamsFrom(s config.Search) Params {
 		ExactWeight:    s.ListWeights.Exact,
 		ExactList:      s.ExactList,
 		Spell:          s.Spell,
+
+		SupersedePenalty: s.SupersedePenalty,
 	}
 }
 
@@ -53,7 +58,8 @@ func DefaultParams() Params { return ParamsFrom(config.Default().Search) }
 func (p Params) valid() bool {
 	w := func(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 }
 	return p.ListLimit >= 1 && p.CandidateLimit >= 1 && p.PerEntryCap >= 1 && p.RRFK >= 1 && p.VecOverFetch >= 1 &&
-		w(p.BM25.Text) && w(p.BM25.Heading) && w(p.BM25.Title) && w(p.FTSWeight) && w(p.VecWeight) && w(p.ExactWeight)
+		w(p.BM25.Text) && w(p.BM25.Heading) && w(p.BM25.Title) && w(p.FTSWeight) && w(p.VecWeight) && w(p.ExactWeight) &&
+		w(p.SupersedePenalty) && p.SupersedePenalty <= 1
 }
 
 // Settings is what a search ran with, for its trace: the Params it used, and the canonical

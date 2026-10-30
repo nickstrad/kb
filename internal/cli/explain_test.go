@@ -166,7 +166,7 @@ func TestExplainJSONShape(t *testing.T) {
 	var settings map[string]json.RawMessage
 	_ = json.Unmarshal(top["settings"], &settings)
 	wantKeys(t, "settings", settings, "bm25_heading", "bm25_text", "bm25_title", "candidate_limit", "exact_list",
-		"exact_weight", "fts_weight", "list_limit", "per_entry_cap", "rrf_k", "vec_weight")
+		"exact_weight", "fts_weight", "list_limit", "per_entry_cap", "rrf_k", "supersede_penalty", "vec_weight")
 	var fts map[string]json.RawMessage
 	_ = json.Unmarshal(top["fts"], &fts)
 	wantKeys(t, "fts", fts, "match", "op", "or_fallback")

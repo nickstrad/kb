@@ -921,6 +921,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 
 **5.3 `kb related`, supersede demotion, `--neighbors`**
 - Model: Sonnet (CTE, command, render section); review: Opus via testing-standards-pass (cycles, demotion)
+- Status: done (W11). J14 notes in .agent/knowledge/related-supersede-neighbors.md.
 - Files: `cli/related.go`, `Index.Related` (recursive CTE, depth ≤ 3, both directions, distinct), `search` (after fusion, multiply RRF by `supersede_penalty` for entries that are `dst` of a `supersedes` edge from a live entry; explain shows it), `render` (`--neighbors` appends a "Related:" one-liner section for the returned entries; these are not logged as results).
 - Tests: cycle safety in the CTE; demotion order; neighbours dedupe against hits.
 - Accept: `kb related data/foo.md` lists inbound and outbound edges with rel.
@@ -929,6 +930,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 
 **5.4 `kb stale` ∥**
 - Model: Haiku (small read-only listing command); review: Sonnet via testing-standards-pass
+- Status: done (W11). J14 (E3): `--days` boundary through `env KB_HARNESS_NOW=+200d`; superseded and broken-link groups.
 - Files: `cli/stale.go`.
 - Steps: list entries whose `coalesce(verified, updated)` is older than `stale.days` or missing, plus superseded entries and broken links (`dst_entry_id IS NULL` for path links). `--json`.
 - Tests: date parsing of verbatim front-matter dates (YYYY-MM-DD; unparseable means "unknown").
@@ -1094,6 +1096,7 @@ title: Tmux logout
 
 **E2 Store, source and tuning-loop journeys**
 - Model: Sonnet; review: Sonnet via testing-standards-pass
+- Status: done (W11). J3, J4, J5, J6, J11; `--tag` case step in tuning-loop.
 - Files: `internal/e2e/testdata/journeys/{in-place-sources,named-stores,global-store,model-and-cache,tuning-loop}.txt`.
 - Steps: journeys J3, J4, J5, J11, and J6 on the landed eval/explain features. J6 guards `cli/eval.go` while 2.6 changes it.
 - Accept: `kb stores`, `kb init --name/--source`, `--store`, `--stores`, `kb show REF:path`, `kb model list/path/cache`, `kb explain`, `kb eval --save-baseline/--compare` and `kb config --set` each appear in at least one journey.
@@ -1110,6 +1113,7 @@ title: Tmux logout
 
 **E4 Migration and recovery journeys**
 - Model: Sonnet; review: Sonnet via testing-standards-pass
+- Status: done (W11). J7 (from v6), J8. Q122: doctor's one-failure-per-family gap on an unreadable store config.
 - Files: `internal/e2e/testdata/journeys/{upgrade,config-recovery}.txt`.
 - Steps: J7, J8. Re-run J7 with the newest pre-target fixture whenever a migration lands (v7 in W10, v8 in W12): a one-line `mkfixture` change, done by the item that adds the step (TESTING §10 step 7).
 - Accept: the upgrade journey shows refusal, then status (exit 1), dry run (file unchanged), up (a backup exists), verify, status (exit 0), and search working with the fixture's log rows kept.

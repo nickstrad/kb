@@ -65,11 +65,25 @@ func fakeKbMain(args []string) int {
 	return 0
 }
 
+// quietCover gives a helper-mode run of a -cover test binary somewhere to write its coverage
+// data. Without GOCOVERDIR the binary prints a warning on stderr at exit, which a transcript
+// would read as kb's output. The directory is under TMPDIR, which the runner points into $WORK.
+func quietCover() {
+	if testing.CoverMode() == "" || os.Getenv("GOCOVERDIR") != "" {
+		return
+	}
+	if dir, err := os.MkdirTemp("", "e2e-cover"); err == nil {
+		os.Setenv("GOCOVERDIR", dir)
+	}
+}
+
 func TestMain(m *testing.M) {
 	if filepath.Base(os.Args[0]) == fakeKbName {
+		quietCover()
 		os.Exit(fakeKbMain(os.Args[1:]))
 	}
 	if text := os.Getenv(editorEnv); text != "" && len(os.Args) == 2 {
+		quietCover()
 		f, err := os.OpenFile(os.Args[1], os.O_APPEND|os.O_WRONLY, 0)
 		if err == nil {
 			_, err = fmt.Fprintln(f, text)

@@ -297,6 +297,7 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		newDoctorCmd(d, stdout, stderr),
 		newFeedbackCmd(d, stdout, stderr),
 		newStatsCmd(d, stdout, stderr),
+		newStaleCmd(d, stdout),
 		newVersionCmd(stdout),
 		newModelCmd(d, stdout, stderr),
 		newConfigCmd(d, stdout, stderr),
@@ -304,6 +305,7 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		newInitCmd(d, stdout, stderr),
 		newMigrateCmd(d, stdout, stderr),
 		newSynonymsCmd(d, stdout, stderr),
+		newRelatedCmd(d, stdout, stderr),
 	)
 	markRunErrors(cmd)
 	return cmd

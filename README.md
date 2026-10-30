@@ -111,9 +111,11 @@ and `kb eval` take the same `--set` to try a setting for one run. Commonly chang
 | `search.synonyms` | `""` | the synonyms file (default: the store's `synonyms.txt`, below) |
 | `search.spell` | true | correct a query word when the full-text list is short (below) |
 | `search.stores` | `[]` | stores every search also reaches |
+| `search.supersede_penalty` | 0.5 | score multiplier for a superseded entry (0–1; 1 turns it off) |
 | `output.budget`, `output.expand` | 0, `none` | defaults for `--budget` and `--expand` |
 | `agent.caller` | `""` | default `--caller` |
 | `log.open_window` | `30m` | how recent a search must be for `kb show` to count as an open of it |
+| `stale.days` | 180 | default `--days` of `kb stale` |
 
 kb reads no environment variables except `$EDITOR`.
 
@@ -149,6 +151,12 @@ the exact list), `path`, `heading` and `text`, plus the exact `kb feedback` comm
   `[search]` settings, and the lists are merged on rank. Another store's hit shows as `REF:path`
   (read it with `kb show REF:path`); a store that cannot be searched is skipped with a warning. The
   search is logged in this store only.
+- `--neighbors` adds a `Related:` section after the hits: the entries linked to each hit's entry
+  (as `kb related` lists them), without the entries already returned, at most 5 per hit. It is not
+  logged; `--json` carries it as `neighbors`.
+- A hit whose entry another entry supersedes (its front matter lists it under `supersedes`) is
+  marked `· superseded` (`"superseded": true` in `--json`) and its score is multiplied by
+  `search.supersede_penalty` (0.5 halves it), so it usually ranks below the entry that replaces it.
 - **Identifier queries.** A query field that looks like an identifier (`foo_bar`, `pkg.Func`,
   `--flag`, `path/to`, `a:b`, `camelCase`, `v1beta`) also runs an exact-identifier list that
   matches it only as a whole token, so `kb search reindex_test` ranks the chunk that says
@@ -182,6 +190,18 @@ also searched as the closest common word in the store: one edit away, or two for
 letters or more. A note on stderr names the word used (`note: also searched "gadget" for
 "gadgte"`). Identifiers, numbers and words under 4 letters are not corrected. `search.spell = false`
 turns this off.
+
+**Links.** kb reindex stores each entry's links: Markdown links and `[[wikilinks]]` in the body
+(`links`) and the front-matter lists `related`, `supersedes` and `depends_on` (paths relative to
+the file, or `[[wikilinks]]`). `kb related <path>` lists them both ways: `→` for a link the entry makes, `←` for
+one that points at it. `--depth 2` or `3` also follows the links of the entries reached (a line
+then names the entry it came through); a link to nothing indexed shows as `(unresolved)`.
+`REF:path` reads another store; `--json` gives the edges.
+
+`kb stale` lists the entries that need a look, read from the index: no usable date, a date
+(`verified`, else `updated`) at least `--days` days old (default `stale.days`, 180), superseded by
+another entry, or a path link to nothing. `--days 0` lists every dated entry; `--json` gives the
+groups. It exits 0 whether or not anything is listed.
 
 Feedback is optional: `kb feedback N <rank> --useful` (or `--not-useful`, or `kb feedback N --none`
 when nothing helped; `--last` targets your newest search, `--note` adds a reason).

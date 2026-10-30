@@ -49,6 +49,8 @@ type ExplainParams struct {
 	ListLimit      int     `json:"list_limit"`
 	CandidateLimit int     `json:"candidate_limit"`
 	PerEntryCap    int     `json:"per_entry_cap"`
+	// SupersedePenalty multiplies the RRF score of a superseded entry's chunks (PLAN 5.3).
+	SupersedePenalty float64 `json:"supersede_penalty"`
 }
 
 // ExplainMatch is the expression that produced a lexical list (FTS or exact) and whether it is the
@@ -78,6 +80,10 @@ type ExplainHit struct {
 	Vec          *ExplainVec    `json:"vec"`
 	Exact        *ExplainFTS    `json:"exact"`
 	Columns      *ExplainColumn `json:"columns"`
+	// Superseded is true when another entry supersedes this chunk's entry: RRFScore is the sum
+	// of RRF terms times SupersedePenalty (omitted when false).
+	Superseded       bool    `json:"superseded,omitempty"`
+	SupersedePenalty float64 `json:"supersede_penalty,omitempty"`
 }
 
 // ExplainTerm is one list's addend of the RRF score: Weight/(RRFK+Rank).
@@ -132,7 +138,7 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 		Settings: ExplainParams{
 			RRFK: p.RRFK, FTSWeight: p.FTSWeight, VecWeight: p.VecWeight, ExactWeight: p.ExactWeight, ExactList: p.ExactList,
 			BM25Text: p.BM25.Text, BM25Heading: p.BM25.Heading, BM25Title: p.BM25.Title,
-			ListLimit: p.ListLimit, CandidateLimit: p.CandidateLimit, PerEntryCap: p.PerEntryCap,
+			ListLimit: p.ListLimit, CandidateLimit: p.CandidateLimit, PerEntryCap: p.PerEntryCap, SupersedePenalty: p.SupersedePenalty,
 		},
 		NFTS:       out.NFTS,
 		NVec:       out.NVec,
@@ -177,6 +183,9 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 		h := ExplainHit{
 			Rank: i + 1, ChunkID: c.ChunkID, Path: c.EntryPath, Heading: c.Heading,
 			Status: StatusBelowK, RRFScore: c.RRFScore, RRF: []ExplainTerm{}, Columns: cols[c.ChunkID],
+		}
+		if c.Superseded {
+			h.Superseded, h.SupersedePenalty = true, p.SupersedePenalty
 		}
 		if r, ok := returnedRank[c.ChunkID]; ok {
 			h.Status, h.ReturnedRank = StatusReturned, &r

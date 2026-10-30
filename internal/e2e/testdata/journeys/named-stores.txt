@@ -1,0 +1,153 @@
+named-stores: two stores in one project, searched together.
+
+A "default" store for notes and an "adr" store for decisions. --store picks the store to work
+on, an alias in kb.toml gives a store a second name, and --stores fans a search out over
+several. A hit from another store shows as REF:path and kb show REF:path reads it.
+
+  $ kb init --model fake:8
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ kb init --name adr --model fake:8
+  created store "adr" in $WORK/proj (model fake:8)
+
+  $ kb add $WORK/notes/tmux.md
+  added data/tmux.md (2 chunks)
+
+  $ kb --store adr add $WORK/notes/adr-cache.md
+  added data-adr/adr-cache.md (2 chunks)
+
+  $ kb stores
+  STORE      MODEL   ENTRIES  DATABASE
+  adr        fake:8  1        (size)
+  default *  fake:8  1        (size)
+
+Name the adr store a second way, with an alias in the location's kb.toml.
+
+  $ write .kb/kb.toml @kbtoml
+
+  $ kb stores
+  STORE      MODEL   ENTRIES  DATABASE
+  adr        fake:8  1        (size)
+  default *  fake:8  1        (size)
+
+  aliases:
+    decisions  adr  -> adr@$WORK/proj
+
+  $ kb search "cache invalidation" --mode fts --caller claude --stores decisions
+  search 1 · 2 hits
+  [1] decisions:data-adr/adr-cache.md · updated 2026-02-02
+  ADR 7 cache invalidation: We invalidate the cache on write.
+
+  [2] decisions:data-adr/adr-cache.md › (intro) · updated 2026-02-02
+  ADR 7 cache invalidation › (intro)
+  # ADR 7 cache invalidation
+
+  Decision: cache invalidation happens on every write, not on a timer.
+  search_id=1
+
+  $ kb show decisions:data-adr/adr-cache.md
+  ---
+  title: ADR 7 cache invalidation
+  summary: We invalidate the cache on write.
+  tags: [adr]
+  updated: 2026-02-02
+  ---
+  # ADR 7 cache invalidation
+
+  Decision: cache invalidation happens on every write, not on a timer.
+
+  $ kb feedback --last 1 --useful --caller claude
+  recorded: search 1 rank 1 useful=1 (newest search for claude, (time): "cache invalidation")
+
+  $ kb stats overview --json
+  {
+    "query": "overview",
+    "columns": [
+      "mode",
+      "searches",
+      "judged",
+      "coverage_pct",
+      "hit_rate_pct",
+      "mrr",
+      "zero_result_pct",
+      "opened_pct",
+      "p50_ms",
+      "p95_ms",
+      "avg_embed_ms"
+    ],
+    "rows": [
+      {
+        "avg_embed_ms": null,
+        "coverage_pct": 100,
+        "hit_rate_pct": 100,
+        "judged": 1,
+        "mode": "fts",
+        "mrr": 1,
+        "opened_pct": 100,
+        "p50_ms": (ms),
+        "p95_ms": (ms),
+        "searches": 1,
+        "zero_result_pct": 0
+      }
+    ],
+    "searches_loaded": 1,
+    "since": null,
+    "caller": null
+  }
+
+Other ways to name the stores: all, an empty list (this store only), a store that is not there.
+
+  $ kb search "cache invalidation" --mode fts --caller claude --stores all
+  search 2 · 2 hits
+  [1] adr:data-adr/adr-cache.md · updated 2026-02-02
+  ADR 7 cache invalidation: We invalidate the cache on write.
+
+  [2] adr:data-adr/adr-cache.md › (intro) · updated 2026-02-02
+  ADR 7 cache invalidation › (intro)
+  # ADR 7 cache invalidation
+
+  Decision: cache invalidation happens on every write, not on a timer.
+  search_id=2
+
+  $ kb search "cache invalidation" --mode fts --caller claude --stores ''
+  search 3 · 0 hits
+  no results
+  search_id=3
+
+  $ kb search "cache invalidation" --mode fts --caller claude --stores nope
+  search 4 · 0 hits
+  no results
+  search_id=4
+  [stderr] warning: skipping store nope: no store "nope" in $WORK/proj and no alias of that name (stores: adr, default; aliases: decisions); create a store with kb init --name nope
+
+  $ kb --store nope list
+  [stderr] kb list: no store "nope" in $WORK/proj and no alias of that name (stores: adr, default; aliases: decisions); create a store with kb init --name nope
+  [exit 1]
+
+-- notes/tmux.md --
+---
+title: Tmux survives logout
+summary: Keep sessions alive after you log out of the remote host.
+tags: [ops]
+updated: 2026-02-01
+---
+# Tmux survives logout
+
+Start tmux on the remote host and detach. The session keeps running on the host.
+-- notes/adr-cache.md --
+---
+title: ADR 7 cache invalidation
+summary: We invalidate the cache on write.
+tags: [adr]
+updated: 2026-02-02
+---
+# ADR 7 cache invalidation
+
+Decision: cache invalidation happens on every write, not on a timer.
+-- @kbtoml --
+version = 1
+default_store = "default"
+
+[aliases]
+decisions = "adr"

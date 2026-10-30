@@ -71,6 +71,9 @@ type Hit struct {
 	Path      string  `json:"path"`
 	Heading   string  `json:"heading"`
 	Text      string  `json:"text"`
+	// Superseded marks a hit whose entry another entry supersedes; its rrf_score was multiplied
+	// by [search] supersede_penalty (omitted when false).
+	Superseded bool `json:"superseded,omitempty"`
 }
 
 // Result is one whole search, shaped exactly like the --json output. Hits is never nil — an empty
@@ -152,6 +155,9 @@ type Candidate struct {
 	ExactScore  *float64
 	RRFScore    float64
 	CapDropped  bool
+	// Superseded is true when the chunk's entry is the target of a `supersedes` edge from another
+	// entry and RRFScore was multiplied by Params.SupersedePenalty (PLAN 5.3).
+	Superseded bool
 
 	EntryPath string
 	Ord       int
@@ -537,6 +543,9 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 			cands[i].Text = m.Text
 		}
 	}
+	if err := s.demoteSuperseded(ctx, cands, p.SupersedePenalty); err != nil {
+		return nil, err
+	}
 	returned := applyCap(cands, entryOf, k, p.PerEntryCap)
 	if len(cands) > 0 {
 		out.Candidates = cands
@@ -550,20 +559,59 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 	return out, nil
 }
 
+// demoteSuperseded multiplies the RRF score of every candidate whose entry another entry
+// supersedes by penalty, and re-sorts cands (Fuse's order) in place. Penalty 1 changes nothing and
+// reads nothing. Only the candidates' entries are asked about, once.
+func (s *Searcher) demoteSuperseded(ctx context.Context, cands []Candidate, penalty float64) error {
+	if penalty == 1 || len(cands) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var paths []string
+	for _, c := range cands {
+		if c.EntryPath != "" && !seen[c.EntryPath] {
+			seen[c.EntryPath] = true
+			paths = append(paths, c.EntryPath)
+		}
+	}
+	sup, err := s.Store.Superseded(ctx, paths)
+	if err != nil {
+		return err
+	}
+	if len(sup) == 0 {
+		return nil
+	}
+	for i := range cands {
+		if sup[cands[i].EntryPath] {
+			cands[i].RRFScore *= penalty
+			cands[i].Superseded = true
+		}
+	}
+	sort.Slice(cands, func(i, j int) bool { return fusedBefore(cands[i], cands[j]) })
+	if assert.Enabled {
+		for i := 1; i < len(cands); i++ {
+			assert.Post(fusedBefore(cands[i-1], cands[i]), "demoteSuperseded: cands[%d] (chunk %d) does not sort before cands[%d] (chunk %d)",
+				i-1, cands[i-1].ChunkID, i, cands[i].ChunkID)
+		}
+	}
+	return nil
+}
+
 // resultOf is the Result for the returned candidates, ranked from 1. label maps a candidate's
 // store (its canonical ref) to the tag the hit shows; nil leaves every hit untagged.
 func resultOf(query, mode string, returned []Candidate, label func(store string) string) *Result {
 	result := NewResult(query, mode)
 	for i, c := range returned {
 		h := Hit{
-			Rank:      i + 1,
-			RRFScore:  c.RRFScore,
-			FTSRank:   c.FTSRank,
-			VecRank:   c.VecRank,
-			ExactRank: c.ExactRank,
-			Path:      c.EntryPath,
-			Heading:   c.Heading,
-			Text:      c.Text,
+			Rank:       i + 1,
+			RRFScore:   c.RRFScore,
+			Superseded: c.Superseded,
+			FTSRank:    c.FTSRank,
+			VecRank:    c.VecRank,
+			ExactRank:  c.ExactRank,
+			Path:       c.EntryPath,
+			Heading:    c.Heading,
+			Text:       c.Text,
 		}
 		if label != nil && c.Store != "" {
 			h.Store = label(c.Store)

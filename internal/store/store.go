@@ -60,6 +60,7 @@ type Index interface {
 	ResolveEdges(ctx context.Context) error
 	// Edges returns every edge, sorted by source path, rel, kind and target.
 	Edges(ctx context.Context) ([]EdgeRow, error)
+	Relater
 }
 
 // Retriever is the backend's retrieval primitives. Fusion, the diversity cap and the AND→OR
@@ -74,6 +75,8 @@ type Retriever interface {
 	KNN(ctx context.Context, q KNNQuery) ([]VecRow, error)
 	// ChunkMeta reads the display data of the given chunks. Ids that no longer exist are absent.
 	ChunkMeta(ctx context.Context, ids []int64) (map[int64]ChunkMeta, error)
+	// Superseded reports which of the entries at paths another entry supersedes (an entry that is the target of a `supersedes` edge from another entry).
+	Superseded(ctx context.Context, paths []string) (map[string]bool, error)
 }
 
 // SearchLog is the search log: searches, their results and candidates, feedback and opens.

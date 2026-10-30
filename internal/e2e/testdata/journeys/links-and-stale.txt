@@ -1,0 +1,145 @@
+links-and-stale: follow the links between entries, retire one, and list what needs a look.
+
+The docs link to each other in their bodies and front matter. kb reindex stores the links;
+kb related lists them both ways, and --depth 2 follows the links of the entries reached.
+
+  $ kb init --model fake:8 --source 'docs/*.md'
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ kb reindex --all
+  reindexed docs/checklist.md (2 chunks, 2 embedded)
+  reindexed docs/deploy.md (2 chunks, 2 embedded)
+  reindexed docs/rollback.md (2 chunks, 2 embedded)
+  entries: 3 scanned, 3 reindexed, 0 skipped; chunks: 6; embed calls: 3
+
+  $ kb related docs/rollback.md
+  docs/rollback.md · 2 links
+  →  related  docs/checklist.md
+  ←  links    docs/deploy.md
+
+  $ kb related docs/rollback.md --depth 2
+  docs/rollback.md · 3 links
+  →  related     docs/checklist.md
+  ←  links       docs/deploy.md
+  →  depends_on  docs/dashboards.md  (unresolved) via docs/checklist.md
+
+A new deploy page supersedes the old one. Both still match a search; the old one, which
+ranked first before, is marked and ranked below the new one ([search] supersede_penalty).
+
+  $ write docs/deploy-v2.md @deploy-v2
+
+  $ kb reindex --all
+  reindexed docs/deploy-v2.md (2 chunks, 2 embedded)
+  entries: 4 scanned, 1 reindexed, 3 skipped; chunks: 2; embed calls: 1
+
+  $ kb related docs/deploy.md
+  docs/deploy.md · 2 links
+  →  links       docs/rollback.md
+  ←  supersedes  docs/deploy-v2.md
+
+  $ kb search "deploy the service" --mode fts --caller claude
+  search 1 · 4 hits
+  [1] docs/deploy-v2.md · updated 2026-04-01
+  Deploying the service with the script: The current way to deploy.
+
+  [2] docs/deploy-v2.md › (intro) · updated 2026-04-01
+  Deploying the service with the script › (intro)
+  Deploy the service with the deploy script. It restarts the service for you.
+
+  [3] docs/deploy.md · updated 2026-02-01 · superseded
+  Deploying the service: The old way to deploy.
+
+  [4] docs/deploy.md › (intro) · updated 2026-02-01 · superseded
+  Deploying the service › (intro)
+  Deploy the service by hand, then restart it. If it breaks, [roll back](rollback.md).
+  search_id=1
+
+--neighbors adds the entries linked to the hits, without the hits themselves.
+
+  $ kb search "roll back" --mode fts --caller claude --neighbors
+  search 2 · 3 hits
+  [1] docs/rollback.md › (intro) · updated 2026-02-10
+  Rolling back › (intro)
+  Roll back the service to the last good tag.
+
+  [2] docs/rollback.md · updated 2026-02-10
+  Rolling back: Return the service to the last good tag.
+
+  [3] docs/deploy.md › (intro) · updated 2026-02-01 · superseded
+  Deploying the service › (intro)
+  Deploy the service by hand, then restart it. If it breaks, [roll back](rollback.md).
+
+  Related:
+    [1] → docs/checklist.md (related)
+    [3] ← docs/deploy-v2.md (supersedes)
+  search_id=2
+
+Today nothing is old: stale lists only the superseded page and the link to a page that does
+not exist. Two hundred days on, the three pages dated in February are past the 180-day
+threshold; the new page (169 days) is not.
+
+  $ kb stale
+  2 of 4 entries need a look, as of 2026-03-01, threshold 180 days
+
+  Superseded: 1
+    docs/deploy.md  superseded by docs/deploy-v2.md
+
+  Broken path links: 1
+    docs/checklist.md  depends_on -> docs/dashboards.md
+
+  $ env KB_HARNESS_NOW=+200d
+
+  $ kb stale
+  3 of 4 entries need a look, as of 2026-09-17, threshold 180 days
+
+  At least 180 days old: 3
+    docs/deploy.md     updated 2026-02-01 (228 days old)
+    docs/rollback.md   updated 2026-02-10 (219 days old)
+    docs/checklist.md  updated 2026-02-15 (214 days old)
+
+  Superseded: 1
+    docs/deploy.md  superseded by docs/deploy-v2.md
+
+  Broken path links: 1
+    docs/checklist.md  depends_on -> docs/dashboards.md
+
+-- proj/docs/deploy.md --
+---
+title: Deploying the service
+summary: The old way to deploy.
+updated: 2026-02-01
+---
+# Deploying the service
+
+Deploy the service by hand, then restart it. If it breaks, [roll back](rollback.md).
+-- proj/docs/rollback.md --
+---
+title: Rolling back
+summary: Return the service to the last good tag.
+updated: 2026-02-10
+related: [checklist.md]
+---
+# Rolling back
+
+Roll back the service to the last good tag.
+-- proj/docs/checklist.md --
+---
+title: Release checklist
+summary: What to check before a release.
+updated: 2026-02-15
+depends_on: [dashboards.md]
+---
+# Release checklist
+
+Check the dashboards before you restart the service.
+-- @deploy-v2 --
+---
+title: Deploying the service with the script
+summary: The current way to deploy.
+updated: 2026-04-01
+supersedes: [deploy.md]
+---
+# Deploying the service with the script
+
+Deploy the service with the deploy script. It restarts the service for you.

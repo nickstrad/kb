@@ -1,0 +1,151 @@
+in-place-sources: index a repo's Markdown where it lies, without copying it.
+
+The project already has docs/**/*.md. kb init --source indexes them in place; the exclude
+list lives in the store's config.toml. Files are never copied into the store, so add and rm
+have nothing to do and say so.
+
+  $ kb init --model fake:8 --source 'docs/**/*.md'
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ grep '^(glob|layout) =' .kb/stores/default/config.toml
+  glob = "docs/**/*.md"
+  layout = "files"
+
+  $ ! exists data
+
+  $ write .kb/stores/default/config.toml @config
+
+  $ kb reindex --all
+  reindexed docs/guide.md (2 chunks, 2 embedded)
+  reindexed docs/plain.md (2 chunks, 2 embedded)
+  entries: 2 scanned, 2 reindexed, 0 skipped; chunks: 4; embed calls: 2
+
+  $ kb list
+  PATH           SUMMARY                                                                  UPDATED     VERIFIED
+  docs/guide.md  How the service is run day to day.                                       2026-02-01  -
+  docs/plain.md  The nightly backup writes to the archive volume. No front matter here,…  -           -
+
+  2 entries
+
+  $ kb search "nightly backup" --mode fts --caller claude
+  search 1 · 2 hits
+  [1] docs/plain.md
+  Nightly backup: The nightly backup writes to the archive volume. No front matter here, so the title comes from the first heading.
+
+  [2] docs/plain.md › (intro)
+  Nightly backup › (intro)
+  The nightly backup writes to the archive volume. No front matter here, so the title comes
+  from the first heading.
+  search_id=1
+
+  $ kb search "scratch idea" --mode fts --caller claude
+  search 2 · 0 hits
+  no results
+  search_id=2
+
+  $ kb show docs/plain.md
+  # Nightly backup
+
+  The nightly backup writes to the archive volume. No front matter here, so the title comes
+  from the first heading.
+
+  $ cat docs/plain.md
+  # Nightly backup
+
+  The nightly backup writes to the archive volume. No front matter here, so the title comes
+  from the first heading.
+
+  $ write docs/guide.md @guide-v2
+
+  $ kb reindex docs/guide.md
+  reindexed docs/guide.md (3 chunks, 1 embedded)
+  entries: 1 scanned, 1 reindexed, 0 skipped; chunks: 3; embed calls: 1
+
+  $ kb search "pagerduty escalation" --mode fts --caller claude
+  search 3 · 1 hit
+  [1] docs/guide.md › Escalation · updated 2026-02-01
+  Operations guide › Escalation
+  Page the on-call through PagerDuty escalation after ten minutes.
+  search_id=3
+
+  $ rm docs/plain.md
+
+  $ kb reindex --all
+  removed docs/plain.md (no longer on disk)
+  entries: 1 scanned, 0 reindexed, 1 skipped, 1 removed; chunks: 0; embed calls: 0
+
+  $ kb list
+  PATH           SUMMARY                             UPDATED     VERIFIED
+  docs/guide.md  How the service is run day to day.  2026-02-01  -
+
+  1 entries
+
+  $ kb search "nightly backup" --mode fts --caller claude
+  search 4 · 0 hits
+  no results
+  search_id=4
+
+  $ kb add $WORK/outside.md
+  [stderr] kb add: this store has no entries source to add to ($WORK/proj/.kb/stores/default/config.toml lists no [[sources]] with layout = "entries"); in-place files are indexed where they are: edit them and run kb reindex
+  [exit 1]
+
+  $ kb rm docs/guide.md
+  [stderr] kb rm: docs/guide.md is not owned by kb (an in-place source); delete the file and run kb reindex --all
+  [exit 1]
+
+-- proj/docs/guide.md --
+---
+title: Operations guide
+summary: How the service is run day to day.
+tags: [ops]
+updated: 2026-02-01
+---
+# Operations guide
+
+Restart the service from the console when the health check fails.
+-- proj/docs/plain.md --
+# Nightly backup
+
+The nightly backup writes to the archive volume. No front matter here, so the title comes
+from the first heading.
+-- proj/docs/archive/old.md --
+---
+title: Old scratch notes
+---
+# Old
+
+A scratch idea nobody needs any more.
+-- outside.md --
+---
+title: Outside
+summary: Not in the sources.
+updated: 2026-02-01
+---
+# Outside
+
+Body.
+-- @config --
+version = 1
+
+[embed]
+model = "fake:8"
+
+[[sources]]
+glob = "docs/**/*.md"
+layout = "files"
+exclude = ["docs/archive/**"]
+-- @guide-v2 --
+---
+title: Operations guide
+summary: How the service is run day to day.
+tags: [ops]
+updated: 2026-02-01
+---
+# Operations guide
+
+Restart the service from the console when the health check fails.
+
+## Escalation
+
+Page the on-call through PagerDuty escalation after ten minutes.

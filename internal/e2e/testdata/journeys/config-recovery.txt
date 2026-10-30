@@ -1,0 +1,132 @@
+config-recovery: a hand-edited config breaks, kb says where, and the fix works.
+
+Each failure is one error line that names the file or the key, not a validation table. kb doctor
+reports the same problem as a FAIL until the file is fixed.
+
+  $ kb init --model fake:8
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ kb add $WORK/notes/tmux.md
+  added data/tmux.md (2 chunks)
+
+A broken location file.
+
+  $ write .kb/kb.toml @kbtoml-broken
+
+  $ kb search tmux --mode fts
+  [stderr] kb search: $WORK/proj/.kb/kb.toml:2: default_store: strings cannot contain newlines
+  [exit 1]
+
+  $ kb doctor
+  FAIL location: $WORK/proj/.kb/kb.toml:2: default_store: strings cannot contain newlines
+  doctor: 1 failed, 0 warnings
+  [stderr] kb doctor: 1 check(s) failed
+  [exit 1]
+
+  $ write .kb/kb.toml @kbtoml-fixed
+
+  $ kb doctor
+  ok   config: $WORK/proj/.kb/stores/default/config.toml
+  ok   sources: 1 configured: "data" (entries)
+  ~ ok   driver: fts5 enabled, sqlite [0-9.]+, sqlite-vec v[0-9.]+
+  ok   embed_meta: model=fake:8 dim=8
+  warn model: not checked (test embedder)
+  ok   entries: 1 entries valid
+  ok   db-vs-files: 1 entries in sync
+  ok   index.md: absent (optional export)
+  ~ ok   version: kb \(version\) at .*
+  doctor: 0 failed, 1 warnings
+
+An unknown key in the store's config.toml.
+
+  $ write .kb/stores/default/config.toml @config-badkey
+
+  $ kb config
+  [stderr] kb config: $WORK/proj/.kb/stores/default/config.toml: unknown key "search.rrf_kk"
+  [exit 1]
+
+  $ kb doctor
+  ~ FAIL config: \$WORK/proj/\.kb/stores/default/config\.toml: unknown key "search\.rrf_kk"
+  ...
+  ~ doctor: \d+ failed, 0 warnings
+  [stderr] ~ kb doctor: \d+ check\(s\) failed
+  [exit 1]
+
+  $ kb search tmux --mode fts
+  [stderr] kb search: $WORK/proj/.kb/stores/default/config.toml: unknown key "search.rrf_kk"
+  [exit 1]
+
+  $ write .kb/stores/default/config.toml @config-fixed
+
+  $ kb config --path
+  $WORK/proj/.kb/stores/default/config.toml
+
+  $ kb search tmux --mode fts --caller claude
+  search 1 · 2 hits
+  [1] data/tmux.md › (intro) · updated 2026-02-01
+  Tmux survives logout › (intro)
+  # Tmux survives logout
+
+  Start tmux on the remote host and detach.
+
+  [2] data/tmux.md · updated 2026-02-01
+  Tmux survives logout: Keep sessions alive after you log out of the remote host.
+  search_id=1
+
+A store that is not there, and a directory with no kb location at all.
+
+  $ kb --store nope search tmux
+  [stderr] kb search: no store "nope" in $WORK/proj and no alias of that name (stores: default; aliases: none); create a store with kb init --name nope
+  [exit 1]
+
+  $ cd $WORK/elsewhere
+
+  $ kb search tmux
+  [stderr] kb search: no kb location found in $WORK/elsewhere or its parents; run "kb init" here, or use --global / --root
+  [exit 1]
+
+-- notes/tmux.md --
+---
+title: Tmux survives logout
+summary: Keep sessions alive after you log out of the remote host.
+tags: [ops]
+updated: 2026-02-01
+---
+# Tmux survives logout
+
+Start tmux on the remote host and detach.
+-- elsewhere/.keep --
+x
+-- @kbtoml-broken --
+version = 1
+default_store = "default
+-- @kbtoml-fixed --
+version = 1
+default_store = "default"
+
+[aliases]
+-- @config-badkey --
+version = 1
+
+[embed]
+model = "fake:8"
+
+[[sources]]
+path = "data"
+layout = "entries"
+
+[search]
+rrf_kk = 20
+-- @config-fixed --
+version = 1
+
+[embed]
+model = "fake:8"
+
+[[sources]]
+path = "data"
+layout = "entries"
+
+[search]
+rrf_k = 20

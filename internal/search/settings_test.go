@@ -31,7 +31,7 @@ func TestDefaultParamsMatchConstants(t *testing.T) {
 	want := Params{
 		ListLimit: ListLimit, CandidateLimit: CandidateLimit, PerEntryCap: PerEntryCap, RRFK: RRFConstant,
 		VecOverFetch: vecOverFetch, BM25: store.DefaultBM25(), FTSWeight: 1, VecWeight: 1,
-		ExactWeight: 1, ExactList: true, Spell: true,
+		ExactWeight: 1, ExactList: true, Spell: true, SupersedePenalty: 0.5,
 	}
 	if got := DefaultParams(); got != want {
 		t.Errorf("DefaultParams = %+v, want %+v", got, want)
@@ -47,11 +47,11 @@ func TestParamsFromMapsEveryKey(t *testing.T) {
 		ListLimit: 11, CandidateLimit: 12, PerEntryCap: 13, RRFK: 14, VecOverfetch: 15,
 		BM25:        config.BM25{Text: 1.5, Heading: 2.5, Title: 3.5},
 		ListWeights: config.ListWeights{FTS: 0.25, Vec: 0.75, Exact: 0.5, Memory: 9},
-		ExactList:   true,
+		ExactList:   true, SupersedePenalty: 0.25,
 	}
 	want := Params{ListLimit: 11, CandidateLimit: 12, PerEntryCap: 13, RRFK: 14, VecOverFetch: 15,
 		BM25: store.BM25Weights{Text: 1.5, Heading: 2.5, Title: 3.5}, FTSWeight: 0.25, VecWeight: 0.75,
-		ExactWeight: 0.5, ExactList: true}
+		ExactWeight: 0.5, ExactList: true, SupersedePenalty: 0.25}
 	if got := ParamsFrom(s); got != want {
 		t.Errorf("ParamsFrom = %+v, want %+v", got, want)
 	}
@@ -74,6 +74,10 @@ func TestNewSettingsHash(t *testing.T) {
 	changed := settingsWith(t, func(s *config.Search) { s.RRFK = 20 })
 	if changed.Hash == def.Hash || changed.Params.RRFK != 20 {
 		t.Errorf("rrf_k=20: hash %s (default %s), params %+v", changed.Hash, def.Hash, changed.Params)
+	}
+	pen := settingsWith(t, func(s *config.Search) { s.SupersedePenalty = 0.25 })
+	if pen.Hash == def.Hash || pen.Params.SupersedePenalty != 0.25 {
+		t.Errorf("supersede_penalty=0.25: hash %s (default %s), params %+v", pen.Hash, def.Hash, pen.Params)
 	}
 }
 
