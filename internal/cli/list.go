@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/entry"
 )
 
@@ -27,23 +28,25 @@ func newListCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ws, err := d.workspace(cmd)
+			ws, cfg, err := d.workspaceConfig(cmd)
 			if err != nil {
 				return err
 			}
-			return runList(stdout, ws.Root, tag)
+			return runList(stdout, stderr, ws.Root, cfg.Sources, tag)
 		},
 	}
 	cmd.Flags().StringVar(&tag, "tag", "", "only entries carrying this tag")
 	return cmd
 }
 
-// runList prints every discovered entry, optionally filtered by tag.
-func runList(stdout io.Writer, root, tag string) error {
-	entries, err := entry.Discover(root)
+// runList prints every discovered entry, optionally filtered by tag, and warns on stderr about
+// anything discovery skipped.
+func runList(stdout, stderr io.Writer, root string, sources []config.Source, tag string) error {
+	entries, skipped, err := entry.Discover(root, sources)
 	if err != nil {
-		return usageErr("%s", err.Error())
+		return err
 	}
+	warnSkipped(stderr, skipped)
 
 	if len(entries) == 0 {
 		fmt.Fprintln(stdout, "no entries")

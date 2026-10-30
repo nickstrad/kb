@@ -84,7 +84,7 @@ func TestStoresAndDoctorOnOtherSchemaVersions(t *testing.T) {
 		version int
 		problem string
 	}{
-		{"older", sqlite.SchemaVersion() - 1, "older than this kb"},
+		{"older", sqlite.SchemaVersion() - 1, "Run: kb migrate up"},
 		{"newer", sqlite.SchemaVersion() + 1, "use a newer kb"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,11 +122,19 @@ func TestStoresAndDoctorOnOtherSchemaVersions(t *testing.T) {
 					t.Errorf("kb stores changed the database version: %+v %v", st, err)
 				}
 			}
-			if tc.name == "newer" {
-				out, _, code := run(t, "doctor")
-				if code != ExitUsage || !strings.Contains(out, "FAIL driver: ") || !strings.Contains(out, tc.problem) {
-					t.Errorf("doctor on a newer database: exit %d\n%s", code, out)
-				}
+			// doctor never migrates: a newer database is a driver FAIL, an older one is its own
+			// migrate FAIL naming the command, and in both the file is left as it was.
+			out, _, code := run(t, "doctor")
+			check := "FAIL driver: "
+			if tc.name == "older" {
+				check = "FAIL migrate: "
+				tc.problem = "run kb migrate up"
+			}
+			if code != ExitUsage || !strings.Contains(out, check) || !strings.Contains(out, tc.problem) {
+				t.Errorf("doctor on a %s database: exit %d, want %q and %q\n%s", tc.name, code, check, tc.problem, out)
+			}
+			if st, err := sqlite.NewArtefact(testDBPath(root)).Status(ctx); err != nil || st.Current != tc.version {
+				t.Errorf("kb doctor changed the database version: %+v %v", st, err)
 			}
 		})
 	}
@@ -213,7 +221,7 @@ func TestModelCommandsNeedTheNamedStore(t *testing.T) {
 	testDeps.modelCacheDir = func() (string, error) { return cache, nil }
 	root := newTempRoot(t)
 	addStore(t, root, "adr")
-	writeFile(t, filepath.Join(root, ".kb", "stores", "adr", "config.toml"), "[embed]\nmodel = \"none\"\n")
+	writeFile(t, filepath.Join(root, ".kb", "stores", "adr", "config.toml"), "[embed]\nmodel = \"none\"\n"+dataSourceTOML)
 
 	for _, sub := range []string{"pull", "path"} {
 		if _, stderr, code := run(t, "--store", "nope", "model", sub); code != ExitUsage || !strings.Contains(stderr, `no store "nope"`) {
@@ -236,7 +244,7 @@ func TestSearchSettingsArePerStore(t *testing.T) {
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	addStore(t, root, "adr")
-	writeFile(t, filepath.Join(root, ".kb", "stores", "adr", "config.toml"), "[embed]\nmodel = \"none\"\n[search]\nrrf_k = 1\n")
+	writeFile(t, filepath.Join(root, ".kb", "stores", "adr", "config.toml"), "[embed]\nmodel = \"none\"\n[search]\nrrf_k = 1\n"+dataSourceTOML)
 	src := filepath.Join(t.TempDir(), "widget.md")
 	writeFile(t, src, validFrontMatter("Widget", "About the widget."))
 	if _, stderr, code := run(t, "add", src); code != 0 {
@@ -249,8 +257,8 @@ func TestSearchSettingsArePerStore(t *testing.T) {
 		args  []string
 		score string
 	}{
-		{[]string{"search", "widget", "--mode", "fts"}, "#1  0.0164  "},
-		{[]string{"--store", "adr", "search", "widget", "--mode", "fts"}, "#1  0.5000  "},
+		{[]string{"search", "widget", "--mode", "fts", "--json"}, `"rrf_score": 0.01639`},
+		{[]string{"--store", "adr", "search", "widget", "--mode", "fts", "--json"}, `"rrf_score": 0.5,`},
 	} {
 		stdout, stderr, code := run(t, tc.args...)
 		if code != 0 || !strings.Contains(stdout, tc.score) {

@@ -174,14 +174,15 @@ func TestStoresText(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d stderr %q", code, stderr)
 	}
+	home := testDeps.workspaceEnv().Home
 	want := `STORE      MODEL                  ENTRIES  DATABASE
 adr        BAAI/bge-base-en-v1.5  -        not indexed
 default *  none                   -        not indexed
 warning: ignoring ` + root + `/.kb/stores/BAD: not a valid store name
 
 aliases:
-  notes  ~/knowledge
-  proj   adr@~/src/proj
+  notes  ~/knowledge     BROKEN: no kb location at ` + home + `/knowledge (no .kb/kb.toml); run kb init --root ` + home + `/knowledge
+  proj   adr@~/src/proj  BROKEN: no kb location at ` + home + `/src/proj (no .kb/kb.toml); run kb init --root ` + home + `/src/proj
 `
 	if stdout != want {
 		t.Fatalf("kb stores output:\n%s\nwant:\n%s", stdout, want)

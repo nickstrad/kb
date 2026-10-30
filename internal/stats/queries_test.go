@@ -430,11 +430,11 @@ func TestWholeSearchVerdict(t *testing.T) {
 		})
 }
 
-// TestLookup checks the registry itself: the five names in display order, a populated Summary and
+// TestLookup checks the registry itself: the names in display order, a populated Summary and
 // Help on each, a Help paragraph that ends in a "Decision:" sentence, and a
 // miss for a name nobody defined (which is what the CLI turns into a usage error).
 func TestLookup(t *testing.T) {
-	want := []string{"overview", "sources", "trend", "entries", "gaps"}
+	want := []string{"overview", "sources", "trend", "entries", "gaps", "settings"}
 
 	if len(Queries) != len(want) {
 		t.Fatalf("len(Queries) = %d, want %d", len(Queries), len(want))
@@ -473,6 +473,41 @@ func TestLookup(t *testing.T) {
 	if _, ok := Lookup(""); ok {
 		t.Error(`Lookup("") = found, want not found`)
 	}
+}
+
+// TestSettings (PLAN 2.5): one row per settings_hash, over the base fixture with settings recorded
+// on some searches. Configuration A (hash a1b2c3d4e5f6...) ran searches 1, 2, 3 and 6, B
+// (0f9e8d7c6b5a...) ran 7 and 8, and searches 4, 5 and 9 predate the columns (NULL hash).
+//
+// A: all four judged -> coverage 100.0. Hits: 1 (useful at rank 3), 2 (rank 1) and 6 (rank 2);
+// search 3 was judged not-useful only -> hit_rate 75.0, MRR = (1/3 + 1 + 0 + 1/2)/4 = 0.4583 ->
+// 0.458. first/last seen are search 1's and search 6's timestamps.
+// B: 2 searches, only 8 judged (not useful) -> coverage 50.0, hit_rate 0.0, MRR 0.0.
+// NULL: 3 searches, none judged -> coverage 0.0, hit_rate and mrr NULL, and no settings JSON.
+// Rows are ordered by last_seen DESC: NULL (09-17), B (09-16), A (09-14).
+func TestSettings(t *testing.T) {
+	db := openFixture(t, `
+		UPDATE searches SET settings_hash = 'a1b2c3d4e5f6' || printf('%052d', 0), settings = '{"search":{"rrf_k":60}}' WHERE id IN (1, 2, 3, 6);
+		UPDATE searches SET settings_hash = '0f9e8d7c6b5a' || printf('%052d', 0), settings = '{"search":{"rrf_k":20}}' WHERE id IN (7, 8);`)
+	cols := []string{"settings_hash", "searches", "judged", "coverage_pct", "hit_rate_pct", "mrr", "first_seen", "last_seen", "settings"}
+	checkQuery(t, db, "settings", Filter{}, cols, [][]any{
+		{nil, int64(3), int64(0), 0.0, nil, nil, at(10, 12, 0), at(17, 12, 0), nil},
+		{"0f9e8d7c6b5a", int64(2), int64(1), 50.0, 0.0, 0.0, at(15, 10, 0), at(16, 11, 0), `{"search":{"rrf_k":20}}`},
+		{"a1b2c3d4e5f6", int64(4), int64(4), 100.0, 75.0, 0.458, at(7, 9, 0), at(14, 9, 0), `{"search":{"rrf_k":60}}`},
+	})
+	// The caller filter reaches the grouping: codex ran searches 2, 4, 7, 8 (B last seen 09-16, NULL 09-10, A 09-08).
+	checkQuery(t, db, "settings", Filter{Caller: "codex"}, cols, [][]any{
+		{"0f9e8d7c6b5a", int64(2), int64(1), 50.0, 0.0, 0.0, at(15, 10, 0), at(16, 11, 0), `{"search":{"rrf_k":20}}`},
+		{nil, int64(1), int64(0), 0.0, nil, nil, at(10, 12, 0), at(10, 12, 0), nil},
+		{"a1b2c3d4e5f6", int64(1), int64(1), 100.0, 100.0, 1.0, at(8, 10, 0), at(8, 10, 0), `{"search":{"rrf_k":60}}`},
+	})
+}
+
+// TestSettingsEmpty: a log with no searches is an empty table, not an error.
+func TestSettingsEmpty(t *testing.T) {
+	db := openFixture(t, `DELETE FROM searches`)
+	checkQuery(t, db, "settings", Filter{},
+		[]string{"settings_hash", "searches", "judged", "coverage_pct", "hit_rate_pct", "mrr", "first_seen", "last_seen", "settings"}, nil)
 }
 
 // TestOverviewOpenedPct: opened_pct is the share of all searches (judged or not) with at least

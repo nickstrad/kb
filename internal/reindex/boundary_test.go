@@ -56,7 +56,7 @@ func TestBatchSizeBoundary(t *testing.T) {
 			writeEntryWithChunks(t, root, tc.chunks)
 			emb := &countingEmbedder{Embedder: fake.New("fake", testDim)}
 			s := newTestStore(t, emb)
-			sum, err := All(context.Background(), Options{Root: root, Store: s, Embedder: emb, BatchSize: tc.batchSize})
+			sum, err := All(context.Background(), Options{Root: root, Sources: dataSources, Store: s, Embedder: emb, BatchSize: tc.batchSize})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -106,7 +106,7 @@ func TestEmbedFailureAbortsRun(t *testing.T) {
 			writeEntryWithChunks(t, root, 3)
 			emb := brokenEmbedder{fake.New("fake", testDim), tc.err}
 			s := newTestStore(t, emb)
-			_, err := All(context.Background(), Options{Root: root, Store: s, Embedder: emb})
+			_, err := All(context.Background(), Options{Root: root, Sources: dataSources, Store: s, Embedder: emb})
 			if err == nil {
 				t.Fatal("want an error")
 			}

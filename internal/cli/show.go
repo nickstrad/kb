@@ -48,9 +48,9 @@ func newShowCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 // recording the open never changes it.
 func runShow(ctx context.Context, d *deps, stdout, stderr io.Writer, ws *workspace.Workspace, cfg config.Config, arg string, showChunks, logOpen, debug bool) error {
 	root := ws.Root
-	e, err := entry.Resolve(root, arg)
+	e, err := entry.Resolve(root, cfg.Sources, arg)
 	if err != nil {
-		return usageErr("%s", err)
+		return err
 	}
 	if !showChunks {
 		err = showFiles(stdout, root, e)
@@ -100,7 +100,7 @@ func recordOpen(ctx context.Context, d *deps, stderr io.Writer, ws *workspace.Wo
 func showFiles(stdout io.Writer, root string, e entry.Entry) error {
 	files, err := entry.Load(root, e)
 	if err != nil {
-		return usageErr("%s", err)
+		return err
 	}
 	multi := len(e.Files) > 1
 	for i, f := range e.Files {
@@ -147,7 +147,7 @@ func showEntryChunks(ctx context.Context, d *deps, stdout, stderr io.Writer, ws 
 	fmt.Fprintln(stderr, "(not indexed; showing what the indexer would produce)")
 	files, err := entry.Load(ws.Root, e)
 	if err != nil {
-		return usageErr("%s", err)
+		return err
 	}
 	chunks, err := chunk.Split(e, files)
 	if err != nil {

@@ -1,4 +1,6 @@
-// `kb add`: validate front matter, place the file in data/, then chunk and embed it.
+// `kb add`: validate front matter, place the file in the store's entries directory (data/ for
+// the default store, data-<name>/ for a named one: its one [[sources]] with layout "entries"),
+// then chunk and embed it.
 //
 // Both forms (`kb add <file.md>` and `kb add --dir <topic>/`) follow the same shape:
 //  1. validate the name (lowercase kebab-case);
@@ -68,8 +70,9 @@ func newAddCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		Use:   "add <file.md>",
 		Short: "Add an entry to the repository and index it",
 		Long: "Adds a Markdown file (or, with --dir, a directory entry whose README.md and\n" +
-			"docs/*.md are indexed). A source outside data/ is\n" +
-			"copied into data/; a source already directly inside it is indexed in place.",
+			"docs/*.md are indexed) to the store's entries directory (data/ for the default store).\n" +
+			"A source outside it is copied in; a source already directly inside it is indexed\n" +
+			"where it is. A store with no entries source (only in-place globs) cannot add.",
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -91,6 +94,10 @@ func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg st
 		return err
 	}
 	root := ws.Root
+	target, err := entriesSource(cfg, ws.ConfigPath)
+	if err != nil {
+		return err
+	}
 	basename := filepath.Base(filepath.Clean(srcArg))
 
 	if !fileNameRe.MatchString(basename) {
@@ -122,7 +129,7 @@ func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg st
 		return secretsErr(srcArg, hits)
 	}
 
-	relPath, destPath, copyNeeded, err := placeFile(root, srcArg, basename)
+	relPath, destPath, copyNeeded, err := placeFile(root, target.Path, srcArg, basename)
 	if err != nil {
 		return err
 	}
@@ -155,8 +162,8 @@ func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg st
 		return err
 	}
 	if copyNeeded {
-		if err := os.MkdirAll(entry.DataRoot(root), 0o755); err != nil {
-			return usageErr("create data directory: %s", err)
+		if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(target.Path)), 0o755); err != nil {
+			return usageErr("create the entries directory %s: %s", target.Path, err)
 		}
 		// Claim the destination exclusively before arming cleanup; never remove another writer's files.
 		f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
@@ -176,9 +183,9 @@ func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg st
 		}
 	}
 
-	e, err := entry.Resolve(root, relPath)
+	e, err := entry.Resolve(root, cfg.Sources, relPath)
 	if err != nil {
-		return usageErr("%s", err)
+		return err
 	}
 	if e.Err != nil {
 		return usageErr("%s", e.Err)
@@ -212,6 +219,10 @@ func runAddDir(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, argPath st
 		return err
 	}
 	root := ws.Root
+	target, err := entriesSource(cfg, ws.ConfigPath)
+	if err != nil {
+		return err
+	}
 	srcDir := filepath.Clean(argPath)
 	name := filepath.Base(srcDir)
 
@@ -275,7 +286,7 @@ func runAddDir(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, argPath st
 		}
 	}
 
-	relPath, destDir, copyNeeded, err := placeDir(root, srcDir, name)
+	relPath, destDir, copyNeeded, err := placeDir(root, target.Path, srcDir, name)
 	if err != nil {
 		return err
 	}
@@ -307,8 +318,8 @@ func runAddDir(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, argPath st
 		return err
 	}
 	if copyNeeded {
-		if err := os.MkdirAll(entry.DataRoot(root), 0o755); err != nil {
-			return usageErr("create data directory: %s", err)
+		if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(target.Path)), 0o755); err != nil {
+			return usageErr("create the entries directory %s: %s", target.Path, err)
 		}
 		// Claim the destination exclusively before arming cleanup; never remove another writer's files.
 		if err := os.Mkdir(destDir, 0o755); err != nil {
@@ -324,9 +335,9 @@ func runAddDir(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, argPath st
 		}
 	}
 
-	e, err := entry.Resolve(root, name)
+	e, err := entry.Resolve(root, cfg.Sources, relPath)
 	if err != nil {
-		return usageErr("%s", err)
+		return err
 	}
 	if e.Err != nil {
 		return usageErr("%s", e.Err)
@@ -364,12 +375,12 @@ func warnMissingMeta(stderr io.Writer, path string, fm entry.FrontMatter) {
 	}
 }
 
-// placeFile decides where a file entry ends up. relPath is the repo-relative path to index
-// ("data/basename.md"); destPath is where the bytes must live on disk; copyNeeded says whether the
-// caller still has to write them there (false when srcPath already IS destPath, i.e. the source
-// was already directly under data/).
-func placeFile(root, srcPath, basename string) (relPath, destPath string, copyNeeded bool, err error) {
-	absRoot, err := filepath.Abs(entry.DataRoot(root))
+// placeFile decides where a file entry ends up. dir is the store's entries directory, relative to
+// root ("data"). relPath is the root-relative path to index ("data/basename.md"); destPath is
+// where the bytes must live on disk; copyNeeded says whether the caller still has to write them
+// there (false when srcPath already IS destPath, i.e. the source was already directly in dir).
+func placeFile(root, dir, srcPath, basename string) (relPath, destPath string, copyNeeded bool, err error) {
+	absRoot, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(dir)))
 	if err != nil {
 		return "", "", false, usageErr("%s", err)
 	}
@@ -383,19 +394,19 @@ func placeFile(root, srcPath, basename string) (relPath, destPath string, copyNe
 	rel, relErr := filepath.Rel(absRoot, absSrc)
 	if !isInside(rel, relErr) {
 		dest := filepath.Join(absRoot, basename)
-		return entry.DataDir + "/" + basename, dest, true, nil
+		return dir + "/" + basename, dest, true, nil
 	}
 
 	rel = filepath.ToSlash(rel)
 	if filepath.ToSlash(filepath.Dir(rel)) != "." {
-		return "", "", false, usageErr("%s: must be directly under data/, not a subdirectory", rel)
+		return "", "", false, usageErr("%s: must be directly under %s/, not a subdirectory", rel, dir)
 	}
-	return entry.DataDir + "/" + rel, absSrc, false, nil
+	return dir + "/" + rel, absSrc, false, nil
 }
 
-// placeDir is placeFile's counterpart for `kb add --dir`: relPath is always "data/<name>/README.md".
-func placeDir(root, srcDir, name string) (relPath, destDir string, copyNeeded bool, err error) {
-	absRoot, err := filepath.Abs(entry.DataRoot(root))
+// placeDir is placeFile's counterpart for `kb add --dir`: relPath is always "<dir>/<name>/README.md".
+func placeDir(root, dir, srcDir, name string) (relPath, destDir string, copyNeeded bool, err error) {
+	absRoot, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(dir)))
 	if err != nil {
 		return "", "", false, usageErr("%s", err)
 	}
@@ -409,14 +420,14 @@ func placeDir(root, srcDir, name string) (relPath, destDir string, copyNeeded bo
 	rel, relErr := filepath.Rel(absRoot, absSrc)
 	if !isInside(rel, relErr) {
 		dest := filepath.Join(absRoot, name)
-		return entry.DataDir + "/" + name + "/README.md", dest, true, nil
+		return dir + "/" + name + "/README.md", dest, true, nil
 	}
 
 	rel = filepath.ToSlash(rel)
 	if rel != name {
-		return "", "", false, usageErr("%s: must be directly under data/, not a subdirectory", rel)
+		return "", "", false, usageErr("%s: must be directly under %s/, not a subdirectory", rel, dir)
 	}
-	return entry.DataDir + "/" + name + "/README.md", absSrc, false, nil
+	return dir + "/" + name + "/README.md", absSrc, false, nil
 }
 
 // isInside reports whether rel (the result of filepath.Rel(root, src)) names a path inside root.

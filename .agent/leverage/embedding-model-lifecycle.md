@@ -9,4 +9,4 @@
 - **W6 (1.4) + wave-end pass:** `kb init` downloads the model up front (exit 2 leaves the store created; `kb model pull` finishes); doctor's `model` check loads the model and embeds "ping" with timings (`TestCheckEmbedderModelCheck`); the model cache path has one rule, `workspace.ModelsDirOf` (`local.DefaultCacheDir` deleted, Q54). Fixed in the pass: inside a location, `kb model pull|path` with a `--store` or `default_store` that names no store silently used the default model; now NotFound (`TestModelCommandsNeedTheNamedStore`).
 - **Coverage today:** local unit and concurrency tests (93%); `-tags model` contract tests; harness `no-model-search` and `no-model-index`.
 - **Next checks:** memory profile at batch sizes 4/8/16/32 (pick a default; `embed.batch` is now a config key, default 16); RSS with 3–5 concurrent kb processes; whether a long-lived helper process is ever worth it (an architecture change, so ask the owner); upgrading rembed with pinned-model parity tests.
-- **Last reviewed:** 2026-10-30 · W6 wave-end pass
+- **Last reviewed:** 2026-10-30 · W7 wave-end pass (no model-loading change in W7; cache wiring is tracked in embedding-cache-shared-file)

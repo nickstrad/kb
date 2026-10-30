@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/entry"
 )
 
@@ -26,7 +27,7 @@ const goldenRoot = "testdata/repo"
 // checked-in golden file, plus a battery of assertions that do not depend on the golden content
 // at all (see assertInvariants) so a bad golden update cannot hide a real regression.
 func TestSplitGolden(t *testing.T) {
-	entries, err := entry.Discover(goldenRoot)
+	entries, _, err := entry.Discover(goldenRoot, []config.Source{{Path: entry.DataDir, Layout: config.LayoutEntries}})
 	if err != nil {
 		t.Fatalf("Discover(%s): %v", goldenRoot, err)
 	}

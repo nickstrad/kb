@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"github.com/nickstrad/kb/internal/store"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,6 +63,11 @@ func openAtVersion(t *testing.T, path string, v int) *Store {
 	origMigrations, origVersion := migrations, schemaVersion
 	migrations, schemaVersion = origMigrations[:v], v
 	defer func() { migrations, schemaVersion = origMigrations, origVersion }()
+	if _, err := os.Stat(path); err == nil { // an older file: Open would refuse it, Apply upgrades it
+		if _, err := NewArtefact(path).Apply(context.Background()); err != nil {
+			t.Fatalf("upgrade to version %d: %v", v, err)
+		}
+	}
 	s, err := Open(context.Background(), path, Options{})
 	if err != nil {
 		t.Fatalf("open at version %d: %v", v, err)
@@ -147,10 +153,7 @@ func TestMigration3(t *testing.T) {
 			nChunks := countRows(t, v2, "SELECT count(*) FROM chunks")
 			v2.Close()
 
-			s, err := Open(context.Background(), path, Options{})
-			if err != nil {
-				t.Fatalf("upgrade: %v", err)
-			}
+			s := openAtVersion(t, path, 3) // the upgrade under test is v2 to v3
 			defer s.Close()
 			ctx := context.Background()
 
@@ -226,10 +229,7 @@ func TestMigration3DeleteBeforeReindex(t *testing.T) {
 	seedV2(t, v2, "with vectors")
 	v2.Close()
 
-	s, err := Open(context.Background(), path, Options{})
-	if err != nil {
-		t.Fatalf("upgrade: %v", err)
-	}
+	s := openAtVersion(t, path, 3) // the upgrade under test is v2 to v3
 	defer s.Close()
 	if err := s.DeleteEntry(context.Background(), "alpha.md"); err != nil {
 		t.Fatalf("DeleteEntry before reindex: %v", err)

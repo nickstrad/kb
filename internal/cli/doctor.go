@@ -1,7 +1,7 @@
 // `kb doctor`: check the driver, the embedder, and the drift between the database, the files and
 // index.md.
 //
-// The checks, in order: config, sources, database, driver, entries, embed_meta, model,
+// The checks, in order: config, sources, database, migrate, driver, entries, embed_meta, model,
 // entries/db-vs-files, index.md, version. A location or store that does not resolve is one
 // "FAIL location" / "FAIL store" line ("not initialised: run kb init").
 //
@@ -108,12 +108,16 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 		cfg = config.Default()
 	} else {
 		d.ok("config", ws.ConfigPath)
-		checkSources(d, cfg)
+		checkSources(d, root, ws.ConfigPath, cfg.Sources)
 	}
 
 	var st store.Store
 	if _, statErr := os.Stat(dbPath); statErr != nil {
 		d.warn("database", fmt.Sprintf("not indexed: run kb reindex --all (no database at %s)", dbPath))
+	} else if pending := pendingMigration(ctx, dbPath); pending != "" {
+		// Commands refuse an older index (PLAN 1.8b), so doctor says what to run instead of
+		// opening it, which would fail the same way.
+		d.fail("migrate", pending)
 	} else if opened, err := dp.openStore(ctx, dbPath, false); err != nil {
 		d.fail("driver", err.Error())
 	} else {
@@ -122,13 +126,12 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 		checkDriver(ctx, d, st)
 	}
 
-	entries, err := entry.Discover(root)
+	entries, skipped, err := entry.Discover(root, cfg.Sources)
 	if err != nil {
-		d.fail("entries", err.Error())
+		d.fail("sources", err.Error())
 		entries = nil
-	} else if _, statErr := os.Stat(entry.DataRoot(root)); errors.Is(statErr, fs.ErrNotExist) {
-		d.warn("entries", fmt.Sprintf("no %s directory: nothing to index; kb add creates it", entry.DataRoot(root)))
 	}
+	checkDiscovered(d, cfg.Sources, entries, skipped)
 	goodEntries := make([]entry.Entry, 0, len(entries))
 	for _, e := range entries {
 		if e.Err == nil {
@@ -149,7 +152,11 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 	if st != nil {
 		checkDBVsFiles(ctx, d, root, st, goodEntries)
 	}
-	checkIndexMD(d, root, goodEntries)
+	if def, isDefault := isDefaultStore(ws); isDefault {
+		checkIndexMD(d, root, goodEntries)
+	} else {
+		d.ok("index.md", fmt.Sprintf("not checked: it describes the default store %q", def))
+	}
 	checkVersion(d)
 
 	fmt.Fprintf(stdout, "doctor: %d failed, %d warnings\n", d.failed, d.warned)
@@ -157,6 +164,20 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 		return usageErr("%d check(s) failed", d.failed)
 	}
 	return nil
+}
+
+// pendingMigration describes the steps an older index database still needs, "" when it is current,
+// newer (the open reports that) or unreadable (the open reports that too). It never changes the file.
+func pendingMigration(ctx context.Context, dbPath string) string {
+	st, err := sqlite.NewArtefact(dbPath).Status(ctx)
+	if err != nil || st.Newer() || len(st.Pending) == 0 || st.Current == 0 {
+		return ""
+	}
+	ids := make([]string, len(st.Pending))
+	for i, p := range st.Pending {
+		ids[i] = p.ID
+	}
+	return fmt.Sprintf("%s is at schema v%d, this kb needs v%d (%s); run kb migrate up", dbPath, st.Current, st.Target, strings.Join(ids, ", "))
 }
 
 // checkDriver prints the SQLite and sqlite-vec versions. Open has already refused a driver
@@ -210,15 +231,45 @@ func checkEmbedMeta(ctx context.Context, d *doctorState, st store.Index, embedde
 	d.ok("embed_meta", fmt.Sprintf("model=%s dim=%d", m.Model, m.Dim))
 }
 
-// checkSources reports the configured sources. [[sources]] is reserved until in-place sources
-// arrive, so a store has none and kb reads data/ only; the line says so instead of warning about
-// something the user cannot fix.
-func checkSources(d *doctorState, cfg config.Config) {
-	if len(cfg.Sources) == 0 {
-		d.ok("sources", "none configured: kb indexes the entries under data/")
+// checkSources reports the configured sources (PLAN 1.5): none is a warning, since the store then
+// indexes nothing; an entries directory that does not exist yet is a warning (kb add creates it).
+// Overlaps, skipped symlinks and globs that match nothing need discovery: checkDiscovered.
+func checkSources(d *doctorState, root, cfgPath string, sources []config.Source) {
+	if len(sources) == 0 {
+		d.warn("sources", fmt.Sprintf("none configured: this store indexes nothing; add a [[sources]] table to %s", cfgPath))
 		return
 	}
-	d.ok("sources", fmt.Sprintf("%d configured", len(cfg.Sources)))
+	names := make([]string, len(sources))
+	for i, s := range sources {
+		names[i] = s.String()
+		if s.Layout != config.LayoutEntries {
+			continue
+		}
+		dir := filepath.Join(root, filepath.FromSlash(s.Path))
+		if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+			d.warn("sources", fmt.Sprintf("sources[%d] %s: no directory %s yet, nothing indexed from it; kb add creates it", i+1, s, dir))
+		}
+	}
+	d.ok("sources", fmt.Sprintf("%d configured: %s", len(sources), strings.Join(names, ", ")))
+}
+
+// checkDiscovered reports what discovery found per source: a warning for each path it skipped (a
+// symlink out of the location root, DEFAULTS #65) and for a files glob that matches no *.md file.
+func checkDiscovered(d *doctorState, sources []config.Source, entries []entry.Entry, skipped []entry.Skipped) {
+	for _, s := range skipped {
+		d.warn("sources", "skipped "+s.String())
+	}
+	count := make([]int, len(sources))
+	for _, e := range entries {
+		if e.Source >= 0 && e.Source < len(count) {
+			count[e.Source]++
+		}
+	}
+	for i, s := range sources {
+		if s.Layout == config.LayoutFiles && count[i] == 0 {
+			d.warn("sources", fmt.Sprintf("sources[%d] %s matches no *.md file", i+1, s))
+		}
+	}
 }
 
 // checkEmbedder loads the configured embedder when it supports it (the pinger interface, defined
@@ -264,6 +315,9 @@ func checkEntries(d *doctorState, entries []entry.Entry) {
 			d.fail("entry", fmt.Sprintf("%s: %s", e.Path, e.Err))
 			failures++
 			continue
+		}
+		if e.InPlace() {
+			continue // in-place files need no front matter: no tags or updated to expect
 		}
 		if len(e.Meta.Tags) == 0 {
 			d.warn("entry", fmt.Sprintf("%s: no tags", e.Path))

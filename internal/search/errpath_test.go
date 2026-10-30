@@ -3,8 +3,10 @@ package search
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/nickstrad/kb/internal/embed/fake"
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/store"
 )
@@ -144,5 +146,42 @@ func TestFusedBeforeTotalOrder(t *testing.T) {
 	same := Candidate{ChunkID: 3, RRFScore: 0.1, FTSRank: r(1)}
 	if fusedBefore(same, same) {
 		t.Error("fusedBefore(x, x) = true, want false (strict order)")
+	}
+}
+
+// shapedEmbedder returns a fixed result, so embedQuery's shape guard can be reached.
+type shapedEmbedder struct {
+	*fake.Embedder
+	vecs [][]float32
+}
+
+func (e shapedEmbedder) Embed(context.Context, []string) ([][]float32, error) { return e.vecs, nil }
+
+// TestEmbedQueryShapeGuard: an embedder that answers with anything but exactly one non-empty
+// vector is a bug (Internal), never a silent empty vector search; one 1-dim vector is accepted.
+func TestEmbedQueryShapeGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		vecs [][]float32
+		ok   bool
+	}{
+		{"zero vectors", nil, false},
+		{"two vectors", [][]float32{{1}, {1}}, false},
+		{"one empty vector", [][]float32{{}}, false},
+		{"one 1-dim vector", [][]float32{{1}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Searcher{Embedder: shapedEmbedder{fake.New("fake-embed", 768), tc.vecs}}
+			v, _, err := s.embedQuery(context.Background(), "q")
+			if tc.ok {
+				if err != nil || len(v) != 1 {
+					t.Fatalf("embedQuery = (%v, %v), want the one vector", v, err)
+				}
+				return
+			}
+			if errs.KindOf(err) != errs.Internal || !strings.Contains(err.Error(), "embedder returned") {
+				t.Fatalf("err = %v (kind %v), want Internal \"embedder returned\"", err, errs.KindOf(err))
+			}
+		})
 	}
 }

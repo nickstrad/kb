@@ -40,9 +40,17 @@ func testDBPath(root string) string { return testWS(root).DBPath }
 // ensureKBDir creates the default store's directory <root>/.kb/stores/default.
 func ensureKBDir(root string) error { return os.MkdirAll(testWS(root).StoreDir, 0o755) }
 
-// writeConfig writes the default store's config.toml, replacing the empty one newTempRoot made.
+// dataSourceTOML is the [[sources]] table kb init writes for the default store: the entries
+// directory data/.
+const dataSourceTOML = "\n[[sources]]\npath = \"data\"\nlayout = \"entries\"\n"
+
+// writeConfig writes the default store's config.toml, replacing the one newTempRoot made. A body
+// with no [[sources]] gets the default store's data/ source appended, as kb init writes it.
 func writeConfig(t *testing.T, root, body string) {
 	t.Helper()
+	if !strings.Contains(body, "[[sources]]") {
+		body += dataSourceTOML
+	}
 	writeFile(t, testWS(root).ConfigPath, body)
 }
 
@@ -52,8 +60,8 @@ func useNoneModel(t *testing.T, root string) {
 	writeConfig(t, root, "[embed]\nmodel = \"none\"\n")
 }
 
-// newTempRoot creates a fresh location root (.kb/kb.toml and an empty default store config, no
-// database yet), makes it the working directory for the test and returns it with symlinks
+// newTempRoot creates a fresh location root (.kb/kb.toml and a default store config with only the
+// data/ source, no database yet), makes it the working directory for the test and returns it with symlinks
 // resolved, the form root discovery reports. The CLI tests are not parallel, so t.Chdir is safe.
 func newTempRoot(t *testing.T) string {
 	t.Helper()
@@ -83,13 +91,14 @@ func makeLocation(t *testing.T, root, def string) {
 	addStore(t, root, def)
 }
 
-// addStore adds a store called name, with an empty config, to the location at root. An existing
+// addStore adds a store called name to the location at root, with a config that holds only the
+// data/ entries source (every test store shares data/ unless it says otherwise). An existing
 // config is kept.
 func addStore(t *testing.T, root, name string) {
 	t.Helper()
 	cfg := filepath.Join(root, ".kb", "stores", name, "config.toml")
 	if _, err := os.Stat(cfg); err != nil {
-		writeFile(t, cfg, "")
+		writeFile(t, cfg, dataSourceTOML)
 	}
 }
 

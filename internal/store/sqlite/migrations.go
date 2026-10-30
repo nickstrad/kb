@@ -59,6 +59,19 @@ var migrations = migrate.Steps[execer]{
 			return err
 		},
 	},
+	// Each search records the effective [embed]/[search] settings it ran with (canonical JSON and
+	// its hash, config.EffectiveJSON) and the FTS MATCH expression, so `kb stats settings` can
+	// compare configs and `kb explain` can say what ran. Older rows keep NULL: it is not known.
+	{
+		Info: migrate.Info{From: 3, ID: "index/0004-search-settings", Desc: "add searches.settings, settings_hash and fts_query"},
+		Up: func(ctx context.Context, db execer) error {
+			_, err := db.ExecContext(ctx, `
+			ALTER TABLE searches ADD COLUMN settings TEXT;
+			ALTER TABLE searches ADD COLUMN settings_hash TEXT;
+			ALTER TABLE searches ADD COLUMN fts_query TEXT;`)
+			return err
+		},
+	},
 }
 
 func init() {

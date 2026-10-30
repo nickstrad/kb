@@ -28,6 +28,7 @@ func TestMain(m *testing.M) {
 	testDeps.pullModel = func(_ context.Context, spec local.Spec, _ string) error {
 		return errors.New("download model " + spec.ID + ": downloads are disabled in tests")
 	}
+	testDeps.embedCachePath = nil // no shared embedding cache unless a test opts in
 	testDeps.userCacheDir = func() (string, error) { return tmp + "/cache", nil }
 	// Root discovery must never see the developer's home or XDG_DATA_HOME.
 	testDeps.workspaceEnv = func() workspace.Env {

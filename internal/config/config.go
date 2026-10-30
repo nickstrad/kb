@@ -8,14 +8,18 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 
 	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/glob"
 )
 
 // Config is the whole of a store's config file with every default filled in. See the package doc for
@@ -23,7 +27,7 @@ import (
 type Config struct {
 	Version int      `toml:"version"`
 	Embed   Embed    `toml:"embed"`
-	Sources []Source `toml:"sources"` // reserved; non-empty is rejected for now
+	Sources []Source `toml:"sources"` // the store's corpus; none = nothing indexed
 	Search  Search   `toml:"search"`
 	Output  Output   `toml:"output"`
 	Log     Log      `toml:"log"`
@@ -44,7 +48,14 @@ type Embed struct {
 	Batch   int    `toml:"batch" json:"batch"`     // texts per Embed call during indexing
 }
 
-// Source is one [[sources]] table. Reserved: in-place sources arrive with PLAN 1.5.
+// Source is one [[sources]] table: where a store's entries come from. Paths and globs are
+// slash-separated and relative to the location root (not the store directory).
+//
+//   - layout "entries": Path names a directory kb owns (kb add copies into it). Its *.md files and
+//     its subdirectories with a README.md are entries, with strict front matter. Glob and Exclude
+//     are not used.
+//   - layout "files": every *.md file Glob matches, minus Exclude, is an entry of its own, front
+//     matter optional. Path is not used. kb never writes or deletes these files.
 type Source struct {
 	Path    string   `toml:"path"`
 	Glob    string   `toml:"glob"`
@@ -86,7 +97,7 @@ type ListWeights struct {
 	Memory float64 `toml:"memory" json:"memory"`
 }
 
-// Output is [output]. Reserved.
+// Output is [output]. Budget is read by kb search; ContextBudget and Expand are reserved.
 type Output struct {
 	Budget        int    `toml:"budget"`         // tokens for kb search; 0 = unlimited
 	ContextBudget int    `toml:"context_budget"` // default for kb context
@@ -385,8 +396,8 @@ func (c Config) Validate(src string) error {
 		return err
 	}
 
-	if len(c.Sources) > 0 {
-		return problem("sources", "not supported yet: kb reads the entries under data/ only")
+	if err := validateSources(c.Sources, problem); err != nil {
+		return err
 	}
 
 	// [search]
@@ -501,6 +512,111 @@ func (c Config) CheckModel(src string, known func(id string) error) error {
 	}
 	if err := known(c.Embed.Model); err != nil {
 		return errs.Wrap(err, errs.Usage, "config.CheckModel", "%s: embed.model: %v", src, err)
+	}
+	return nil
+}
+
+// String names a source in messages: `"data" (entries)` or `"docs/**/*.md" (files)`.
+func (s Source) String() string {
+	if s.Layout == LayoutEntries {
+		return fmt.Sprintf("%q (entries)", s.Path)
+	}
+	return fmt.Sprintf("%q (%s)", s.Glob, s.Layout)
+}
+
+// validateSources checks every [[sources]] table on its own, then the overlaps that need no disk
+// access: two entries sources with the same or nested directories, and two identical globs. Two
+// sources that match the same file through different globs are found by entry.Discover, which
+// sees the files.
+func validateSources(sources []Source, problem func(key, format string, args ...any) error) error {
+	for i, s := range sources {
+		key := fmt.Sprintf("sources[%d]", i+1)
+		switch s.Layout {
+		case LayoutEntries:
+			if s.Path == "" {
+				return problem(key+".path", `the entries layout needs a directory, such as path = "data"`)
+			}
+			if s.Glob != "" {
+				return problem(key+".glob", `the entries layout reads a directory: set path, not glob (or use layout = "files")`)
+			}
+			if len(s.Exclude) > 0 {
+				return problem(key+".exclude", `only the files layout takes exclude`)
+			}
+			if err := checkSourcePath(s.Path); err != nil {
+				return problem(key+".path", "%v", err)
+			}
+		case LayoutFiles:
+			if s.Glob == "" {
+				return problem(key+".glob", `the files layout needs a glob, such as glob = "docs/**/*.md"`)
+			}
+			if s.Path != "" {
+				return problem(key+".path", `the files layout matches a glob: set glob, not path (or use layout = "entries")`)
+			}
+			if err := checkSourceGlob(s.Glob); err != nil {
+				return problem(key+".glob", "%v", err)
+			}
+			for _, ex := range s.Exclude {
+				if err := checkSourceGlob(ex); err != nil {
+					return problem(key+".exclude", "%v", err)
+				}
+			}
+		default:
+			return problem(key+".layout", "must be %q or %q (got %q)", LayoutEntries, LayoutFiles, s.Layout)
+		}
+	}
+	for i, a := range sources {
+		for j := i + 1; j < len(sources); j++ {
+			b := sources[j]
+			key := fmt.Sprintf("sources[%d]", j+1)
+			switch {
+			case a.Layout == LayoutEntries && b.Layout == LayoutEntries && (a.Path == b.Path ||
+				strings.HasPrefix(b.Path, a.Path+"/") || strings.HasPrefix(a.Path, b.Path+"/")):
+				return problem(key+".path", "overlaps sources[%d] (%s and %s); a file may belong to one source of a store", i+1, a, b)
+			case a.Layout == LayoutFiles && b.Layout == LayoutFiles && a.Glob == b.Glob:
+				return problem(key+".glob", "repeats sources[%d] (%s); a file may belong to one source of a store", i+1, a)
+			}
+		}
+	}
+	return nil
+}
+
+// reservedSourceDirs are the top-level directories no source may name or reach into: kb's own
+// .kb (every store's database and config), git's metadata, and node_modules.
+var reservedSourceDirs = []string{".kb", ".git", "node_modules"}
+
+// checkSourcePath checks an entries directory: relative, clean, inside the root and not reserved.
+func checkSourcePath(p string) error {
+	if err := checkSourceText(p); err != nil {
+		return err
+	}
+	if path.IsAbs(p) || filepath.IsAbs(p) {
+		return fmt.Errorf("%q is absolute; source paths are relative to the location root", p)
+	}
+	if path.Clean(p) != p || p == "." || p == ".." || strings.HasPrefix(p, "../") {
+		return fmt.Errorf("%q must be a clean directory path inside the location root, such as \"data\"", p)
+	}
+	for _, r := range reservedSourceDirs {
+		if p == r || strings.HasPrefix(p, r+"/") {
+			return fmt.Errorf("%q is inside %s, which kb never indexes", p, r)
+		}
+	}
+	return nil
+}
+
+// checkSourceGlob checks a files glob or an exclude pattern.
+func checkSourceGlob(g string) error {
+	if err := checkSourceText(g); err != nil {
+		return err
+	}
+	return glob.Valid(g)
+}
+
+// checkSourceText refuses control characters, so every path and glob prints on one line.
+func checkSourceText(s string) error {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%q contains a control character", s)
+		}
 	}
 	return nil
 }

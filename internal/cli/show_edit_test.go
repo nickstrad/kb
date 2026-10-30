@@ -102,7 +102,7 @@ func indexEntry(t *testing.T, ctx context.Context, root, arg string) {
 	}
 	defer st.Close()
 
-	e, err := entry.Resolve(root, arg)
+	e, err := entry.Resolve(root, testSources, arg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestShowPrintsFileVerbatim(t *testing.T) {
 	root := setupRepo(t)
 	var out, errBuf bytes.Buffer
 
-	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), config.Default(), "foo.md", false, true, false); err != nil {
+	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md", false, true, false); err != nil {
 		t.Fatalf("runShow: %v", err)
 	}
 	if out.String() != fooMD {
@@ -132,7 +132,7 @@ func TestShowMultiFileEntryHasHeaders(t *testing.T) {
 	root := setupRepo(t)
 	var out, errBuf bytes.Buffer
 
-	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), config.Default(), "bar", false, true, false); err != nil {
+	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), testConfig(), "bar", false, true, false); err != nil {
 		t.Fatalf("runShow: %v", err)
 	}
 	got := out.String()
@@ -151,7 +151,7 @@ func TestShowSingleFileEntryHasNoHeader(t *testing.T) {
 	root := setupRepo(t)
 	var out, errBuf bytes.Buffer
 
-	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), config.Default(), "foo.md", false, true, false); err != nil {
+	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md", false, true, false); err != nil {
 		t.Fatalf("runShow: %v", err)
 	}
 	if strings.Contains(out.String(), "==>") {
@@ -163,7 +163,7 @@ func TestShowChunksUnindexedFallsBackToSplit(t *testing.T) {
 	root := setupRepo(t)
 	var out, errBuf bytes.Buffer
 
-	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), config.Default(), "foo.md", true, true, false); err != nil {
+	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md", true, true, false); err != nil {
 		t.Fatalf("runShow --chunks: %v", err)
 	}
 	if !strings.Contains(errBuf.String(), "not indexed") {
@@ -183,7 +183,7 @@ func TestShowChunksIndexedReadsFromDB(t *testing.T) {
 	indexEntry(t, ctx, root, "foo.md")
 
 	var out, errBuf bytes.Buffer
-	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), config.Default(), "foo.md", true, true, false); err != nil {
+	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md", true, true, false); err != nil {
 		t.Fatalf("runShow --chunks: %v", err)
 	}
 	if strings.Contains(errBuf.String(), "not indexed") {
@@ -198,7 +198,7 @@ func TestShowUnknownEntryExitsUsage(t *testing.T) {
 	root := setupRepo(t)
 	var out, errBuf bytes.Buffer
 
-	err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), config.Default(), "nope.md", false, true, false)
+	err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), testConfig(), "nope.md", false, true, false)
 	if err == nil {
 		t.Fatal("expected an error for an unknown entry")
 	}
@@ -211,7 +211,7 @@ func TestListFiltersByTag(t *testing.T) {
 	root := setupRepo(t)
 	var out bytes.Buffer
 
-	if err := runList(&out, root, "bash"); err != nil {
+	if err := runList(&out, io.Discard, root, testSources, "bash"); err != nil {
 		t.Fatalf("runList: %v", err)
 	}
 	got := out.String()
@@ -233,7 +233,7 @@ func TestListShowsBrokenEntryAsError(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runList(&out, root, ""); err != nil {
+	if err := runList(&out, io.Discard, root, testSources, ""); err != nil {
 		t.Fatalf("runList: %v", err)
 	}
 	got := out.String()
@@ -248,7 +248,7 @@ func TestRmFileRemovesFileAndDBRow(t *testing.T) {
 	indexEntry(t, ctx, root, "foo.md")
 
 	var out, errBuf bytes.Buffer
-	if err := runRm(ctx, testDeps, &out, &errBuf, testWS(root), "foo.md", false); err != nil {
+	if err := runRm(ctx, testDeps, &out, &errBuf, testWS(root), testSources, "foo.md", false); err != nil {
 		t.Fatalf("runRm: %v", err)
 	}
 	if !strings.Contains(out.String(), "removed data/foo.md") {
@@ -278,7 +278,7 @@ func TestRmDirRequiresYes(t *testing.T) {
 	indexEntry(t, ctx, root, "bar")
 
 	var out, errBuf bytes.Buffer
-	err := runRm(ctx, testDeps, &out, &errBuf, testWS(root), "bar", false)
+	err := runRm(ctx, testDeps, &out, &errBuf, testWS(root), testSources, "bar", false)
 	if err == nil {
 		t.Fatal("expected rm of a directory entry without --yes to be refused")
 	}
@@ -289,7 +289,7 @@ func TestRmDirRequiresYes(t *testing.T) {
 		t.Errorf("bar/ should still exist after a refused rm: %v", statErr)
 	}
 
-	if err := runRm(ctx, testDeps, &out, &errBuf, testWS(root), "bar", true); err != nil {
+	if err := runRm(ctx, testDeps, &out, &errBuf, testWS(root), testSources, "bar", true); err != nil {
 		t.Fatalf("runRm --yes: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(root, "data", "bar")); !os.IsNotExist(statErr) {
@@ -323,7 +323,7 @@ func TestEditReindexesOnChange(t *testing.T) {
 	t.Setenv("EDITOR", `sh -c 'printf "\n## Added\n\nnew text\n" >> "$1"' --`)
 
 	var out, errBuf bytes.Buffer
-	if err := runEdit(ctx, nil, testDeps, &out, &errBuf, testWS(root), config.Default(), "foo.md"); err != nil {
+	if err := runEdit(ctx, nil, testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md"); err != nil {
 		t.Fatalf("runEdit: %v (stderr=%s)", err, errBuf.String())
 	}
 	if strings.Contains(out.String(), "unchanged") {
@@ -373,7 +373,7 @@ func TestEditEditorFailureAbortsWithoutTouchingDB(t *testing.T) {
 	t.Setenv("EDITOR", "false")
 
 	var out, errBuf bytes.Buffer
-	err = runEdit(ctx, nil, testDeps, &out, &errBuf, testWS(root), config.Default(), "foo.md")
+	err = runEdit(ctx, nil, testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md")
 	if err == nil {
 		t.Fatal("expected an error when $EDITOR exits non-zero")
 	}
@@ -412,7 +412,7 @@ func TestEditNoopIsUnchanged(t *testing.T) {
 	t.Setenv("EDITOR", "true")
 
 	var out, errBuf bytes.Buffer
-	if err := runEdit(ctx, nil, testDeps, &out, &errBuf, testWS(root), config.Default(), "foo.md"); err != nil {
+	if err := runEdit(ctx, nil, testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md"); err != nil {
 		t.Fatalf("runEdit: %v (stderr=%s)", err, errBuf.String())
 	}
 	if strings.TrimSpace(out.String()) != "unchanged" {

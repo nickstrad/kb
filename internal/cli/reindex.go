@@ -86,6 +86,7 @@ func reindexRun(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, all bool,
 	}
 	opts := reindex.Options{
 		Root:      root,
+		Sources:   cfg.Sources,
 		Store:     st,
 		Embedder:  embedder,
 		BatchSize: cfg.Embed.Batch,
@@ -93,14 +94,19 @@ func reindexRun(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, all bool,
 		Stderr:    stderr,
 		Force:     force,
 	}
+	var sum reindex.Summary
 	if all {
-		return reindex.All(ctx, opts)
+		sum, err = reindex.All(ctx, opts)
+	} else {
+		e, rerr := entry.Resolve(root, cfg.Sources, args[0])
+		if rerr != nil {
+			return reindex.Summary{}, rerr
+		}
+		sum, err = reindex.One(ctx, opts, e)
 	}
-	e, err := entry.Resolve(root, args[0])
-	if err != nil {
-		return reindex.Summary{}, usageErr("%v", err)
-	}
-	return reindex.One(ctx, opts, e)
+	// "embed calls" counts calls that reached the model, not those the shared cache answered.
+	sum.EmbedCalls = modelCalls(embedder, sum.EmbedCalls)
+	return sum, err
 }
 
 // interruptedErr is the message for a reindex cut short by SIGINT or SIGTERM: a known edge case,

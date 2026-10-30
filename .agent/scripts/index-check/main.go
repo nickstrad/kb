@@ -1,5 +1,6 @@
-// Command index-check reports entries missing from, or extra in, the .agent/scripts/index.md
-// .agent/knowledge/index.md and .agent/leverage/index.md indexes compared with the files and folders next to them.
+// Command index-check reports entries missing from, or extra in, the .agent/scripts/index.md,
+// .agent/knowledge/index.md, .agent/leverage/index.md and .agent/testability/index.md indexes compared with
+// the files and folders next to them.
 //
 // Usage (from the repo root): go run ./.agent/scripts/index-check [-root .agent]
 // Exit status: 0 in sync, 1 out of sync, 2 could not read.
@@ -8,6 +9,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,7 +18,7 @@ import (
 )
 
 // indexed lists the folders whose index.md must name every entry beside it.
-var indexed = []string{"scripts", "knowledge", "leverage"}
+var indexed = []string{"scripts", "knowledge", "leverage", "testability"}
 
 // skip holds names in an indexed folder that are not entries.
 var skip = map[string]bool{"index.md": true, "README.md": true}
@@ -27,26 +29,33 @@ var linkRE = regexp.MustCompile(`\]\(([^)#\s]+)[^)]*\)`)
 func main() {
 	root := flag.String("root", ".agent", "the .agent directory")
 	flag.Parse()
+	os.Exit(run(*root, os.Stdout, os.Stderr))
+}
+
+// run checks every indexed folder under root, prints one line per problem and returns the exit
+// status: 0 in sync, 1 out of sync, 2 could not read.
+func run(root string, stdout, stderr io.Writer) int {
 	bad := false
 	for _, name := range indexed {
-		dir := filepath.Join(*root, name)
+		dir := filepath.Join(root, name)
 		missing, extra, err := check(dir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "index-check: %v\n", err)
-			os.Exit(2)
+			fmt.Fprintf(stderr, "index-check: %v\n", err)
+			return 2
 		}
 		for _, m := range missing {
-			fmt.Printf("%s/index.md: missing entry for %s\n", dir, m)
+			fmt.Fprintf(stdout, "%s/index.md: missing entry for %s\n", dir, m)
 		}
 		for _, x := range extra {
-			fmt.Printf("%s/index.md: lists %s, which does not exist\n", dir, x)
+			fmt.Fprintf(stdout, "%s/index.md: lists %s, which does not exist\n", dir, x)
 		}
 		bad = bad || len(missing) > 0 || len(extra) > 0
 	}
 	if bad {
-		os.Exit(1)
+		return 1
 	}
-	fmt.Println("index-check: indexes in sync")
+	fmt.Fprintln(stdout, "index-check: indexes in sync")
+	return 0
 }
 
 // check compares dir's entries with the local links in dir/index.md.

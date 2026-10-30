@@ -72,7 +72,7 @@ func TestWorkspaceDiscoveryCLI(t *testing.T) {
 		home := testDeps.workspaceEnv().Home
 		globalRoot := filepath.Join(home, ".local", "share", "kb")
 		makeLocation(t, globalRoot, "default")
-		writeFile(t, filepath.Join(globalRoot, ".kb", "stores", "default", "config.toml"), "[embed]\nmodel = \"none\"\n")
+		writeFile(t, filepath.Join(globalRoot, ".kb", "stores", "default", "config.toml"), "[embed]\nmodel = \"none\"\n"+dataSourceTOML)
 		_, errOut, code := run(t, "--global", "--debug", "add", src)
 		if code != 0 || !strings.Contains(errOut, "location "+globalRoot+" store default (--global)") {
 			t.Fatalf("exit %d stderr %q", code, errOut)

@@ -292,6 +292,11 @@ func FuzzFuse(f *testing.F) {
 | search | `Fuse`: with one list empty, the order equals that list's order (truncated); dominance (above); a list of weight 0 adds no score; doubling both weights doubles every score and keeps the order; a larger `rrf_k` never raises a score | metamorphic | `FuzzFuse` exists (internal/search/fuzz_test.go); "moving a chunk up never moves it down" is still new |
 | search | `applyCap(c, m, k, cap)` is a prefix of `applyCap(c, m, k+1, cap)`; if fewer than k come back, every skipped mapped candidate's entry is already at `cap` (and is marked `CapDropped`) | metamorphic, maximality | `FuzzApplyCap` exists (internal/search/fuzz_test.go) |
 | store | Model test: ops decoded from bytes (replace entry with n chunks, delete entry) applied to the store and to a `map[path][]hash`. After each op, the entries and chunk hashes read back match the map, and the three row sets agree (L1). | oracle (stateful) | new; lives in `storetest` so every backend runs it |
+| glob | `Match`: never panics; a pattern with no `**` agrees with a segment-wise `path.Match` oracle; every path a valid pattern matches lies under `Base`; a literal pattern matches itself; `CouldMatchUnder` never prunes a directory holding a match | oracle, spec | `FuzzMatch` exists |
+| entry | `fallbackMeta`: whatever the body and file name, the title is non-empty and title and summary pass `checkText`, so an in-place file never fails validation for missing fields | spec | `FuzzFallbackMeta` exists |
+| chunk | `Split` on an in-place entry with no summary: chunk 0 is the title alone; every later chunk starts with the `title › ` context line; never rejected for the missing summary | spec | `FuzzSplitInPlace` exists |
+| render | `Render`: tokens never exceed a positive budget; a larger budget never lowers total detail | metamorphic | `FuzzRender` exists |
+| workspace | `ParseRef`: an accepted ref is exactly one form, renders back to its text and re-parses equal; `NAME@ABSROOT` of a valid name and clean root parses back to that pair | round trip | `FuzzParseRef` exists |
 | v2 config | `Load(Save(c)) == c`; `Save(Load(x))` is idempotent | round trip | new |
 | v2 root | From any subdirectory under a `.kb/`, discovery returns the same root; from outside, a NotFound error | metamorphic | new |
 | v2 cross-store | The set of returned ids and each id's score do not depend on the order of the stores; order does not either, if the tie-break ends with (store name, chunk id) | metamorphic | new; a design requirement |
@@ -415,9 +420,14 @@ cover:
 	go tool github.com/vladopajic/go-test-coverage/v2 --config=.testcoverage.yml
 
 fuzz:   # time-boxed; FUZZTIME=2m in CI
-	go test -tags $(TAGS) ./internal/search -run '^$$' -fuzz '^FuzzSanitizeFTS$$'     -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/store/sqlite -run '^$$' -fuzz '^FuzzSanitizeFTS$$'     -fuzztime $(FUZZTIME)
 	go test -tags $(TAGS) ./internal/entry  -run '^$$' -fuzz '^FuzzParseFrontMatter$$' -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/entry  -run '^$$' -fuzz '^FuzzFallbackMeta$$'     -fuzztime $(FUZZTIME)
 	go test -tags $(TAGS) ./internal/chunk  -run '^$$' -fuzz '^FuzzSplit$$'            -fuzztime $(FUZZTIME) -fuzzminimizetime 2s
+	go test -tags $(TAGS) ./internal/chunk  -run '^$$' -fuzz '^FuzzSplitInPlace$$'     -fuzztime $(FUZZTIME) -fuzzminimizetime 2s
+	go test -tags $(TAGS) ./internal/glob   -run '^$$' -fuzz '^FuzzMatch$$'            -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/render -run '^$$' -fuzz '^FuzzRender$$'           -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/workspace -run '^$$' -fuzz '^FuzzParseRef$$'      -fuzztime $(FUZZTIME)
 
 golden-update: ; go test -tags $(TAGS) ./internal/chunk -run '^TestSplitGolden$$' -update
 test-model:    ; go test -tags $(TAGS),model ./internal/embed/local/...

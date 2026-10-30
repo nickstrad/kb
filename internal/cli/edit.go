@@ -41,14 +41,14 @@ func newEditCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 // touched unless the reindex itself runs.
 func runEdit(ctx context.Context, cmd *cobra.Command, d *deps, stdout, stderr io.Writer, ws *workspace.Workspace, cfg config.Config, arg string) error {
 	root := ws.Root
-	e, err := entry.Resolve(root, arg)
+	e, err := entry.Resolve(root, cfg.Sources, arg)
 	if err != nil {
-		return usageErr("%s", err)
+		return err
 	}
 
 	before, err := entry.Load(root, e)
 	if err != nil {
-		return usageErr("%s", err)
+		return err
 	}
 	beforeHash := entry.BodyHash(before, e.Files)
 
@@ -58,6 +58,16 @@ func runEdit(ctx context.Context, cmd *cobra.Command, d *deps, stdout, stderr io
 	if err != nil {
 		return err
 	}
+	// Likewise open an existing index now: one at an older schema (kb migrate up) or a broken
+	// one is refused before the file changes. A store never indexed gets its database later, and
+	// only if the entry changed.
+	st, haveDB, err := d.openStoreIfExists(ctx, ws)
+	if err != nil {
+		return err
+	}
+	if haveDB {
+		defer st.Close()
+	}
 
 	if err := d.editor(ctx, cfg.Edit.Editor, filepath.Join(root, filepath.FromSlash(e.Path))); err != nil {
 		return usageErr("%s", err)
@@ -65,9 +75,9 @@ func runEdit(ctx context.Context, cmd *cobra.Command, d *deps, stdout, stderr io
 
 	// Re-resolve rather than reuse e: the editor may have changed the front matter, and Discover
 	// is what (re)computes Meta and Err from the file as it now stands.
-	e2, err := entry.Resolve(root, arg)
+	e2, err := entry.Resolve(root, cfg.Sources, arg)
 	if err != nil {
-		return usageErr("%s", err)
+		return err
 	}
 	if e2.Err != nil {
 		return usageErr("%s", e2.Err)
@@ -75,7 +85,7 @@ func runEdit(ctx context.Context, cmd *cobra.Command, d *deps, stdout, stderr io
 
 	after, err := entry.Load(root, e2)
 	if err != nil {
-		return usageErr("%s", err)
+		return err
 	}
 	afterHash := entry.BodyHash(after, e2.Files)
 
@@ -84,11 +94,12 @@ func runEdit(ctx context.Context, cmd *cobra.Command, d *deps, stdout, stderr io
 		return nil
 	}
 
-	st, err := d.openStoreForWrite(ctx, ws)
-	if err != nil {
-		return err
+	if !haveDB {
+		if st, err = d.openStoreForWrite(ctx, ws); err != nil {
+			return err
+		}
+		defer st.Close()
 	}
-	defer st.Close()
 
 	// all=false: a single `kb edit` cannot recover from an embed_meta mismatch; the usage error
 	// tells the user to run `kb reindex --all`.

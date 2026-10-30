@@ -53,6 +53,11 @@ type Options struct {
 	noMigrate bool   // Artefact: open without checking or migrating the schema version
 }
 
+// Schema versions on open (PLAN 1.8b, D10): a read-write open creates a missing or empty
+// (version 0) database at this build's version, since that is creation, not migration. It never
+// upgrades an older one: the index holds the search log, so only `kb migrate up` (Artefact.Apply,
+// which backs it up first) does. Every open refuses a newer one.
+
 // Store is one open knowledge database.
 type Store struct {
 	db       *sql.DB
@@ -63,7 +68,8 @@ type Store struct {
 var _ store.Store = (*Store)(nil)
 
 // Open opens the database at path. Read-write (the default) creates the file and its directory
-// if needed, switches the file to WAL and applies outstanding migrations; Options.ReadOnly does
+// if needed, switches the file to WAL and brings a new (version 0) database to this build's
+// schema; an older database is a Conflict that says "run kb migrate up". Options.ReadOnly does
 // none of that.
 func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	s, err := open(ctx, path, opts)
@@ -113,11 +119,22 @@ func open(ctx context.Context, path string, opts Options) (*Store, error) {
 	return s, nil
 }
 
-// init checks the driver and brings the schema up to date (read-write) or checks it (read-only).
+// init checks the driver and creates a new schema (read-write) or checks the version (read-only).
 // noMigrate skips the version check and the migration: the Artefact adapter does those itself.
 func (s *Store) init(ctx context.Context, noMigrate bool) error {
 	if err := s.db.PingContext(ctx); err != nil {
 		return err
+	}
+	if !s.readOnly && !noMigrate {
+		// Refuse an older or newer file before anything is written: switching it to WAL below
+		// would already change a database kb is about to leave alone.
+		var version int
+		if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+			return fmt.Errorf("read user_version: %w", err)
+		}
+		if err := s.checkVersion(version, false); err != nil {
+			return err
+		}
 	}
 	if !s.readOnly {
 		if err := s.enableWAL(ctx); err != nil {
@@ -138,9 +155,9 @@ func (s *Store) init(ctx context.Context, noMigrate bool) error {
 		if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 			return fmt.Errorf("read user_version: %w", err)
 		}
-		return s.checkVersion(version, true)
+		return s.checkVersion(version, false)
 	}
-	_, err := s.migrate(ctx)
+	_, err := s.migrate(ctx, false)
 	return err
 }
 
@@ -244,12 +261,14 @@ func (s *Store) DriverInfo(ctx context.Context) (DriverInfo, error) {
 	return info, nil
 }
 
-// migrate brings the database up to schemaVersion and returns the steps it applied. The
+// migrate brings the database up to schemaVersion and returns the steps it applied. A database
+// that already has a schema (version > 0) is upgraded only when upgrade is set (Artefact.Apply);
+// otherwise an older one is a Conflict. The
 // read-decide-apply sequence runs inside one BEGIN IMMEDIATE on a pinned connection, so a second
 // opener of a fresh database blocks on the lock (busy_timeout) and then sees the winner's work
 // instead of failing halfway. Every pending step and its version stamp share that transaction:
 // a failure or a cancel rolls back to the starting version.
-func (s *Store) migrate(ctx context.Context) ([]migrate.Info, error) {
+func (s *Store) migrate(ctx context.Context, upgrade bool) ([]migrate.Info, error) {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open migration connection: %w", err)
@@ -260,7 +279,7 @@ func (s *Store) migrate(ctx context.Context) ([]migrate.Info, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.checkVersion(version, false); err != nil {
+	if err := s.checkVersion(version, upgrade); err != nil {
 		return nil, err
 	}
 	if version == schemaVersion {
@@ -283,7 +302,7 @@ func (s *Store) migrate(ctx context.Context) ([]migrate.Info, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.checkVersion(version, false); err != nil {
+	if err := s.checkVersion(version, upgrade); err != nil {
 		return nil, err
 	}
 	applied, err := migrations.Up(ctx, execer(conn), version, stampVersion)
@@ -309,9 +328,15 @@ func stampVersion(ctx context.Context, db execer, v int) error {
 	return err
 }
 
-// checkVersion is the one schema-version check. A newer database is refused; an older one is
-// refused only read-only, since a read-write open migrates it. A negative version is damage.
-func (s *Store) checkVersion(version int, readOnly bool) error {
+// ErrSchemaOlder is wrapped by the Conflict an open returns for an index at an older schema
+// version, so a caller can add its own "how to migrate" hint (errors.Is) without matching text.
+var ErrSchemaOlder = errors.New("index schema is older than this kb")
+
+// checkVersion is the one schema-version check. A newer database is refused. An older one with a
+// schema (version > 0) is refused unless upgrade is set, which only Artefact.Apply does: every
+// other open says to run kb migrate up. Version 0 is a new database and passes. A negative
+// version is damage.
+func (s *Store) checkVersion(version int, upgrade bool) error {
 	switch {
 	case version < 0:
 		return errs.New(errs.Conflict, "sqlite.Open",
@@ -321,9 +346,9 @@ func (s *Store) checkVersion(version int, readOnly bool) error {
 		return errs.New(errs.Conflict, "sqlite.Open",
 			"database %s is at schema version %d, this kb only understands %d; use a newer kb", s.path, version, schemaVersion).
 			With("db", s.path)
-	case readOnly && version < schemaVersion:
-		return errs.New(errs.Conflict, "sqlite.Open",
-			"database %s is at schema version %d, older than this kb's %d; run kb doctor once to upgrade it", s.path, version, schemaVersion).
+	case !upgrade && version > 0 && version < schemaVersion:
+		return errs.Wrap(ErrSchemaOlder, errs.Conflict, "sqlite.Open",
+			"store database %s is at schema v%d; this kb needs v%d. Run: kb migrate up (with the same --store, if any)", s.path, version, schemaVersion).
 			With("db", s.path)
 	}
 	return nil

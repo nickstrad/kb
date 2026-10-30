@@ -33,9 +33,11 @@ type fake struct {
 	path      string
 	statusErr error
 	backupErr error
-	applyErr  error
-	applyHook func(ctx context.Context) error // runs at the start of Apply; an error aborts it
-	applies   atomic.Int32
+	// backupPartial makes Backup write a few bytes to dst and then fail, as an interrupted copy does.
+	backupPartial bool
+	applyErr      error
+	applyHook     func(ctx context.Context) error // runs at the start of Apply; an error aborts it
+	applies       atomic.Int32
 }
 
 func newFake(t *testing.T, version int) *fake {
@@ -83,6 +85,12 @@ func (f *fake) Status(context.Context) (Status, error) {
 }
 
 func (f *fake) Backup(_ context.Context, dst string) error {
+	if f.backupPartial {
+		if err := os.WriteFile(dst, []byte("half"), 0o644); err != nil {
+			return err
+		}
+		return errors.New("copy interrupted")
+	}
 	if f.backupErr != nil {
 		return f.backupErr
 	}
@@ -487,8 +495,10 @@ func TestLockFailures(t *testing.T) {
 	if err := os.WriteFile(file, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lock(ctx, filepath.Join(file, "sub", LockName), 0, nil); errs.KindOf(err) != errs.Usage {
-		t.Errorf("lock under a file: %v", err)
+	// The directory that cannot be created is named, so the user knows what to fix (Q56).
+	if _, err := lock(ctx, filepath.Join(file, "sub", LockName), 0, nil); errs.KindOf(err) != errs.Usage ||
+		!strings.Contains(err.Error(), "directory") || !strings.Contains(err.Error(), filepath.Join(file, "sub")) {
+		t.Errorf("lock under a file: %v, want a Usage error naming %s", err, filepath.Join(file, "sub", LockName))
 	}
 	if err := os.Mkdir(filepath.Join(dir, LockName), 0o755); err != nil {
 		t.Fatal(err)
@@ -559,4 +569,42 @@ func TestPruneSuffixes(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestBackupIsAtomic: a backup that fails half-way leaves no file under the backup name or the
+// partial name (it would be pruned as a good one, or trusted by the user), a leftover partial from
+// a killed run is replaced, and a good backup appears only under its final name.
+func TestBackupIsAtomic(t *testing.T) {
+	t.Run("failed copy leaves nothing", func(t *testing.T) {
+		f := newFake(t, 1)
+		f.backupPartial = true
+		_, err := Run(context.Background(), []Artefact{f}, Options{Now: fixedNow})
+		if err == nil {
+			t.Fatal("Run succeeded although the backup failed")
+		}
+		if left, _ := filepath.Glob(f.path + ".bak-v*"); len(left) != 0 {
+			t.Errorf("files left behind: %v", left)
+		}
+		if v, _ := f.version(); v != 1 || f.applies.Load() != 0 {
+			t.Errorf("version %d, applies %d: nothing may be applied after a failed backup", v, f.applies.Load())
+		}
+	})
+	t.Run("stale partial is replaced", func(t *testing.T) {
+		f := newFake(t, 1)
+		stale := backupPath(f.path, 1, fixedNow()) + partialSuffix
+		if err := os.WriteFile(stale, []byte("from a killed run"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rep, err := Run(context.Background(), []Artefact{f}, Options{Now: fixedNow})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(rep.Artefacts[0].Backup)
+		if err != nil || string(got) != "1" {
+			t.Errorf("backup = %q, %v; want the artefact's content", got, err)
+		}
+		if _, err := os.Stat(stale); err == nil {
+			t.Error("the partial file is still there")
+		}
+	})
 }

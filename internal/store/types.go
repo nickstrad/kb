@@ -180,8 +180,14 @@ type SearchRecord struct {
 	Caller     string
 	KBVersion  string
 	CorpusRev  string
-	Results    []LoggedHit // what the caller was shown; rank = index + 1
-	Candidates []LoggedHit // the fused list; fused_rank = index + 1
+	// Settings is the canonical JSON of the [embed] and [search] settings the search ran with,
+	// SettingsHash its hash and FTSMatch the FTS MATCH expression that produced the FTS list.
+	// "" is stored as NULL: not recorded.
+	Settings     string
+	SettingsHash string
+	FTSMatch     string
+	Results      []LoggedHit // what the caller was shown; rank = index + 1
+	Candidates   []LoggedHit // the fused list; fused_rank = index + 1
 }
 
 // LoggedHit is one result or candidate row. A nil rank or score means the chunk was not in

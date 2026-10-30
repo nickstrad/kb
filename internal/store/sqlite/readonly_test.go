@@ -38,8 +38,8 @@ func fileHash(t *testing.T, path string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// TestOpenSchemaVersion: rows at, above and below SchemaVersion. A read-write open migrates an
-// older database and refuses a newer one; a read-only open (kb stats) cannot migrate, so it refuses
+// TestOpenSchemaVersion: rows at, above and below SchemaVersion. A read-write open refuses an
+// older database (kb migrate up upgrades it) and a newer one; a read-only open (kb stats) cannot migrate, so it refuses
 // both, with a Conflict that names the file and leaves it unchanged.
 func TestOpenSchemaVersion(t *testing.T) {
 	cur := SchemaVersion()
@@ -51,7 +51,8 @@ func TestOpenSchemaVersion(t *testing.T) {
 	}{
 		{"read-only at SchemaVersion", cur, true, ""},
 		{"read-only SchemaVersion+1 (newer kb)", cur + 1, true, "only understands"},
-		{"read-only SchemaVersion-1 (not migrated)", cur - 1, true, "kb doctor"},
+		{"read-only SchemaVersion-1 (not migrated)", cur - 1, true, "kb migrate up"},
+		{"read-write SchemaVersion-1 (not migrated)", cur - 1, false, "kb migrate up"},
 		{"read-write SchemaVersion+1 (newer kb)", cur + 1, false, "only understands"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -192,6 +193,40 @@ func TestNormalizeValue(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := normalizeValue(tc.in); got != tc.want {
 				t.Fatalf("normalizeValue(%v) = %#v, want %#v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRefusedOpenLeavesFileAlone: an older database (kb migrate up has not run) and a newer one
+// are refused before anything is written, including the switch to WAL that a read-write open
+// otherwise makes. The files here are in the default rollback-journal mode, as an older kb left them.
+func TestRefusedOpenLeavesFileAlone(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name    string
+		version int
+	}{{"older", 2}, {"newer", SchemaVersion() + 1}} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := loadFixture(t, 2)
+			if tc.name == "newer" {
+				setUserVersion(t, path, tc.version)
+			}
+			before := fileHash(t, path)
+			if _, err := Open(ctx, path, Options{}); errs.KindOf(err) != errs.Conflict {
+				t.Fatalf("Open = %v, want Conflict", err)
+			}
+			if fileHash(t, path) != before {
+				t.Error("a refused open changed the file")
+			}
+			var mode string
+			if err := rawDB(t, path).QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil || mode != "delete" {
+				t.Errorf("journal_mode = %q, %v; want delete (not switched to WAL)", mode, err)
+			}
+			for _, side := range []string{"-wal", "-shm"} {
+				if _, err := os.Stat(path + side); err == nil {
+					t.Errorf("a refused open left %s", path+side)
+				}
 			}
 		})
 	}

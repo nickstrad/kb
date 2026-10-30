@@ -85,7 +85,7 @@ func (a *Artefact) Apply(ctx context.Context) ([]migrate.Info, error) {
 	var applied []migrate.Info
 	err := a.with(ctx, false, "sqlite.Artefact.Apply", func(s *Store) error {
 		var err error
-		applied, err = s.migrate(ctx)
+		applied, err = s.migrate(ctx, true)
 		return err
 	})
 	return applied, err

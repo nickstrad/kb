@@ -32,6 +32,10 @@ const deadProxy = "http://127.0.0.1:9"
 // defaultModelDir is the cache directory name of local.DefaultModel (rembed's <org>--<name>).
 const defaultModelDir = "BAAI--bge-small-en-v1.5"
 
+// loadTool and fixtureDir are set when the harness builds kb itself: the SQLite helper and the
+// checked-in index fixtures the migrate-* scenarios use ("" with -bin: those scenarios skip).
+var loadTool, fixtureDir string
+
 type scenario struct {
 	Name string
 	Desc string
@@ -115,6 +119,15 @@ func run() int {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fail(fmt.Errorf("build kb: %v\n%s", err, out))
 		}
+		// The SQLite helper the migrate-* scenarios use to make old and big databases.
+		loadTool = filepath.Join(work, "loadfixture")
+		fixtureDir = filepath.Join(box, "internal", "store", "sqlite", "testdata", "migrations")
+		cmd = exec.CommandContext(ctx, "go", "build", "-tags", "fts5", "-o", loadTool, "./.agent/scripts/adversarial/harness/loadfixture")
+		cmd.Dir = box
+		cmd.Env = append(os.Environ(), "GOPROXY=off", "GOWORK=off")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fail(fmt.Errorf("build loadfixture: %v\n%s", err, out))
+		}
 	} else if bin, err = filepath.Abs(bin); err != nil {
 		return fail(err)
 	}
@@ -170,7 +183,7 @@ func indent(s string) string { return strings.ReplaceAll(s, "\n", "\n       ") }
 
 // defaultModelScenarios start with no config (the default model, which is not installed) and
 // set their own.
-var defaultModelScenarios = map[string]bool{"exit-codes": true, "no-model-search": true, "no-model-index": true}
+var defaultModelScenarios = map[string]bool{"exit-codes": true, "no-model-search": true, "no-model-index": true, "cache-two-stores": true}
 
 func runScenario(ctx context.Context, s scenario, bin, dir string) (o outcome) {
 	h := &H{ctx: ctx, bin: bin, dir: dir,
@@ -401,12 +414,13 @@ func (h *H) initStores(defaultModel bool) {
 	}
 }
 
-// makeLocation writes a location with one empty-config store called "default" at root, the files
-// kb init writes but no database: the state of a cloned repo whose config is committed. It returns root.
+// makeLocation writes a location with one store called "default" whose config holds only the
+// data/ source, the files kb init writes but no database: the state of a cloned repo whose config
+// is committed. It returns root.
 func (h *H) makeLocation(root string) string {
 	h.must(os.MkdirAll(filepath.Join(root, ".kb", "stores", "default"), 0o755) == nil, "mkdir location %s", root)
 	h.write(filepath.Join(root, ".kb", "kb.toml"), "version = 1\ndefault_store = \"default\"\n")
-	h.write(filepath.Join(root, ".kb", "stores", "default", "config.toml"), "")
+	h.write(filepath.Join(root, ".kb", "stores", "default", "config.toml"), dataSource)
 	return root
 }
 

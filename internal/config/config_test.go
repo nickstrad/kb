@@ -217,7 +217,6 @@ func TestParseErrors(t *testing.T) {
 		{"version negative", "version = -1\n", []string{"version", "unsupported config version -1"}},
 		{"version string", "version = \"1\"\n", []string{"config.toml:1", "version"}},
 		{"duration not parsing", "[log]\nopen_window = \"soon\"\n", []string{"log.open_window", "not a duration"}},
-		{"sources reserved", "[[sources]]\npath = \"data\"\nlayout = \"entries\"\n", []string{"sources", "not supported yet"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -437,6 +436,12 @@ func randomConfig(r *rand.Rand) Config {
 	c.Eval = Eval{MinJudged: r.Intn(100), Holdout: float64(r.Intn(8)) / 8}
 	c.Prior = Prior{Enabled: r.Intn(2) == 0, MinJudged: r.Intn(100), HalfLifeDays: 1 + r.Intn(200),
 		MaxBoost: float64(r.Intn(9)) / 8, QueryMemory: r.Intn(2) == 0}
+	c.Sources = [][]Source{
+		{},
+		{{Path: "data", Layout: LayoutEntries, Exclude: []string{}}},
+		{{Path: "data-adr", Layout: LayoutEntries, Exclude: []string{}},
+			{Glob: "docs/**/*.md", Layout: LayoutFiles, Exclude: []string{"docs/archive/**", "é ü.md"}}},
+	}[r.Intn(3)]
 	c.Agent.Caller = []string{"", "claude", "a b"}[r.Intn(3)]
 	c.Edit.Editor = []string{"", "code --wait", `vi "x"`}[r.Intn(3)]
 	return c

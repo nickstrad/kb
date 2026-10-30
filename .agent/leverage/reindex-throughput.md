@@ -3,9 +3,10 @@
 
 - **Category:** resource/performance
 - **Status:** watch
-- **Where:** `internal/reindex` (batching, reuse by `text_hash` via `store.Index.Embeddings`), `internal/chunk` (chunk count and size), `internal/embed/cached.go` (machine-wide cache; wiring is 3.3b).
+- **Where:** `internal/reindex` (batching, reuse by `text_hash` via `store.Index.Embeddings`), `internal/chunk` (chunk count and size), `internal/embed/cached.go` (machine-wide cache, wired in `cli/setup.go` `withEmbedCache` since 3.3b).
 - **Why it matters:** migrations v3 and v7 force a reindex. Large in-place sources (1.5) multiply chunk counts. A slow reindex blocks agents and holds write locks.
 - **Evidence:** about 33 s per 1,000 chunks at batch 16 (spike). Only titled docs chunks change on the 4.4 context-line change, so reuse limits the cost. W2 pass: `All` now runs a second Discover (which reads every front door) only when there are prune candidates, so a steady-state run pays nothing extra; a run that removes entries pays one more directory scan.
 - **Coverage today:** `TestBatchSizeBoundary`, reuse tests in reindex; the cache acceptance test makes 0 model calls on the second embed.
 - **Next checks:** a benchmark (`go test -bench`, model tag) for 1k/10k chunks cold, warm and cached; transaction granularity (one per entry vs batched) against concurrent readers; progress output and resumability after an interruption.
-- **Last reviewed:** 2026-10-29 · W2 wave-end pass
+- **W7 (3.3b, 1.5):** the machine-wide cache is wired into every embedding command (`withEmbedCache`), so a second store or a re-created store reuses vectors by text; in-place sources (1.5) can multiply chunk counts by whole repositories. Still unmeasured.
+- **Last reviewed:** 2026-10-30 · W7 wave-end pass

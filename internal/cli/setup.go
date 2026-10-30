@@ -6,13 +6,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sync"
 
 	"github.com/spf13/cobra"
 
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed/cache"
 	"github.com/nickstrad/kb/internal/embed/local"
 	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/store"
 	"github.com/nickstrad/kb/internal/workspace"
 )
@@ -60,6 +64,15 @@ func knownModel(id string) error {
 // only loads what is cached, so a search with no model falls back to FTS with a `kb model pull`
 // hint. cmd may be nil when d.embedder is set.
 func (d *deps) newEmbedder(cmd *cobra.Command, ecfg config.Embed) (embed.Embedder, error) {
+	e, err := d.buildEmbedder(cmd, ecfg)
+	if err != nil {
+		return nil, err
+	}
+	return d.withEmbedCache(cmd, e), nil
+}
+
+// buildEmbedder is newEmbedder without the shared cache.
+func (d *deps) buildEmbedder(cmd *cobra.Command, ecfg config.Embed) (embed.Embedder, error) {
 	if d.embedder != nil {
 		return d.embedder(ecfg)
 	}
@@ -72,7 +85,7 @@ func (d *deps) newEmbedder(cmd *cobra.Command, ecfg config.Embed) (embed.Embedde
 	}
 	cache, err := d.modelCacheDir()
 	if err != nil {
-		return nil, usageErr("%v", err)
+		return nil, err // already a Usage error naming the directory
 	}
 	e := local.New(spec, cache)
 	if downloadsModel(cmd) && !e.Cached() {
@@ -120,18 +133,19 @@ func (d *deps) openStoreIfExists(ctx context.Context, ws *workspace.Workspace) (
 	return st, true, nil
 }
 
-// discoverGoodEntries runs entry.Discover(root) and splits the result: good holds every entry
+// discoverGoodEntries runs entry.Discover(root, sources) and splits the result: good holds every entry
 // whose front matter parsed and validated (Err == nil), and broken counts the rest, each printed
 // as a "warning: ..." line to stderr as it is skipped. entry.Err already names its own path (see
 // the entry package doc), so nothing else is added to the line.
 //
 // The optional `kb index` export uses this to warn about broken entries and leave them
 // out of the generated table.
-func discoverGoodEntries(root string, stderr io.Writer) (good []entry.Entry, broken int, err error) {
-	entries, err := entry.Discover(root)
+func discoverGoodEntries(root string, sources []config.Source, stderr io.Writer) (good []entry.Entry, broken int, err error) {
+	entries, skipped, err := entry.Discover(root, sources)
 	if err != nil {
 		return nil, 0, err
 	}
+	warnSkipped(stderr, skipped)
 	good = make([]entry.Entry, 0, len(entries))
 	for _, e := range entries {
 		if e.Err != nil {
@@ -142,4 +156,101 @@ func discoverGoodEntries(root string, stderr io.Writer) (good []entry.Entry, bro
 		good = append(good, e)
 	}
 	return good, broken, nil
+}
+
+// embedCacheFile is the shared embedding cache for a user cache base: <base>/kb/embed-cache.sqlite,
+// the same file cache.DefaultPath names. "" base is an error: no user cache directory.
+func embedCacheFile(base string) (string, error) {
+	if base == "" {
+		return "", errs.New(errs.Usage, "cli.embedCachePath", "cannot find the user cache directory for the embedding cache")
+	}
+	return filepath.Join(base, "kb", "embed-cache.sqlite"), nil
+}
+
+// embedCaches tracks the caches a command opened, so execute can warn about a cache that failed
+// mid-run and close them once the command is done.
+type embedCaches struct {
+	mu   sync.Mutex
+	open []openedCache
+}
+
+type openedCache struct {
+	file *cache.Cache
+	emb  *embed.CachedEmbedder
+}
+
+// cacheStatser is what both cached wrappers expose, so callers can read the counters.
+type cacheStatser interface{ Stats() embed.CacheStats }
+
+// cachedPinger is a cached embedder whose inner embedder can Ping: it keeps the Ping that
+// add, reindex, init and doctor look for. A cached embedder over one with no Ping has none.
+type cachedPinger struct {
+	*embed.CachedEmbedder
+	inner pinger
+}
+
+func (c cachedPinger) Ping(ctx context.Context) error { return c.inner.Ping(ctx) }
+
+// withEmbedCache wraps e with the shared embedding cache, so a text embedded once, in any store or
+// project, is never embedded again. It returns e itself, and the command goes on without a cache,
+// when there is nothing to cache (model none), the command is doctor (whose timings must be
+// real), no cache path is configured, or the cache cannot be opened (a warning says why: a
+// damaged or newer file, an unwritable directory). The cache is closed by finishEmbedCaches.
+func (d *deps) withEmbedCache(cmd *cobra.Command, e embed.Embedder) embed.Embedder {
+	if d.embedCachePath == nil || d.caches == nil || embed.IsNone(e) || (cmd != nil && cmd.Name() == "doctor") {
+		return e
+	}
+	stderr, ctx := io.Discard, context.Background()
+	if cmd != nil {
+		stderr = cmd.ErrOrStderr()
+		if c := cmd.Context(); c != nil {
+			ctx = c
+		}
+	}
+	path, err := d.embedCachePath()
+	var file *cache.Cache
+	if err == nil {
+		file, err = cache.Open(ctx, path)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: embedding cache not used, embedding without it: %v (kb model cache --clear removes a damaged cache)\n", err)
+		return e
+	}
+	ce := embed.Cached(e, file)
+	d.caches.mu.Lock()
+	d.caches.open = append(d.caches.open, openedCache{file: file, emb: ce})
+	d.caches.mu.Unlock()
+	if p, ok := e.(pinger); ok {
+		return cachedPinger{CachedEmbedder: ce, inner: p}
+	}
+	return ce
+}
+
+// finishEmbedCaches runs after every command: it warns about a cache that went off mid-run (the
+// results are right, they were just not cached) and closes the cache files.
+func (d *deps) finishEmbedCaches(stderr io.Writer) {
+	if d.caches == nil {
+		return
+	}
+	d.caches.mu.Lock()
+	open := d.caches.open
+	d.caches.open = nil
+	d.caches.mu.Unlock()
+	for _, oc := range open {
+		if err := oc.emb.Err(); err != nil {
+			fmt.Fprintf(stderr, "warning: %v (kb model cache --clear removes a damaged cache)\n", err)
+		}
+		if err := oc.file.Close(); err != nil {
+			fmt.Fprintf(stderr, "warning: %v\n", err)
+		}
+	}
+}
+
+// modelCalls is the number of calls that reached the model: the cached embedder's count, which
+// excludes the calls the cache answered, else fallback (the caller's own count).
+func modelCalls(e embed.Embedder, fallback int) int {
+	if s, ok := e.(cacheStatser); ok {
+		return s.Stats().ModelCalls
+	}
+	return fallback
 }

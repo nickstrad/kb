@@ -46,6 +46,7 @@ func TestIndexSteps(t *testing.T) {
 		{"index/0001-baseline", migrate.EffectNone},
 		{"index/0002-log-provenance", migrate.EffectNone},
 		{"index/0003-vec-width", migrate.EffectReembed},
+		{"index/0004-search-settings", migrate.EffectNone},
 	}
 	if len(migrations) != len(want) {
 		t.Fatalf("%d steps, the effect table lists %d: add the new step's (ID, Effect) row", len(migrations), len(want))
@@ -176,6 +177,20 @@ func TestStepEffects(t *testing.T) {
 				t.Errorf("FTS MATCH = %d after the step, want 1", n)
 			}
 		},
+		"index/0004-search-settings": func(t *testing.T, db *sql.DB) {
+			for _, col := range []string{"settings", "settings_hash", "fts_query"} {
+				if n := count(t, db, "SELECT count(*) FROM pragma_table_info('searches') WHERE name = '"+col+"' AND type = 'TEXT' AND \"notnull\" = 0"); n != 1 {
+					t.Errorf("searches.%s: want one nullable TEXT column, found %d", col, n)
+				}
+				// Old searches have no recorded settings: NULL, never "" (not known, not empty).
+				if n := count(t, db, "SELECT count(*) FROM searches WHERE "+col+" IS NOT NULL"); n != 0 {
+					t.Errorf("%d old searches have a %s; want NULL", n, col)
+				}
+			}
+			if n := count(t, db, "SELECT count(*) FROM searches"); n == 0 {
+				t.Error("the fixture has no searches: the preservation check would be vacuous")
+			}
+		},
 	}
 	for _, step := range migrations[1:] { // the baseline has no From fixture: v0 is "no file"
 		t.Run(step.ID, func(t *testing.T) {
@@ -242,6 +257,7 @@ var fixtureSeeds = map[int]func(t *testing.T, s *Store){
 	1: seedV1,
 	2: func(t *testing.T, s *Store) { seedV2(t, s, "with vectors") },
 	3: seedV3,
+	4: seedV4,
 }
 
 func seedV1(t *testing.T, s *Store) {
@@ -299,6 +315,24 @@ func seedV3(t *testing.T, s *Store) {
 		VALUES (1, 1, 2, 'alpha.md', 'Body', 1, -2.75, 1, 0.125, 0.0328, 1);
 		INSERT INTO search_feedback (search_id, rank, useful, note, ts) VALUES (1, 1, 1, NULL, '2026-10-01T09:01:00Z');
 		INSERT INTO search_opens (search_id, entry_path, ts) VALUES (1, 'alpha.md', '2026-10-01T09:02:00Z');`)
+}
+
+// seedV4 is a v4 store: the v3 data, plus searches that recorded their settings as a v4 kb does
+// (one with an FTS expression, one fts-only with none), next to the v3 search that predates them.
+func seedV4(t *testing.T, s *Store) {
+	t.Helper()
+	seedV3(t, s)
+	execAll(t, s.DB(), `
+		INSERT INTO searches (id, ts, query, mode, k, n_returned, caller, corpus_rev, kb_version, settings, settings_hash, fts_query)
+		VALUES (2, '2026-10-02T09:00:00Z', 'wal checkpoint', 'hybrid', 8, 1, 'claude', 'a1b2c3d', 'v0.3.0',
+		        '{"embed":{"batch":16,"dim":0,"int8":false,"model":"BAAI/bge-small-en-v1.5","workers":0},"search":{"k":8,"rrf_k":60}}',
+		        '46f97a2e73fad76c672908714f5b5b8d84d59364f53d925f8f7fcec05bb4092f', '"wal" AND "checkpoint"'),
+		       (3, '2026-10-03T09:00:00Z', 'vec only', 'vec', 8, 0, 'human', NULL, 'v0.3.0',
+		        '{"embed":{"batch":16,"dim":0,"int8":false,"model":"BAAI/bge-small-en-v1.5","workers":0},"search":{"k":8,"rrf_k":20}}',
+		        '9b1d0f4c2a6e8d3b7f5a1c9e0d2b4f6a8c0e1d3b5f7a9c1e2d4b6f8a0c2e4d6b', NULL);
+		INSERT INTO search_results (search_id, rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, rrf_score)
+		VALUES (2, 1, 2, 'alpha.md', 'Body', 1, -2.5, 2, 0.25, 0.0325);
+		INSERT INTO search_feedback (search_id, rank, useful, note, ts) VALUES (2, 1, 1, NULL, '2026-10-02T09:01:00Z');`)
 }
 
 // dumpFixture renders the database at path as the SQL text that rebuilds it: the version, every

@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/workspace"
@@ -23,16 +24,18 @@ func newRmCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		Use:   "rm <entry>",
 		Short: "Remove an entry and its rows",
 		Long: "Removes a file entry outright. A directory entry removes the whole directory and\n" +
-			"everything in it, so it additionally requires --yes.",
+			"everything in it, so it additionally requires --yes. kb rm only removes entries kb owns\n" +
+			"(an entries source such as data/): an in-place file stays, delete it yourself and run\n" +
+			"kb reindex --all.",
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ws, err := d.workspace(cmd)
+			ws, cfg, err := d.workspaceConfig(cmd)
 			if err != nil {
 				return err
 			}
-			return runRm(cmd.Context(), d, stdout, stderr, ws, args[0], yes)
+			return runRm(cmd.Context(), d, stdout, stderr, ws, cfg.Sources, args[0], yes)
 		},
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "confirm removing a directory entry and everything in it")
@@ -40,12 +43,16 @@ func newRmCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 }
 
 // runRm resolves the entry, removes its file(s) from disk, drops its row from the database (if one
-// exists), and reports what was removed.
-func runRm(ctx context.Context, d *deps, stdout, stderr io.Writer, ws *workspace.Workspace, arg string, yes bool) error {
+// exists), and reports what was removed. An in-place entry (files layout) is refused before
+// anything is touched: kb indexes that file but does not own it.
+func runRm(ctx context.Context, d *deps, stdout, stderr io.Writer, ws *workspace.Workspace, sources []config.Source, arg string, yes bool) error {
 	root := ws.Root
-	e, err := entry.Resolve(root, arg)
+	e, err := entry.Resolve(root, sources, arg)
 	if err != nil {
-		return usageErr("%s", err)
+		return err
+	}
+	if e.InPlace() {
+		return usageErr("%s is not owned by kb (an in-place source); delete the file and run kb reindex --all", e.Path)
 	}
 
 	st, ok, err := d.openStoreIfExists(ctx, ws)

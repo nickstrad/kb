@@ -10,7 +10,7 @@ touches `~/knowledge` or uses the network.
 | Tool | Language | What it does |
 |---|---|---|
 | `mutate/` | Go | Mutation testing: one source change at a time, runs the package's tests, reports survivors and a score |
-| `harness/` | Go | Builds kb once and runs hostile CLI scenarios against temp roots; reports pass/fail with evidence |
+| `harness/` | Go | Builds kb once and runs hostile CLI scenarios against temp roots; reports pass/fail with evidence. `harness/loadfixture/` is its SQLite helper (built beside kb) that makes the older and oversized index databases the `migrate-*` scenarios attack; `-bin` runs skip those |
 | `boundaries/` | Go | Lists numeric limits and whether tests name them at, -1 and +1 (docs/TESTING.md §2.1) |
 | `coverage-gaps.sh` | Bash | Functions below a coverage threshold, measured with the package's own tests and seeds |
 | `flaky.sh` | Bash | Runs tests N times with `-race -shuffle=on` and reports tests that ever failed |

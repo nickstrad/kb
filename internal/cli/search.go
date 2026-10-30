@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,13 +16,11 @@ import (
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/render"
 	"github.com/nickstrad/kb/internal/search"
 	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/workspace"
 )
-
-// hitTextLimit is the ~600-char (rune) cap on a hit's chunk text in human output. --json always
-// carries the full, untrimmed text.
-const hitTextLimit = 600
 
 // newSearchCmd builds
 // `kb search "<q>" [-k 8] [--mode hybrid|fts|vec] [--tag t] [--json] [--caller name]`.
@@ -32,6 +31,7 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		tag    string
 		asJSON bool
 		caller string
+		budget int
 	)
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -55,6 +55,7 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 				tag:    tag,
 				asJSON: asJSON,
 				caller: caller,
+				budget: budget,
 			})
 		},
 	}
@@ -63,6 +64,7 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&tag, "tag", "", "only entries carrying this tag")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
 	cmd.Flags().StringVar(&caller, "caller", "", "who is searching (default [agent] caller, else unknown)")
+	cmd.Flags().IntVar(&budget, "budget", 0, "cap the human output at about N tokens (ceil(chars/4)); 0 = unlimited (default [output] budget)")
 	return cmd
 }
 
@@ -74,6 +76,7 @@ type searchOpts struct {
 	tag    string
 	asJSON bool
 	caller string
+	budget int
 }
 
 // runSearch validates the flags, opens the database (it never creates one), builds the embedder
@@ -89,53 +92,20 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	default:
 		return usageErr("invalid --mode %q (want hybrid, fts or vec)", opts.mode)
 	}
+	if opts.budget < 0 {
+		return usageErr("invalid --budget %d (want 0 or more tokens)", opts.budget)
+	}
 	ctx := cmd.Context()
 
 	ws, cfg, err := d.workspaceConfig(cmd)
 	if err != nil {
 		return err
 	}
-	dbPath := ws.DBPath
-	if _, err := os.Stat(dbPath); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return errs.Wrap(err, errs.NotFound, "cli.search", "no index at %s; run kb reindex --all", dbPath)
-		}
-		return usageErr("stat %s: %v", dbPath, err)
-	}
-
-	st, err := d.openStore(ctx, dbPath, false)
+	st, embedder, mode, err := d.openSearch(cmd, ws, cfg, opts.mode, "cli.search", false)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
-
-	mode := opts.mode
-	var embedder embed.Embedder
-	if mode == search.ModeHybrid || mode == search.ModeVec {
-		client, err := d.newEmbedder(cmd, cfg.Embed)
-		if err != nil {
-			return err
-		}
-		if embed.IsNone(client) {
-			// embed.model = "none": FTS is the whole search, not a fallback, so it exits 0.
-			if mode == search.ModeVec {
-				return usageErr("--mode vec needs an embedder, but the embedder is none")
-			}
-			mode = search.ModeFTS
-		} else {
-			stored, ok, err := st.EmbedMeta(ctx)
-			if err != nil {
-				return err
-			}
-			if want := (store.EmbedMeta{Model: client.Model(), Dim: client.Dim()}); ok && stored != want {
-				mismatch := &store.EmbedMetaMismatchError{
-					StoredModel: stored.Model, StoredDim: stored.Dim, WantModel: want.Model, WantDim: want.Dim,
-				}
-				return errs.Wrap(mismatch, errs.Conflict, "cli.search", "%s", mismatch.Error())
-			}
-			embedder = client
-		}
-	}
 
 	settings, err := search.NewSettings(cfg)
 	if err != nil {
@@ -155,7 +125,11 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	if err != nil && !logFailed {
 		return err
 	}
-	if err := printResults(stdout, out.Result, opts.asJSON, !logFailed); err != nil {
+	budget := opts.budget
+	if !cmd.Flags().Changed("budget") {
+		budget = cfg.Output.Budget
+	}
+	if err := printResults(ctx, stdout, st, out.Result, opts.asJSON, !logFailed, budget); err != nil {
 		return err
 	}
 	if logFailed {
@@ -203,7 +177,7 @@ func callerFor(flag string, cfg config.Config) string {
 // so, and its JSON search_id and feedback are null rather than the zero value Go
 // leaves in Result.SearchID. An encoding failure (a NaN or Inf score from a model) is returned
 // as an Internal error with nothing written.
-func printResults(stdout io.Writer, result *search.Result, asJSON, logged bool) error {
+func printResults(ctx context.Context, stdout io.Writer, st store.Store, result *search.Result, asJSON, logged bool, budget int) error {
 	if asJSON {
 		var searchID *int64
 		var feedback *feedbackCommands
@@ -245,15 +219,9 @@ func printResults(stdout io.Writer, result *search.Result, asJSON, logged bool) 
 	if len(result.Hits) == 0 {
 		fmt.Fprintln(stdout, "no results")
 	} else {
-		blocks := make([]string, len(result.Hits))
-		for i, h := range result.Hits {
-			header := fmt.Sprintf("#%d  %.4f  %s", h.Rank, h.RRFScore, h.Path)
-			if h.Heading != "" {
-				header += " › " + h.Heading
-			}
-			blocks[i] = header + "\n" + trimText(h.Text, hitTextLimit)
+		if text := render.Render(renderHits(ctx, st, result.Hits), budget).Text; text != "" {
+			fmt.Fprintln(stdout, text)
 		}
-		fmt.Fprintln(stdout, strings.Join(blocks, "\n\n"))
 	}
 	if !logged {
 		fmt.Fprintln(stdout, "search_id=none (not logged)")
@@ -280,25 +248,76 @@ func newFeedbackCommands(searchID int64, nHits int) *feedbackCommands {
 	return fc
 }
 
-// trimText caps text at limit runes, cutting at a rune boundary. When it has to cut, it prefers
-// the last newline or space at or before the limit (so a word is not sliced in half) and marks
-// the cut with a trailing " …"; text at or under the limit is returned unchanged.
-func trimText(text string, limit int) string {
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text
-	}
-	cut := limit
-	firstBoundary := limit - 80
-	if firstBoundary < 0 {
-		firstBoundary = 0
-	}
-	for i := limit; i > firstBoundary; i-- {
-		if runes[i-1] == '\n' || runes[i-1] == ' ' {
-			cut = i - 1
-			break
+// renderHits adds each hit's entry summary and updated date (search.Hit carries neither) from
+// the store. A missing or unreadable entry just leaves those two fields empty: the hit still
+// renders from what the search returned.
+func renderHits(ctx context.Context, st store.Store, hits []search.Hit) []render.Hit {
+	out := make([]render.Hit, len(hits))
+	cache := map[string]*store.EntryRow{}
+	for i, h := range hits {
+		out[i] = render.Hit{Rank: h.Rank, Path: h.Path, Heading: h.Heading, Text: h.Text}
+		row, seen := cache[h.Path]
+		if !seen {
+			row, _ = st.Entry(ctx, h.Path)
+			cache[h.Path] = row
+		}
+		if row != nil {
+			out[i].Updated = row.Updated
+			out[i].Summary = row.Summary
 		}
 	}
-	trimmed := strings.TrimRight(string(runes[:cut]), " \n")
-	return trimmed + " …"
+	return out
+}
+
+// openSearch is the setup kb search and kb explain share: the index must exist (it is never
+// created here), and for hybrid or vec the embedder is built and checked against embed_meta. A
+// none embedder makes hybrid an fts search (not a fallback: exit 0) and vec a Usage error. It
+// returns the mode actually run and a nil embedder for fts. op names the command in errors. On
+// success the caller closes st.
+func (d *deps) openSearch(cmd *cobra.Command, ws *workspace.Workspace, cfg config.Config, mode, op string, readOnly bool) (store.Store, embed.Embedder, string, error) {
+	ctx := cmd.Context()
+	if _, err := os.Stat(ws.DBPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, "", errs.Wrap(err, errs.NotFound, op, "no index at %s; run kb reindex --all", ws.DBPath)
+		}
+		return nil, nil, "", usageErr("stat %s: %v", ws.DBPath, err)
+	}
+	st, err := d.openStore(ctx, ws.DBPath, readOnly)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	embedder, mode, err := d.searchEmbedder(cmd, st, cfg, mode, op)
+	if err != nil {
+		st.Close()
+		return nil, nil, "", err
+	}
+	return st, embedder, mode, nil
+}
+
+// searchEmbedder is openSearch's embedder step.
+func (d *deps) searchEmbedder(cmd *cobra.Command, st store.Store, cfg config.Config, mode, op string) (embed.Embedder, string, error) {
+	if mode != search.ModeHybrid && mode != search.ModeVec {
+		return nil, mode, nil
+	}
+	client, err := d.newEmbedder(cmd, cfg.Embed)
+	if err != nil {
+		return nil, "", err
+	}
+	if embed.IsNone(client) {
+		if mode == search.ModeVec {
+			return nil, "", usageErr("--mode vec needs an embedder, but the embedder is none")
+		}
+		return nil, search.ModeFTS, nil
+	}
+	stored, ok, err := st.EmbedMeta(cmd.Context())
+	if err != nil {
+		return nil, "", err
+	}
+	if want := (store.EmbedMeta{Model: client.Model(), Dim: client.Dim()}); ok && stored != want {
+		mismatch := &store.EmbedMetaMismatchError{
+			StoredModel: stored.Model, StoredDim: stored.Dim, WantModel: want.Model, WantDim: want.Dim,
+		}
+		return nil, "", errs.Wrap(mismatch, errs.Conflict, op, "%s", mismatch.Error())
+	}
+	return client, mode, nil
 }

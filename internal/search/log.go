@@ -52,8 +52,12 @@ func (s *Searcher) Record(ctx context.Context, req Request, o *Outcome) (int64, 
 		Caller:     caller,
 		KBVersion:  s.KBVersion,
 		CorpusRev:  s.CorpusRev,
-		Results:    loggedHits(o.Returned),
-		Candidates: loggedHits(o.Candidates),
+		// The per-store settings the search ran with (Outcome.Settings), not the defaults.
+		Settings:     string(o.Settings.JSON),
+		SettingsHash: o.Settings.Hash,
+		FTSMatch:     o.FTSMatch,
+		Results:      loggedHits(o.Returned),
+		Candidates:   loggedHits(o.Candidates),
 	}
 	id, err := s.Log.LogSearch(ctx, rec)
 	if err != nil {

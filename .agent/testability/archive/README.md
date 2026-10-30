@@ -1,0 +1,15 @@
+# Archived testability entries
+
+Entries whose design problem is gone: the remedy landed, the code was removed, or something else
+outranked it. They're kept as a record of what made tests hard, and how it was fixed, so the same
+shape is recognised next time.
+
+To archive: move the file here with `git mv` (or `mv` while it's untracked), set **Status** to
+`resolved (<date>)` (or `retired (<reason>, <date>)` when outranked or removed), add a
+**Resolution** line (what changed, and the PR, item or wave, plus the test that now shows it),
+remove its line from `../index.md` and add it below. An archived entry that becomes relevant
+again is moved back and re-reviewed.
+
+## Archived entries
+
+- [package-level-test-seams](package-level-test-seams.md) — resolved (2026-10-29) · `var newEmbedder`, `hubLoad` and a sh+sed `$EDITOR` were swapped by tests; now fields of `deps` and `local.puller`

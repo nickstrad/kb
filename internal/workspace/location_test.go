@@ -345,38 +345,80 @@ func TestLocationMetamorphic(t *testing.T) {
 	}
 }
 
+// TestParseRef is the grammar of docs/design/named-stores.md §3, one row per form and boundary.
 func TestParseRef(t *testing.T) {
+	long := strings.Repeat("a", MaxNameLen)
 	cases := []struct {
 		in      string
 		want    Ref
 		wantErr bool
-		str     string
 		msg     string // in the error
 	}{
 		{in: "", want: Ref{}},
-		{in: "global", want: Ref{Global: true}, str: "global"},
-		{in: "default", want: Ref{Name: "default"}, str: "default"},
-		{in: "adr", want: Ref{Name: "adr"}, str: "adr"},
+		{in: "global", want: Ref{Global: true}},
+		{in: "default", want: Ref{Name: "default"}},
+		{in: "adr", want: Ref{Name: "adr"}},
+		{in: "a", want: Ref{Name: "a"}},
+		{in: long, want: Ref{Name: long}},
+		{in: long + "a", wantErr: true, msg: "invalid store name"},
 		{in: "Adr", wantErr: true, msg: "invalid store name"},
-		{in: "adr@/p", wantErr: true, msg: "not supported yet"},
-		{in: "adr@", wantErr: true, msg: "not supported yet"},
-		{in: "c:proj", wantErr: true, msg: "not supported yet"},
-		{in: "~/knowledge", wantErr: true, msg: "invalid store name"},
-		{in: "../x", wantErr: true, msg: "invalid store name"},
+		{in: "-adr", wantErr: true, msg: "invalid store name"},
+		{in: "a b", wantErr: true, msg: "invalid store name"},
+		{in: "adr@/p", want: Ref{Name: "adr", At: "/p"}},
+		{in: "adr@/p/", want: Ref{Name: "adr", At: "/p/"}},
+		{in: "adr@global", want: Ref{Name: "adr", At: "global"}},
+		{in: "adr@~/proj", want: Ref{Name: "adr", At: "~/proj"}},
+		{in: "adr@~", want: Ref{Name: "adr", At: "~"}},
+		{in: "adr@rel/dir", want: Ref{Name: "adr", At: "rel/dir"}},
+		{in: "adr@proj", want: Ref{Name: "adr", At: "proj"}},
+		{in: "adr@/p@q", want: Ref{Name: "adr", At: "/p@q"}},
+		{in: "adr@", wantErr: true, msg: "nothing after @"},
+		{in: "@/p", wantErr: true, msg: "invalid store name"},
+		{in: "global@/p", wantErr: true, msg: "reserved"},
+		{in: "Adr@/p", wantErr: true, msg: "invalid store name"},
+		{in: "adr@~bob/x", wantErr: true, msg: "not ~user"},
+		{in: "c:proj", wantErr: true, msg: `":" is not part of a ref`},
+		{in: "adr:notes/x.md", wantErr: true, msg: "neither a store name nor a path"},
+		{in: "~", want: Ref{Path: "~"}},
+		{in: "~/knowledge", want: Ref{Path: "~/knowledge"}},
+		{in: "~/knowledge/", want: Ref{Path: "~/knowledge/"}},
+		{in: "~/me@x", want: Ref{Path: "~/me@x"}}, // a path wins over NAME@LOC
+		{in: "/abs/p", want: Ref{Path: "/abs/p"}},
+		{in: "/", want: Ref{Path: "/"}},
+		{in: "./rel", want: Ref{Path: "./rel"}},
+		{in: "../x", want: Ref{Path: "../x"}},
+		{in: ".", want: Ref{Path: "."}},
+		{in: "..", want: Ref{Path: ".."}},
+		{in: "~bob/x", wantErr: true, msg: "not ~user"},
+		{in: "~bob", wantErr: true, msg: "not ~user"},
+		{in: "docs/x", wantErr: true, msg: "neither a store name nor a path"},
+		{in: "x\x00y", wantErr: true, msg: "control character"},
+		{in: "/p\n", wantErr: true, msg: "control character"},
+		{in: "/" + strings.Repeat("a", MaxRefLen-1), want: Ref{Path: "/" + strings.Repeat("a", MaxRefLen-1)}}, // exactly MaxRefLen
+		{in: "/" + strings.Repeat("a", MaxRefLen), wantErr: true, msg: "at most"},                             // one over
+		{in: "a\x1f", wantErr: true, msg: "control character"},
+		{in: "a\x7f", wantErr: true, msg: "control character"},
+		{in: "a\x20b", wantErr: true, msg: "invalid store name"}, // 0x20 is not a control character
 	}
 	for _, tc := range cases {
 		got, err := ParseRef(tc.in)
 		if (err != nil) != tc.wantErr || got != tc.want {
 			t.Errorf("ParseRef(%q) = %+v, %v; want %+v err=%v", tc.in, got, err, tc.want, tc.wantErr)
 		}
-		if err == nil && got.String() != tc.str {
-			t.Errorf("String of %q = %q, want %q", tc.in, got.String(), tc.str)
+		if err == nil && got.String() != tc.in {
+			t.Errorf("String of %q = %q", tc.in, got.String())
 		}
 		if err != nil && (errs.KindOf(err) != errs.Usage || !strings.Contains(err.Error(), tc.msg)) {
 			t.Errorf("ParseRef(%q): %v (kind %v), want Usage containing %q", tc.in, err, errs.KindOf(err), tc.msg)
 		}
-		if !tc.wantErr && got.IsZero() != (tc.in == "") {
-			t.Errorf("IsZero(%q) = %v", tc.in, got.IsZero())
+		if err == nil {
+			if got.IsZero() != (tc.in == "") {
+				t.Errorf("IsZero(%q) = %v", tc.in, got.IsZero())
+			}
+			wantLoc := got.Global || got.At != "" || got.Path != ""
+			if got.NamesLocation() != wantLoc {
+				t.Errorf("NamesLocation(%q) = %v", tc.in, got.NamesLocation())
+			}
 		}
 	}
 }

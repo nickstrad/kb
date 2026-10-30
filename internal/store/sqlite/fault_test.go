@@ -361,6 +361,7 @@ func TestDriverFaultsOnReadsAndLog(t *testing.T) {
 		{"EmbedMeta", "FROM embed_meta", 1, func(st *Store, _ int64) error { _, _, err := st.EmbedMeta(ctx); return err }},
 		{"HasVectors", "sqlite_master", 1, func(st *Store, _ int64) error { _, err := st.HasVectors(ctx); return err }},
 		{"Entries", "FROM entries ORDER BY", 1, func(st *Store, _ int64) error { _, err := st.Entries(ctx); return err }},
+		{"EntryCount", "count(*) FROM entries", 1, func(st *Store, _ int64) error { _, err := st.EntryCount(ctx); return err }},
 		{"Chunks", "FROM chunks WHERE entry_id", 1, func(st *Store, _ int64) error { _, err := st.Chunks(ctx, 1); return err }},
 		{"Embeddings vec check", "sqlite_master", 1, func(st *Store, _ int64) error { _, err := st.Embeddings(ctx, 1); return err }},
 		{"Embeddings read", "JOIN chunks_vec", 1, func(st *Store, _ int64) error { _, err := st.Embeddings(ctx, 1); return err }},

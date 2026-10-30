@@ -37,11 +37,13 @@ func (s *Store) logSearch(ctx context.Context, r store.SearchRecord) (int64, err
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO searches
 			(ts, query, mode, k, tag_filter, embed_model,
-			 n_fts, n_vec, n_returned, fts_ms, vec_ms, embed_ms, total_ms, caller, kb_version, corpus_rev)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 n_fts, n_vec, n_returned, fts_ms, vec_ms, embed_ms, total_ms, caller, kb_version, corpus_rev,
+			 settings, settings_hash, fts_query)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nowUTC(), r.Query, r.Mode, r.K, nullString(r.Tag), nullString(r.EmbedModel),
 		r.NFTS, r.NVec, len(r.Results), nullMs(r.FTSMs), nullMs(r.VecMs), nullMs(r.EmbedMs), r.TotalMs,
-		r.Caller, nullString(r.KBVersion), nullString(r.CorpusRev))
+		r.Caller, nullString(r.KBVersion), nullString(r.CorpusRev),
+		nullString(r.Settings), nullString(r.SettingsHash), nullString(r.FTSMatch))
 	if err != nil {
 		return 0, fmt.Errorf("insert searches: %w", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/entry"
 )
 
@@ -45,7 +46,7 @@ func tableRows(doc, heading string) []string {
 // Generate from the fixture corpus without requiring a checked-in snapshot.
 func TestGenerateFromCorpus(t *testing.T) {
 	root := repoRoot(t)
-	entries, err := entry.Discover(root)
+	entries, _, err := entry.Discover(root, []config.Source{{Path: entry.DataDir, Layout: config.LayoutEntries}})
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("discover: %v (%d entries)", err, len(entries))
 	}
@@ -148,6 +149,23 @@ func TestGenerateSortOrder(t *testing.T) {
 	}
 	if strings.Join(texts, ",") != strings.Join(want, ",") {
 		t.Errorf("sort order:\n got %v\nwant %v", texts, want)
+	}
+}
+
+// TestGenerateSkipsInPlace: index.md lists the entries kb owns; an in-place entry (files layout)
+// is left out, while a layout-less entry (built by hand, as in older callers) is listed.
+func TestGenerateSkipsInPlace(t *testing.T) {
+	inPlace := entry.Entry{Path: "docs/plan.md", Kind: entry.KindFile, Files: []string{"docs/plan.md"}, Layout: config.LayoutFiles,
+		Meta: entry.FrontMatter{Title: "Plan", Summary: "p"}}
+	owned := fileEntry("a.md", "kept")
+	owned.Layout = config.LayoutEntries
+	out, err := Generate([]entry.Entry{inPlace, owned, fileEntry("b.md", "also")}, "2026-01-02")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := tableRows(string(out), "Knowledge entries")
+	if len(rows) != 2 || strings.Contains(string(out), "docs/plan.md") {
+		t.Errorf("rows = %v, want a.md and b.md only", rows)
 	}
 }
 

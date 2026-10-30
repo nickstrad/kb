@@ -1,0 +1,14 @@
+levels=[3 3 3 3] tokens=105
+[1] data/tmux.md › Logs · updated 2026-03-01
+Rotate tmux logs with logrotate.
+Set copytruncate so the pane keeps writing.
+Keep seven days.
+
+[2] data/git.md · updated 2026-02-11
+Use git rebase -i to squash the last commits before you push.
+
+[3] data/deploy.md › Rollback
+Roll back by redeploying the previous tag; never edit the live host by hand.
+
+[4] data/naming.md › Rules · updated 2025-12-31
+Names are kebab-case.

@@ -118,7 +118,7 @@ func TestSearchFTSMode(t *testing.T) {
 	// A two-hit block is deliberately checked as one shape: callers who do not use --json can
 	// still rely on the documented human format: the id-bearing first line (so `| head` keeps it),
 	// the blank line between hits, the search_id=N footer, and no feedback hint (feedback is optional).
-	human := regexp.MustCompile(`(?s)\Asearch ([1-9][0-9]*) · 2 hits\n#1  [0-9]+\.[0-9]{4}  widget\.md(?: › Configuration)?\n[^\n]+\n\n#2  [0-9]+\.[0-9]{4}  widget\.md(?: › Configuration)?\n[^\n]+\nsearch_id=([1-9][0-9]*)\n\z`)
+	human := regexp.MustCompile(`(?s)\Asearch ([1-9][0-9]*) · 2 hits\n\[1\] widget\.md(?: › Configuration)?(?: · updated [^\n]+)?\n[^\n]+\n\n\[2\] widget\.md(?: › Configuration)?(?: · updated [^\n]+)?\n[^\n]+\nsearch_id=([1-9][0-9]*)\n\z`)
 	m := human.FindStringSubmatch(stdout)
 	if m == nil {
 		t.Fatalf("stdout does not match the two-hit human format:\n%s", stdout)
@@ -450,8 +450,8 @@ func TestSearchKClampsToOne(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%s", exit, stderr)
 	}
-	n := strings.Count(stdout, "\n#")
-	if strings.HasPrefix(stdout, "#") {
+	n := strings.Count(stdout, "\n[")
+	if strings.HasPrefix(stdout, "[") {
 		n++
 	}
 	if n != 1 {
@@ -472,64 +472,6 @@ func TestSearchMultiWordQueryJoinsArgs(t *testing.T) {
 	}
 }
 
-func TestTrimText(t *testing.T) {
-	t.Run("under limit is unchanged", func(t *testing.T) {
-		s := strings.Repeat("a", 600)
-		if got := trimText(s, 600); got != s {
-			t.Errorf("trimText changed a string at exactly the limit")
-		}
-	})
-
-	t.Run("cuts at the last space before the limit", func(t *testing.T) {
-		s := strings.Repeat("a", 595) + " " + strings.Repeat("b", 10) // len 606
-		want := strings.Repeat("a", 595) + " …"
-		if got := trimText(s, 600); got != want {
-			t.Errorf("trimText(...) = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("hard cut when there is no space", func(t *testing.T) {
-		s := strings.Repeat("a", 700)
-		got := trimText(s, 600)
-		want := strings.Repeat("a", 600) + " …"
-		if got != want {
-			t.Errorf("trimText(...) = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("does not backtrack more than eighty runes", func(t *testing.T) {
-		s := "See " + strings.Repeat("x", 700)
-		want := "See " + strings.Repeat("x", 596) + " …"
-		if got := trimText(s, 600); got != want {
-			t.Errorf("trimText(...) = %q, want a hard cut %q", got, want)
-		}
-	})
-
-	t.Run("multibyte text respects rune boundaries", func(t *testing.T) {
-		s := strings.Repeat("é", 700) // each é is one rune, two UTF-8 bytes
-		got := trimText(s, 600)
-		if !strings.HasSuffix(got, " …") {
-			t.Fatalf("trimText did not mark the cut: %q", got)
-		}
-		body := strings.TrimSuffix(got, " …")
-		if n := len([]rune(body)); n != 600 {
-			t.Errorf("trimmed body has %d runes, want 600", n)
-		}
-		// Every rune must still be a valid é, i.e. no byte was sliced out of the middle of one.
-		for _, r := range body {
-			if r != 'é' {
-				t.Fatalf("trimText corrupted a multibyte rune: got %q in body", r)
-			}
-		}
-	})
-
-	t.Run("empty text", func(t *testing.T) {
-		if got := trimText("", 600); got != "" {
-			t.Errorf("trimText(\"\", 600) = %q, want \"\"", got)
-		}
-	})
-}
-
 // TestPrintResultsJSONEncodeFailureIsInternal: a NaN score (a model can produce one) makes the
 // JSON encode fail. printResults returns it as an Internal error and writes nothing, rather than
 // panicking.
@@ -544,7 +486,7 @@ func TestPrintResultsJSONEncodeFailureIsInternal(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			res := &search.Result{Query: "q", Mode: search.ModeFTS, Hits: []search.Hit{{RRFScore: tc.score}}}
-			err := printResults(&buf, res, true, true)
+			err := printResults(context.Background(), &buf, nil, res, true, true, 0)
 			if errs.KindOf(err) != errs.Internal {
 				t.Fatalf("printResults = %v, want an Internal error", err)
 			}

@@ -26,11 +26,11 @@ func TestArtefactStatus(t *testing.T) {
 		wantPend int
 		wantKind errs.Kind // -1 = no error
 	}{
-		{"missing file: v0, all pending, not created", func(t *testing.T) string { return filepath.Join(t.TempDir(), "kb.sqlite") }, 0, 3, -1},
-		{"oldest fixture", func(t *testing.T) string { return loadFixture(t, 1) }, 1, 2, -1},
-		{"Target-1", func(t *testing.T) string { return loadFixture(t, 2) }, 2, 1, -1},
-		{"current", func(t *testing.T) string { return loadFixture(t, 3) }, 3, 0, -1},
-		{"newer", func(t *testing.T) string { return withVersion(t, 4) }, 4, 0, -1},
+		{"missing file: v0, all pending, not created", func(t *testing.T) string { return filepath.Join(t.TempDir(), "kb.sqlite") }, 0, SchemaVersion(), -1},
+		{"oldest fixture", func(t *testing.T) string { return loadFixture(t, 1) }, 1, SchemaVersion() - 1, -1},
+		{"Target-1", func(t *testing.T) string { return loadFixture(t, SchemaVersion()-1) }, SchemaVersion() - 1, 1, -1},
+		{"current", func(t *testing.T) string { return loadFixture(t, SchemaVersion()) }, SchemaVersion(), 0, -1},
+		{"newer", func(t *testing.T) string { return withVersion(t, SchemaVersion()+1) }, SchemaVersion() + 1, 0, -1},
 		{"negative: damaged", func(t *testing.T) string { return withVersion(t, -1) }, 0, 0, errs.Conflict},
 		{"not a database", func(t *testing.T) string {
 			p := filepath.Join(t.TempDir(), "kb.sqlite")
@@ -180,7 +180,7 @@ func TestRunIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := rep.Artefacts[0]
-	if out.Backup != path+".bak-v1-20261030-161205" || len(out.Applied) != 2 || rep.Needs() != migrate.EffectReembed {
+	if out.Backup != path+".bak-v1-20261030-161205" || len(out.Applied) != SchemaVersion()-1 || rep.Needs() != migrate.EffectReembed {
 		t.Fatalf("outcome = %+v, needs %v", out, rep.Needs())
 	}
 	if st, err := NewArtefact(out.Backup).Status(ctx); err != nil || st.Current != 1 {
@@ -286,8 +286,8 @@ func TestRunIndexConcurrent(t *testing.T) {
 		}
 		applied += len(reps[i].Artefacts[0].Applied)
 	}
-	if applied != 2 {
-		t.Errorf("steps applied across both runners = %d, want 2 (one runner)", applied)
+	if applied != SchemaVersion()-1 {
+		t.Errorf("steps applied across both runners = %d, want %d (one runner)", applied, SchemaVersion()-1)
 	}
 	if baks, _ := filepath.Glob(path + ".bak-v*"); len(baks) != 1 {
 		t.Errorf("backups = %v, want one", baks)

@@ -1,20 +1,31 @@
-// Package entry discovers knowledge entries in the repository and parses their YAML front matter.
+// Package entry discovers knowledge entries in a store's sources and parses their YAML front
+// matter.
 //
-// An entry is one of two shapes (AGENTS.md, "Which files are entries"):
+// A store lists its sources in config ([[sources]], config.Source); paths are relative to the
+// location root. Each source has a layout:
 //
-//   - a file entry: every *.md directly under data/ except AGENTS.md, CLAUDE.md,
-//     index.md, plan.md and README.md;
-//   - a directory entry: every directory directly under data/ that contains a README.md,
-//     except skill/, .kb/ and .git/. Its indexed files are README.md and docs/*.md.
+//   - entries (kb owns the directory, e.g. data/): a file entry is every *.md directly in it
+//     except AGENTS.md, CLAUDE.md, index.md, plan.md and README.md; a directory entry is every
+//     directory directly in it that contains a README.md, except skill/, .kb/ and .git/, and its
+//     indexed files are README.md and docs/*.md. Front matter with a title and a summary is
+//     required.
+//   - files (in place, e.g. docs/**/*.md): every *.md file the glob matches, minus exclude, is a
+//     file entry. Front matter is optional: a missing title or summary falls back to the first
+//     "# " heading and the first paragraph (see fallbackMeta). .kb, .git and node_modules are
+//     never walked.
 //
-// The Path of an entry is always the repo-relative path of its front door: "data/foo.md" for a
-// file entry, "data/droplet/README.md" for a directory entry.
+// The Path of an entry is always the root-relative path of its front door: "data/foo.md",
+// "data/droplet/README.md", "docs/install.md".
 //
-// Discover never fails for a bad individual entry — a file it cannot read, front matter it
-// cannot parse, or front matter missing a title/summary all land in that Entry's Err field
-// instead. Only a failure to read the corpus directory itself is fatal. This lets `kb list` show a
-// broken entry instead of disappearing entirely, and lets `kb reindex` warn on one bad entry,
-// skip it, and keep going — see the Err field doc below.
+// Discover never fails for a bad individual entry: a file it cannot read, front matter it cannot
+// parse, or front matter missing a title/summary all land in that Entry's Err field instead. A
+// symlink that leads outside the location root is never read: it is reported in Skipped. Only a
+// failure to read a source directory, or two sources claiming one file, is fatal. This lets
+// `kb list` show a broken entry instead of hiding it, and lets `kb reindex` warn on one bad
+// entry, skip it, and keep going.
+//
+// Errors returned by Discover, Resolve and Load are *errs.Error: Usage (with the path) for a
+// source that cannot be read or an argument outside the root, NotFound for "no such entry".
 package entry
 
 import (
@@ -30,19 +41,21 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/nickstrad/kb/internal/config"
+	"github.com/nickstrad/kb/internal/errs"
 )
 
 // Kind values stored in the entries table.
 const (
 	KindFile = "file"
 	KindDir  = "dir"
-	DataDir  = "data"
+	// DataDir is the default store's entries directory, which kb init writes as its source.
+	DataDir = "data"
 )
 
-// DataRoot returns the source corpus directory within a repository root.
-func DataRoot(root string) string { return filepath.Join(root, DataDir) }
-
-// excludedRootFiles are the *.md files under data/ that are repository machinery, not entries.
+// excludedRootFiles are the *.md files in an entries directory that are repository machinery,
+// not entries.
 var excludedRootFiles = map[string]bool{
 	"AGENTS.md": true,
 	"CLAUDE.md": true,
@@ -51,7 +64,8 @@ var excludedRootFiles = map[string]bool{
 	"README.md": true,
 }
 
-// excludedDirs are the directories under data/ that are never entries even with a README.md.
+// excludedDirs are the directories in an entries directory that are never entries even with a
+// README.md.
 var excludedDirs = map[string]bool{
 	"skill": true,
 	".kb":   true,
@@ -115,9 +129,11 @@ func (fm *FrontMatter) listField(key string) *[]string {
 	return nil
 }
 
-// Entry is one knowledge entry. Files lists every indexed file, repo-relative, in index order
+// Entry is one knowledge entry. Files lists every indexed file, root-relative, in index order
 // (README.md first, then docs/*.md sorted by name). Dir is the directory name for a directory
-// entry and "" for a file entry.
+// entry and "" for a file entry. Layout is the layout of the source it came from
+// (config.LayoutEntries or config.LayoutFiles) and Source that source's index in the store's
+// [[sources]] list.
 //
 // Err is non-nil when this entry's front door could not be read or its front matter could not be
 // parsed or validated; Meta is the zero value in that case. Discover still returns such an
@@ -126,13 +142,19 @@ func (fm *FrontMatter) listField(key string) *[]string {
 // is incomplete (no title/summary); any other error means the file could not be read at all or
 // its front matter is structurally broken (e.g. an unterminated "---" fence).
 type Entry struct {
-	Path  string
-	Kind  string
-	Dir   string
-	Files []string
-	Meta  FrontMatter
-	Err   error
+	Path   string
+	Kind   string
+	Dir    string
+	Files  []string
+	Layout string
+	Source int
+	Meta   FrontMatter
+	Err    error
 }
+
+// InPlace reports whether the entry comes from a files source: kb indexes it but does not own
+// the file (kb rm refuses it, kb add never writes there).
+func (e Entry) InPlace() bool { return e.Layout == config.LayoutFiles }
 
 // HasTag reports whether the entry carries tag, case-insensitively.
 func (e Entry) HasTag(tag string) bool {
@@ -144,57 +166,180 @@ func (e Entry) HasTag(tag string) bool {
 	return false
 }
 
-// Discover walks data/ one level deep and returns every entry, sorted by Path. A file or
-// directory entry whose front matter cannot be read, parsed or validated is still returned, with
-// Err set (see the Entry.Err doc). A data/ directory that does not exist is an empty corpus, not
-// an error (a fresh store, or a clone that has not made one): callers that care, such as kb
-// doctor, stat DataRoot themselves. The only error Discover itself returns is a failure to read
-// an existing data/, which no individual entry can route around.
-func Discover(root string) ([]Entry, error) {
-	items, err := os.ReadDir(DataRoot(root))
+// Skipped is a file or directory Discover left out on purpose, with the reason, for kb reindex
+// to warn about and kb doctor to report.
+type Skipped struct {
+	Path   string
+	Reason string
+}
+
+func (s Skipped) String() string { return s.Path + ": " + s.Reason }
+
+// Discover reads every source of a store under root and returns its entries sorted by Path, plus
+// what it skipped (a symlink leading outside root). A file or directory entry whose front matter
+// cannot be read, parsed or validated is still returned, with Err set (see the Entry.Err doc).
+//
+// A source directory that does not exist (an entries dir not made yet, a glob whose base is
+// missing) is an empty source, not an error: callers that care, such as kb doctor, check it
+// themselves. No sources means no entries. The errors Discover returns are Usage: a source
+// directory that exists but cannot be read, or two sources that both match one file.
+func Discover(root string, sources []config.Source) ([]Entry, []Skipped, error) {
+	return discover(root, sources, false)
+}
+
+// discover is Discover; with lazy set it leaves every Entry's Meta and Err unread (no file is
+// opened), for Resolve, which reads only the entry it returns.
+func discover(root string, sources []config.Source, lazy bool) ([]Entry, []Skipped, error) {
+	d := discovery{root: root, lazy: lazy, owner: map[string]int{}, folded: map[string]string{}}
+	if real, err := filepath.EvalSymlinks(root); err == nil {
+		d.realRoot = real
+	} else {
+		d.realRoot = filepath.Clean(root)
+	}
+	for i, src := range sources {
+		var err error
+		switch src.Layout {
+		case config.LayoutEntries:
+			err = d.entriesSource(i, src)
+		case config.LayoutFiles:
+			err = d.filesSource(i, src)
+		default:
+			// config.Validate refuses any other layout before a source gets here.
+			err = errs.New(errs.Usage, "entry.Discover", "source %d: unknown layout %q", i+1, src.Layout)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	sort.Slice(d.entries, func(i, j int) bool { return d.entries[i].Path < d.entries[j].Path })
+	return d.entries, d.skipped, nil
+}
+
+// discovery is the state of one Discover run.
+type discovery struct {
+	root, realRoot string
+	lazy           bool // skip loadMeta (see discover)
+	entries        []Entry
+	skipped        []Skipped
+	owner          map[string]int    // root-relative file -> index of the source that claimed it
+	folded         map[string]string // lower-cased root-relative file -> the first spelling claimed
+}
+
+// meta fills e.Meta (or e.Err) unless the run is lazy.
+func (d *discovery) meta(e *Entry) {
+	if !d.lazy {
+		loadMeta(d.root, e)
+	}
+}
+
+// add records e, after checking that no earlier source already claimed one of its files. Two
+// spellings that differ only in case ("docs/a.md", "Docs/a.md") are the same file on a
+// case-insensitive volume (macOS APFS by default): when they are, that is an overlap too.
+func (d *discovery) add(e Entry, src config.Source) error {
+	for _, f := range e.Files {
+		prev, ok := d.owner[f]
+		claimed := f
+		if !ok {
+			if first, seen := d.folded[strings.ToLower(f)]; seen && d.sameFile(first, f) {
+				prev, ok, claimed = d.owner[first], true, first
+			}
+		}
+		if ok && prev != e.Source {
+			return errs.New(errs.Usage, "entry.Discover",
+				"sources[%d] and sources[%d] (%s) both match %s; a file may belong to one source of a store: narrow one with exclude",
+				prev+1, e.Source+1, src, overlapName(claimed, f)).With("path", f)
+		}
+		d.owner[f] = e.Source
+		if _, seen := d.folded[strings.ToLower(f)]; !seen {
+			d.folded[strings.ToLower(f)] = f
+		}
+	}
+	d.entries = append(d.entries, e)
+	return nil
+}
+
+// sameFile reports whether two root-relative spellings name one file on disk.
+func (d *discovery) sameFile(a, b string) bool {
+	fa, err := os.Stat(filepath.Join(d.root, filepath.FromSlash(a)))
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(filepath.Join(d.root, filepath.FromSlash(b)))
+	return err == nil && os.SameFile(fa, fb)
+}
+
+// overlapName is the file an overlap error names: one path, or both spellings of one file.
+func overlapName(first, f string) string {
+	if first == f {
+		return f
+	}
+	return f + " (the same file as " + first + ")"
+}
+
+// entriesSource reads one entries directory one level deep, with the rules of the package doc.
+func (d *discovery) entriesSource(idx int, src config.Source) error {
+	dir := src.Path
+	if out, err := d.outside(dir); out {
+		d.skip(dir, err)
+		return nil
+	}
+	items, err := os.ReadDir(filepath.Join(d.root, filepath.FromSlash(dir)))
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read corpus %s: %w", DataRoot(root), err)
+		return errs.Wrap(err, errs.Usage, "entry.Discover", "cannot read the entries directory %s: %v", dir, err).With("path", dir)
 	}
-	var entries []Entry
 	for _, item := range items {
 		name := item.Name()
-		rel := DataDir + "/" + name
+		rel := dir + "/" + name
 		switch {
 		case item.IsDir():
 			if excludedDirs[name] {
 				continue
 			}
-			readme := filepath.Join(root, rel, "README.md")
+			readme := filepath.Join(d.root, filepath.FromSlash(rel), "README.md")
 			if info, err := os.Stat(readme); err != nil || info.IsDir() {
 				continue
 			}
-			e := Entry{Path: rel + "/README.md", Kind: KindDir, Dir: rel}
-			files, err := dirFiles(root, rel)
-			if err != nil {
-				e.Err = err
-				entries = append(entries, e)
+			if out, why := d.outside(rel + "/README.md"); out {
+				d.skip(rel+"/README.md", why)
 				continue
 			}
-			e.Files = files
-			loadMeta(root, &e)
-			entries = append(entries, e)
+			e := Entry{Path: rel + "/README.md", Kind: KindDir, Dir: rel, Layout: config.LayoutEntries, Source: idx}
+			files, err := d.dirFiles(rel)
+			if err != nil {
+				e.Err = err
+				e.Files = []string{e.Path}
+			} else {
+				e.Files = files
+				d.meta(&e)
+			}
+			if err := d.add(e, src); err != nil {
+				return err
+			}
 		case strings.HasSuffix(name, ".md") && !excludedRootFiles[name]:
-			e := Entry{Path: rel, Kind: KindFile, Files: []string{rel}}
-			loadMeta(root, &e)
-			entries = append(entries, e)
+			if item.Type()&fs.ModeSymlink != 0 {
+				if out, why := d.outside(rel); out {
+					d.skip(rel, why)
+					continue
+				}
+			}
+			e := Entry{Path: rel, Kind: KindFile, Files: []string{rel}, Layout: config.LayoutEntries, Source: idx}
+			d.meta(&e)
+			if err := d.add(e, src); err != nil {
+				return err
+			}
 		}
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
-	return entries, nil
+	return nil
 }
 
-// dirFiles returns the indexed files of a directory entry: README.md, then docs/*.md by name.
-func dirFiles(root, dir string) ([]string, error) {
+// dirFiles returns the indexed files of a directory entry: README.md, then docs/*.md by name. A
+// docs file that is a symlink out of the root is skipped.
+func (d *discovery) dirFiles(dir string) ([]string, error) {
 	files := []string{dir + "/README.md"}
-	docs, err := os.ReadDir(filepath.Join(root, dir, "docs"))
+	docs, err := os.ReadDir(filepath.Join(d.root, filepath.FromSlash(dir), "docs"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return files, nil
@@ -202,11 +347,18 @@ func dirFiles(root, dir string) ([]string, error) {
 		return nil, fmt.Errorf("read %s/docs: %w", dir, err)
 	}
 	var names []string
-	for _, d := range docs {
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
+	for _, f := range docs {
+		if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
 			continue
 		}
-		names = append(names, d.Name())
+		rel := dir + "/docs/" + f.Name()
+		if f.Type()&fs.ModeSymlink != 0 {
+			if out, why := d.outside(rel); out {
+				d.skip(rel, why)
+				continue
+			}
+		}
+		names = append(names, f.Name())
 	}
 	sort.Strings(names)
 	for _, n := range names {
@@ -215,17 +367,47 @@ func dirFiles(root, dir string) ([]string, error) {
 	return files, nil
 }
 
+// skip records a path left out on purpose.
+func (d *discovery) skip(rel, reason string) {
+	d.skipped = append(d.skipped, Skipped{Path: rel, Reason: reason})
+}
+
+// outside reports whether the root-relative path rel resolves, through symlinks, to somewhere
+// outside the location root, with the reason for Skipped. A path that does not resolve (missing,
+// or a dangling link) is not outside: reading it fails later and is reported as that entry's Err.
+func (d *discovery) outside(rel string) (bool, string) {
+	real, err := filepath.EvalSymlinks(filepath.Join(d.root, filepath.FromSlash(rel)))
+	if err != nil {
+		return false, ""
+	}
+	r, err := filepath.Rel(d.realRoot, real)
+	if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+		return true, "symlink to " + real + ", outside the location root; not indexed"
+	}
+	return false, ""
+}
+
 // loadMeta reads the entry's front-door file and fills e.Meta. On any failure — the file cannot
 // be read, its front matter is structurally broken, or it validates as incomplete — it sets e.Err
 // instead and leaves e.Meta at the zero value. It never returns an error: Discover must keep
-// going past one bad entry (see the package and Entry.Err docs).
+// going past one bad entry (see the package and Entry.Err docs). An in-place entry (files layout)
+// gets the fallback title and summary instead of a "missing" error (fallbackMeta).
 func loadMeta(root string, e *Entry) {
 	src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(e.Path)))
 	if err != nil {
 		e.Err = fmt.Errorf("read %s: %w", e.Path, err)
 		return
 	}
-	meta, _, err := ParseFrontMatter(src)
+	var meta FrontMatter
+	if e.InPlace() {
+		var body []byte
+		meta, body, err = parseOptional(src)
+		if err == nil {
+			meta = fallbackMeta(meta, body, e.Path)
+		}
+	} else {
+		meta, _, err = ParseFrontMatter(src)
+	}
 	if err != nil {
 		var ve *ValidationError
 		if errors.As(err, &ve) {
@@ -238,63 +420,81 @@ func loadMeta(root string, e *Entry) {
 	e.Meta = meta
 }
 
-// Resolve turns one <entry> command-line argument into the Entry it names, per the CLI argument
-// forms: a corpus-relative file ("foo.md"), a directory name with or without a trailing
-// slash ("droplet", "droplet/"), a directory's explicit front door ("droplet/README.md"), a
-// repo-relative path ("data/foo.md"), or an absolute path inside data/. It is an error if the
-// argument does not name a discovered entry — including an entry whose own front matter is broken (Err is not considered here; a
-// broken entry is still an entry, and the caller decides what to do with Err).
-func Resolve(root, arg string) (Entry, error) {
+// Resolve turns one <entry> command-line argument into the Entry it names. It tries, in order:
+// the argument as a root-relative path ("docs/install.md", "data/foo.md"), then the argument
+// inside each entries source in config order ("foo.md", "droplet", "droplet/" and
+// "droplet/README.md" for data/). An absolute path is made root-relative first and must be
+// inside root. A file entry matches its Path; a directory entry its Path or its Dir.
+//
+// It is a NotFound error if the argument names no discovered entry, and a Usage error if it is
+// empty or outside root. An entry whose own front matter is broken is still returned (Err is not
+// considered here; the caller decides what to do with it).
+func Resolve(root string, sources []config.Source, arg string) (Entry, error) {
 	trimmedArg := strings.TrimSpace(arg)
 	if trimmedArg == "" {
-		return Entry{}, fmt.Errorf("resolve: empty entry argument")
+		return Entry{}, errs.New(errs.Usage, "entry.Resolve", "resolve: empty entry argument")
 	}
 
 	rel := filepath.ToSlash(trimmedArg)
 	if filepath.IsAbs(trimmedArg) {
 		absRoot, err := filepath.Abs(root)
 		if err != nil {
-			return Entry{}, fmt.Errorf("resolve %q: %w", arg, err)
+			return Entry{}, errs.Wrap(err, errs.Usage, "entry.Resolve", "resolve %q: %v", arg, err)
 		}
-		absArg, err := filepath.Abs(trimmedArg)
-		if err != nil {
-			return Entry{}, fmt.Errorf("resolve %q: %w", arg, err)
-		}
-		r, err := filepath.Rel(absRoot, absArg)
+		r, err := filepath.Rel(absRoot, filepath.Clean(trimmedArg))
 		if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
-			return Entry{}, fmt.Errorf("resolve %q: not inside %s", arg, root)
+			return Entry{}, errs.New(errs.Usage, "entry.Resolve", "resolve %q: not inside %s", arg, root)
 		}
 		rel = filepath.ToSlash(r)
 	}
 	rel = strings.TrimPrefix(rel, "./")
 	rel = strings.TrimSuffix(rel, "/")
+	notFound := errs.New(errs.NotFound, "entry.Resolve", "resolve %q: not a knowledge entry", arg).With("path", arg)
 	if rel == "" || rel == "." {
-		return Entry{}, fmt.Errorf("resolve %q: not a knowledge entry", arg)
-	}
-	if !filepath.IsAbs(trimmedArg) && !strings.HasPrefix(rel, DataDir+"/") {
-		rel = DataDir + "/" + rel
+		return Entry{}, notFound
 	}
 
-	entries, err := Discover(root)
+	candidates := []string{rel}
+	if !filepath.IsAbs(trimmedArg) {
+		for _, src := range sources {
+			if src.Layout == config.LayoutEntries && !strings.HasPrefix(rel, src.Path+"/") {
+				candidates = append(candidates, src.Path+"/"+rel)
+			}
+		}
+	}
+
+	// A lazy walk: the overlap and symlink rules still apply, but only the entry returned has its
+	// front matter read (a full Discover reads every file: ~0.5 s per 10k, on every show/edit/rm).
+	entries, _, err := discover(root, sources, true)
 	if err != nil {
 		return Entry{}, err
 	}
-	for _, e := range entries {
-		if e.Path == rel || (e.Kind == KindDir && e.Dir == rel) {
-			return e, nil
+	for _, c := range candidates {
+		for _, e := range entries {
+			if e.Path == c || (e.Kind == KindDir && e.Dir == c) {
+				if e.Err == nil {
+					loadMeta(root, &e)
+				}
+				return e, nil
+			}
 		}
 	}
-	return Entry{}, fmt.Errorf("resolve %q: not a knowledge entry", arg)
+	return Entry{}, notFound
 }
 
 // Load reads every file in e.Files and returns them keyed by their repo-relative path, exactly as
-// chunk.Split and BodyHash expect.
+// chunk.Split and BodyHash expect. A file that is gone is NotFound; any other read failure is
+// Usage; both name the file.
 func Load(root string, e Entry) (map[string][]byte, error) {
 	files := make(map[string][]byte, len(e.Files))
 	for _, f := range e.Files {
 		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(f)))
 		if err != nil {
-			return nil, fmt.Errorf("load %s: %w", f, err)
+			kind := errs.Usage
+			if errors.Is(err, fs.ErrNotExist) {
+				kind = errs.NotFound
+			}
+			return nil, errs.Wrap(err, kind, "entry.Load", "load %s: %v", f, err).With("path", f)
 		}
 		files[f] = data
 	}
@@ -331,10 +531,55 @@ func BodyHash(files map[string][]byte, order []string) string {
 // stripped (chunk.Split, for a docs/*.md file's own front matter) can use errors.As to ignore
 // this specific error and keep going.
 func ParseFrontMatter(src []byte) (FrontMatter, []byte, error) {
-	var fm FrontMatter
+	fm, body, fenced, err := scanFrontMatter(src)
+	if err != nil || !fenced {
+		return fm, body, err
+	}
+	if strings.TrimSpace(fm.Title) == "" || strings.TrimSpace(fm.Summary) == "" {
+		return fm, body, &ValidationError{Reason: "front matter must set both title and summary"}
+	}
+	if reason := checkFields(fm); reason != "" {
+		return fm, body, &ValidationError{Reason: reason}
+	}
+	return fm, body, nil
+}
+
+// parseOptional is ParseFrontMatter for an in-place file (files layout), whose front matter is
+// optional: a missing title or summary is not an error (fallbackMeta fills it in), but a value
+// that is present must still pass the same rules (one line, caps, no control characters), and a
+// structurally broken fence is still an error.
+func parseOptional(src []byte) (FrontMatter, []byte, error) {
+	fm, body, _, err := scanFrontMatter(src)
+	if err != nil {
+		return fm, body, err
+	}
+	if reason := checkFields(fm); reason != "" {
+		return fm, body, &ValidationError{Reason: reason}
+	}
+	return fm, body, nil
+}
+
+// checkFields applies the content rules to whatever title, summary and aliases are set.
+func checkFields(fm FrontMatter) string {
+	if fm.Title != "" {
+		if reason := checkText("title", fm.Title, MaxTitleRunes); reason != "" {
+			return reason
+		}
+	}
+	if fm.Summary != "" {
+		if reason := checkText("summary", fm.Summary, MaxSummaryRunes); reason != "" {
+			return reason
+		}
+	}
+	return checkAliases(fm.Aliases)
+}
+
+// scanFrontMatter is the structural half of ParseFrontMatter: it finds the fence, reads the keys
+// and refuses multi-line title/summary shapes. fenced is false when there is no front matter.
+func scanFrontMatter(src []byte) (fm FrontMatter, body []byte, fenced bool, err error) {
 	rest := bytes.TrimPrefix(src, []byte("\ufeff"))
 	if !bytes.HasPrefix(rest, []byte("---\n")) && !bytes.HasPrefix(rest, []byte("---\r\n")) {
-		return fm, rest, nil
+		return fm, rest, false, nil
 	}
 	lines := strings.Split(strings.ReplaceAll(string(rest), "\r\n", "\n"), "\n")
 	end := -1
@@ -345,10 +590,9 @@ func ParseFrontMatter(src []byte) (FrontMatter, []byte, error) {
 		}
 	}
 	if end < 0 {
-		return fm, src, fmt.Errorf("front matter is not closed by a '---' line")
+		return fm, src, true, fmt.Errorf("front matter is not closed by a '---' line")
 	}
-	body := []byte(strings.Join(lines[end+1:], "\n"))
-
+	body = []byte(strings.Join(lines[end+1:], "\n"))
 	// This parser has no support for YAML multi-line scalars at all \u2014 block (title: |, summary: >,
 	// with chomping/indentation modifiers) or plain (an unindented continuation line with no key).
 	// Both shapes read as a single-line value if left unrecognized: a block-scalar indicator would
@@ -373,7 +617,7 @@ func ParseFrontMatter(src []byte) (FrontMatter, []byte, error) {
 		name, value, ok := strings.Cut(trimmed, ":")
 		if !ok {
 			if key == "title" || key == "summary" {
-				return fm, body, &ValidationError{Reason: key + " must be one line"}
+				return fm, body, true, &ValidationError{Reason: key + " must be one line"}
 			}
 			continue
 		}
@@ -382,12 +626,12 @@ func ParseFrontMatter(src []byte) (FrontMatter, []byte, error) {
 		switch key {
 		case "title":
 			if value == "" || isBlockScalarIndicator(value) {
-				return fm, body, &ValidationError{Reason: "title must be one line"}
+				return fm, body, true, &ValidationError{Reason: "title must be one line"}
 			}
 			fm.Title = unquote(value)
 		case "summary":
 			if value == "" || isBlockScalarIndicator(value) {
-				return fm, body, &ValidationError{Reason: "summary must be one line"}
+				return fm, body, true, &ValidationError{Reason: "summary must be one line"}
 			}
 			fm.Summary = unquote(value)
 		case "updated":
@@ -401,21 +645,7 @@ func ParseFrontMatter(src []byte) (FrontMatter, []byte, error) {
 		}
 	}
 
-	if strings.TrimSpace(fm.Title) == "" || strings.TrimSpace(fm.Summary) == "" {
-		return fm, body, &ValidationError{Reason: "front matter must set both title and summary"}
-	}
-	if reason := checkText("title", fm.Title, MaxTitleRunes); reason != "" {
-		return fm, body, &ValidationError{Reason: reason}
-	}
-	if reason := checkText("summary", fm.Summary, MaxSummaryRunes); reason != "" {
-		return fm, body, &ValidationError{Reason: reason}
-	}
-
-	if reason := checkAliases(fm.Aliases); reason != "" {
-		return fm, body, &ValidationError{Reason: reason}
-	}
-
-	return fm, body, nil
+	return fm, body, true, nil
 }
 
 // MaxAliases and MaxAliasRunes cap the aliases list. Aliases join the FTS title column, so like a

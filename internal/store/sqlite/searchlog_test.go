@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed/fake"
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/search"
@@ -387,5 +388,117 @@ func TestLogSearchRanksAndReturnedFlag(t *testing.T) {
 	wantFlags := [][2]int64{{1, 1}, {2, 0}, {3, 1}}
 	if fmt.Sprint(gotFlags) != fmt.Sprint(wantFlags) {
 		t.Errorf("candidates (fused_rank, returned) = %v, want %v", gotFlags, wantFlags)
+	}
+}
+
+// settingsRow reads the three v4 columns of a search; each is nil when NULL.
+func settingsRow(t *testing.T, st *Store, id int64) (settings, hash, ftsQuery *string) {
+	t.Helper()
+	var a, b, c sql.NullString
+	if err := st.DB().QueryRow("SELECT settings, settings_hash, fts_query FROM searches WHERE id = ?", id).Scan(&a, &b, &c); err != nil {
+		t.Fatal(err)
+	}
+	ptr := func(n sql.NullString) *string {
+		if !n.Valid {
+			return nil
+		}
+		return &n.String
+	}
+	return ptr(a), ptr(b), ptr(c)
+}
+
+// TestLogSearchSettingsColumns (PLAN 2.5): the settings JSON, its hash and the FTS expression are
+// stored as given, and an empty value is NULL (not recorded), never "".
+func TestLogSearchSettingsColumns(t *testing.T) {
+	st, _ := logFixture(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name             string
+		rec              store.SearchRecord
+		wantSettings     *string
+		wantHash, wantFQ *string
+	}{
+		{"all three", store.SearchRecord{Settings: `{"a":1}`, SettingsHash: "abc", FTSMatch: `"x" AND "y"`}, ptrTo(`{"a":1}`), ptrTo("abc"), ptrTo(`"x" AND "y"`)},
+		{"none given: NULL not empty", store.SearchRecord{}, nil, nil, nil},
+		{"vec search has no FTS expression", store.SearchRecord{Settings: `{}`, SettingsHash: "h"}, ptrTo(`{}`), ptrTo("h"), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.rec.Query, tc.rec.Mode, tc.rec.K, tc.rec.Caller = "q", "fts", 5, "t"
+			id, err := st.LogSearch(ctx, tc.rec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, h, f := settingsRow(t, st, id)
+			for _, c := range []struct {
+				col       string
+				got, want *string
+			}{{"settings", s, tc.wantSettings}, {"settings_hash", h, tc.wantHash}, {"fts_query", f, tc.wantFQ}} {
+				if (c.got == nil) != (c.want == nil) || (c.got != nil && *c.got != *c.want) {
+					t.Errorf("%s = %v, want %v", c.col, deref(c.got), deref(c.want))
+				}
+			}
+		})
+	}
+}
+
+func ptrTo(s string) *string { return &s }
+
+func deref(p *string) string {
+	if p == nil {
+		return "NULL"
+	}
+	return fmt.Sprintf("%q", *p)
+}
+
+// TestSearcherLogsSettingsAndMatch: a logged search carries the settings it ran with (the hash
+// equals config.EffectiveJSON's) and the FTS expression; an fts search of a no-embedder searcher
+// differs only in the mode, and a custom [search] changes the hash.
+func TestSearcherLogsSettingsAndMatch(t *testing.T) {
+	st, sr := logFixture(t)
+	ctx := context.Background()
+
+	def, defHash, err := config.Default().EffectiveJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := sr.SearchAndLog(ctx, search.Request{Query: "widget alpha", Mode: search.ModeFTS, K: 3, Caller: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, h, f := settingsRow(t, st, out.Result.SearchID)
+	if s == nil || *s != string(def) || h == nil || *h != defHash {
+		t.Errorf("default searcher logged settings %v hash %v; want the default config's %s", deref(s), deref(h), defHash)
+	}
+	if f == nil || *f != out.FTSMatch || !strings.Contains(*f, "widget") {
+		t.Errorf("fts_query = %v, want the expression the search ran (%q)", deref(f), out.FTSMatch)
+	}
+
+	cfg := config.Default()
+	cfg.Search.RRFK = 20
+	custom, err := search.NewSettings(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sr.Settings = custom
+	out, err = sr.SearchAndLog(ctx, search.Request{Query: "widget", Mode: search.ModeFTS, K: 3, Caller: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, h2, _ := settingsRow(t, st, out.Result.SearchID)
+	wantJSON, wantHash, _ := cfg.EffectiveJSON()
+	if h2 == nil || *h2 != wantHash || *h2 == defHash {
+		t.Errorf("custom searcher logged hash %v, want %s (not the default %s)", deref(h2), wantHash, defHash)
+	}
+	if s2, _, _ := settingsRow(t, st, out.Result.SearchID); s2 == nil || *s2 != string(wantJSON) {
+		t.Errorf("custom settings JSON = %v", deref(s2))
+	}
+
+	// A vec-only search runs no FTS list: no expression.
+	out, err = sr.SearchAndLog(ctx, search.Request{Query: "widget", Mode: search.ModeVec, K: 3, Caller: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, f := settingsRow(t, st, out.Result.SearchID); f != nil {
+		t.Errorf("a vec search logged fts_query %v, want NULL", deref(f))
 	}
 }

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/entry"
 )
 
@@ -96,7 +95,7 @@ func TestEditValidationErrorKeepsChain(t *testing.T) {
 		return os.WriteFile(path, []byte("---\ntitle: Edit bad\n---\n\nbody\n"), 0o644)
 	}
 	var out, errBuf bytes.Buffer
-	err := runEdit(context.Background(), nil, testDeps, &out, &errBuf, testWS(root), config.Default(), "edit-bad.md")
+	err := runEdit(context.Background(), nil, testDeps, &out, &errBuf, testWS(root), testConfig(), "edit-bad.md")
 	var ve *entry.ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("runEdit = %v, want the *entry.ValidationError in its chain", err)

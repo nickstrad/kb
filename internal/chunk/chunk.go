@@ -3,7 +3,9 @@
 // The chunking rules:
 //
 //  1. strip front matter (every file in the entry, not only the front door — see stripFrontMatter);
-//  2. chunk 0 is "<title>: <summary>" with an empty heading;
+//  2. chunk 0 is "<title>: <summary>" with an empty heading; an in-place entry (files layout)
+//     with no summary has "<title>" alone, and its leading "# " line is dropped from the intro
+//     when it only repeats the title;
 //  3. one chunk per "##" section of each indexed file, text prefixed with a context line
 //     "<title> › <heading>" (for a file other than the entry's front door that has a title of its
 //     own, "<title> › <file title> › <heading>" — see fileTitle); text before the first "##" (the lede) is its own chunk with
@@ -57,10 +59,11 @@ func Hash(text string) string {
 
 // Split produces the chunks of one entry. files maps every repo-relative path in e.Files to its
 // raw bytes, front matter included; a file listed in e.Files but missing from files is an error.
-// Split requires e.Meta to already carry a title and summary (Discover leaves Meta zero-valued
+// Split requires e.Meta to already carry a title and a summary (Discover leaves Meta zero-valued
 // and sets Entry.Err instead when the front door's own front matter did not validate — callers
-// should check Err before calling Split); a missing title or summary here is reported as a
-// *entry.ValidationError so a caller such as `kb reindex` can warn-and-skip by type.
+// should check Err before calling Split); only an in-place entry (e.InPlace()) may have an empty
+// summary. A missing value is reported as a *entry.ValidationError so a caller such as
+// `kb reindex` can warn-and-skip by type.
 func Split(e entry.Entry, files map[string][]byte) ([]Chunk, error) {
 	for _, f := range e.Files {
 		if _, ok := files[f]; !ok {
@@ -69,11 +72,15 @@ func Split(e entry.Entry, files map[string][]byte) ([]Chunk, error) {
 	}
 	title := strings.TrimSpace(e.Meta.Title)
 	summary := strings.TrimSpace(e.Meta.Summary)
-	if title == "" || summary == "" {
+	if title == "" || (summary == "" && !e.InPlace()) {
 		return nil, &entry.ValidationError{Path: e.Path, Reason: "front matter needs both a title and a summary"}
 	}
 
-	chunks := []Chunk{newChunk(0, e.Path, "", title+": "+summary)}
+	head := title
+	if summary != "" {
+		head += ": " + summary
+	}
+	chunks := []Chunk{newChunk(0, e.Path, "", head)}
 	ord := 1
 
 	for _, f := range e.Files {
@@ -83,6 +90,9 @@ func Split(e entry.Entry, files map[string][]byte) ([]Chunk, error) {
 		}
 		prefix := title
 		text := string(body)
+		if f == e.Path && e.InPlace() {
+			_, text = fileTitle(title, text) // drops a leading "# <title>" the context line repeats
+		}
 		if f != e.Path {
 			var ft string
 			ft, text = fileTitle(fmTitle, text)

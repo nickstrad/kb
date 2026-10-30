@@ -116,7 +116,7 @@ func runOne(ctx context.Context, a Artefact, o Options) (Outcome, error) {
 	out := Outcome{Status: st}
 	if !o.NoBackup && st.Current > 0 {
 		dst := backupPath(st.Path, st.Current, o.Now())
-		if err := a.Backup(ctx, dst); err != nil {
+		if err := backupTo(ctx, a, dst); err != nil {
 			return out, wrap(ctx, err, op, "could not back up %s to %s; nothing was migrated", st.Path, dst).With("path", st.Path)
 		}
 		out.Backup = dst
@@ -148,6 +148,27 @@ func status(ctx context.Context, a Artefact) (Status, error) {
 			"%s was written by a newer kb (v%d > v%d); upgrade kb", st.Path, st.Current, st.Target).With("path", st.Path)
 	}
 	return st, nil
+}
+
+// partialSuffix marks a backup that is still being written. It never matches the pattern prune
+// and the user look for, so a backup that did not finish (a failed or interrupted copy, or a kill)
+// is never mistaken for a good one.
+const partialSuffix = ".partial"
+
+// backupTo has the artefact write its backup to dst by way of dst+partialSuffix and renames it
+// into place when the copy is complete. A failure, including a cancel, removes the partial file.
+func backupTo(ctx context.Context, a Artefact, dst string) error {
+	tmp := dst + partialSuffix
+	_ = os.Remove(tmp) // best effort: a leftover from a killed run; Backup refuses an existing file
+	if err := a.Backup(ctx, tmp); err != nil {
+		_ = os.Remove(tmp) // best effort: the backup error is what matters
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp) // best effort, as above
+		return err
+	}
+	return nil
 }
 
 func backupNote(path string) string {

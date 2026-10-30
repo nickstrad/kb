@@ -43,8 +43,12 @@ type deps struct {
 	// embedder, when set, replaces the embedder the [embed] config would build.
 	embedder      func(config.Embed) (embed.Embedder, error)
 	modelCacheDir func() (string, error)
-	pullModel     func(ctx context.Context, spec local.Spec, cacheDir string) error
-	openStore     func(ctx context.Context, path string, readOnly bool) (store.Store, error)
+	// embedCachePath is the shared embedding cache file; nil turns the cache off (tests).
+	embedCachePath func() (string, error)
+	// caches are the embedding caches the running command opened; execute closes them.
+	caches    *embedCaches
+	pullModel func(ctx context.Context, spec local.Spec, cacheDir string) error
+	openStore func(ctx context.Context, path string, readOnly bool) (store.Store, error)
 	// editor runs the configured editor command on path; configured is [edit] editor, "" when unset.
 	editor func(ctx context.Context, configured, path string) error
 	// userCacheDir is where the incident log goes when there is no <root>/.kb.
@@ -57,6 +61,7 @@ type deps struct {
 // productionDeps are the real implementations.
 func productionDeps() *deps {
 	d := &deps{
+		caches:       &embedCaches{},
 		pullModel:    local.Pull,
 		openStore:    openSQLite,
 		editor:       runEditor,
@@ -71,6 +76,7 @@ func productionDeps() *deps {
 		}
 		return dir, nil
 	}
+	d.embedCachePath = func() (string, error) { return embedCacheFile(d.workspaceEnv().CacheBase) }
 	return d
 }
 
@@ -83,67 +89,32 @@ func openSQLite(ctx context.Context, path string, readOnly bool) (store.Store, e
 	return st, nil
 }
 
-// location resolves the location this command runs in from the root persistent flags (--root,
-// --global, --store global), else by walking up from the working directory for .kb/kb.toml, and
-// reads its kb.toml. how says how it was chosen, for --debug. Errors are already well-formed:
-// NotFound with no location, or when --root/--global name a directory with no kb.toml (run kb
-// init); Usage for a bad --store or a flag conflict.
+// location resolves the location this command runs in (see resolveRef for how --root, --global
+// and --store choose it), reads its kb.toml, and says how it was chosen, for --debug. It does not
+// check that the store exists, so kb stores and kb doctor can report on a broken one. Errors are
+// already well-formed: NotFound with no location, or when --root/--global name a directory with
+// no kb.toml (run kb init); Usage for a bad --store or a flag conflict.
 func (d *deps) location(cmd *cobra.Command) (loc *workspace.Location, lf config.Location, ref workspace.Ref, how string, err error) {
-	// Get* fails only for an undefined flag; all are root persistent flags, so "" / false is safe.
-	root, _ := cmd.Flags().GetString("root")
-	global, _ := cmd.Flags().GetBool("global")
-	storeFlag, _ := cmd.Flags().GetString("store")
-	env := d.workspaceEnv()
-	ref, err = workspace.ParseRef(storeFlag)
+	rr, err := d.resolveRef(cmd, false)
 	if err != nil {
-		return nil, config.Location{}, ref, "", err
+		return nil, config.Location{}, rr.ref, "", err
 	}
-	how = "discovered from " + env.Cwd
-	switch {
-	case ref.Global && root != "":
-		return nil, config.Location{}, ref, "", usageErr("--store global cannot be combined with --root: global names the global location")
-	case ref.Global:
-		global, how = true, "--store global"
-	case root != "":
-		how = "--root"
-	case global:
-		how = "--global"
-	}
-	loc, err = workspace.ResolveLocation(root, global, env)
-	if err != nil {
-		return nil, config.Location{}, ref, "", err
-	}
-	lf, err = config.ReadLocation(loc.FilePath)
-	if err != nil {
-		return nil, config.Location{}, ref, "", err
-	}
-	return loc, lf, ref, how, nil
+	return rr.loc, rr.lf, rr.ref, rr.how, nil
 }
 
-// workspace resolves the store this command runs on: the location (see location), then the store,
-// which is --store (a local NAME, or global for the global location's default) or kb.toml's
-// default_store. A store missing from the location is NotFound; so is a default_store that names
-// no store, and that message names kb.toml. Under --debug it says on stderr which store was
+// workspace resolves the store this command runs on: --store (a store name, an alias, global,
+// NAME@LOC or a path; see workspace.Ref), else the location's default_store. A store missing from
+// the location is NotFound, listing the stores and aliases that exist; so is a default_store that
+// names no store, and that message names kb.toml. Under --debug it says on stderr which store was
 // chosen and how.
 func (d *deps) workspace(cmd *cobra.Command) (*workspace.Workspace, error) {
-	loc, lf, ref, how, err := d.location(cmd)
+	rr, err := d.resolveRef(cmd, true)
 	if err != nil {
 		return nil, err
 	}
-	name := ref.Name
-	if name == "" {
-		name = lf.DefaultStore
-	}
-	ws, err := loc.Store(name)
-	if err != nil {
-		if ref.Name == "" && errs.KindOf(err) == errs.NotFound {
-			return nil, errs.Wrap(err, errs.NotFound, "cli.workspace",
-				"default_store %q in %s names no store in %s; %s", name, loc.FilePath, loc.Root, storeHint(loc, name))
-		}
-		return nil, err
-	}
+	ws := rr.ws
 	if debugFlag(cmd) {
-		fmt.Fprintf(cmd.ErrOrStderr(), "%s: location %s store %s (%s)\n", cmd.CommandPath(), loc.Root, ws.Store, how)
+		fmt.Fprintf(cmd.ErrOrStderr(), "%s: location %s store %s (%s)\n", cmd.CommandPath(), ws.Root, ws.Store, rr.how)
 	}
 	return ws, nil
 }
@@ -182,6 +153,7 @@ func execute(ctx context.Context, d *deps, args []string, stdout, stderr io.Writ
 		}
 	}()
 	ran, err := cmd.ExecuteContextC(ctx)
+	d.finishEmbedCaches(stderr)
 	if err == nil {
 		return ExitOK
 	}
@@ -249,7 +221,7 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd.SetErr(stderr)
 	cmd.PersistentFlags().String("root", "", "use the location in DIR instead of discovering one from the current directory")
 	cmd.PersistentFlags().Bool("global", false, "use the machine-wide location ($XDG_DATA_HOME/kb, else ~/.local/share/kb)")
-	cmd.PersistentFlags().String("store", "", "the store to work on: a store name of the location, or global; default: kb.toml's default_store")
+	cmd.PersistentFlags().String("store", "", "the store to work on: a store name or alias, global, NAME@LOCATION (a location is global or a path), or a path (that location's default store); default: kb.toml's default_store")
 	cmd.MarkFlagsMutuallyExclusive("root", "global")
 	cmd.PersistentFlags().Bool("debug", false, "print extra detail on stderr: the full error chain, and best-effort steps that failed quietly")
 
@@ -260,6 +232,7 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		newShowCmd(d, stdout, stderr),
 		newListCmd(d, stdout, stderr),
 		newSearchCmd(d, stdout, stderr),
+		newExplainCmd(d, stdout, stderr),
 		newReindexCmd(d, stdout, stderr),
 		newIndexCmd(d, stdout, stderr),
 		newDoctorCmd(d, stdout, stderr),
@@ -270,6 +243,7 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		newConfigCmd(d, stdout, stderr),
 		newStoresCmd(d, stdout, stderr),
 		newInitCmd(d, stdout, stderr),
+		newMigrateCmd(d, stdout, stderr),
 	)
 	markRunErrors(cmd)
 	return cmd

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/nickstrad/kb/internal/embed/local"
+	"github.com/nickstrad/kb/internal/errs"
 )
 
 // stubPull replaces testDeps.pullModel for one test with a stub that records each pull in calls and, when
@@ -168,7 +169,7 @@ func TestRootHelpNamesNoEnvEmbedders(t *testing.T) {
 func TestModelCommandsCacheDirFailure(t *testing.T) {
 	origDir := testDeps.modelCacheDir
 	t.Cleanup(func() { testDeps.modelCacheDir = origDir })
-	testDeps.modelCacheDir = func() (string, error) { return "", errors.New("no home") }
+	testDeps.modelCacheDir = func() (string, error) { return "", errs.New(errs.Usage, "test", "no home") }
 	for _, sub := range []string{"pull", "list"} {
 		if _, errOut, code := run(t, "model", sub); code != ExitUsage || !strings.Contains(errOut, "kb model "+sub+": no home") {
 			t.Errorf("model %s with no cache dir: %d %q", sub, code, errOut)

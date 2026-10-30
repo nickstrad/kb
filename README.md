@@ -7,7 +7,8 @@ records feedback on what helped so `kb stats` can show where the store falls sho
 This repository holds the Go CLI. Knowledge entries
 live in a separate knowledge repository. A **location** is a directory with a `.kb/` folder
 (`.kb/kb.toml`); it holds one or more named **stores**, each with its own config, embedder, index
-and search log in `.kb/stores/<name>/` (`config.toml`, `kb.sqlite`). Entries are in `<location>/data/`.
+and search log in `.kb/stores/<name>/` (`config.toml`, `kb.sqlite`). What a store indexes is its
+`[[sources]]` list (see "Sources" below): by default the entries in `<location>/data/`.
 kb uses the nearest directory at or above the current one that has `.kb/kb.toml`; `--root DIR` and
 `--global` name a location explicitly, and `--store NAME` picks a store (default: `default_store`
 in `kb.toml`). Only `kb init` creates a location or a store; `kb stores` lists them.
@@ -63,6 +64,67 @@ kb stores                # list the stores
 kb add <draft.md>
 kb search "<question>" --caller claude
 ```
+
+### Sources
+
+Each store's `config.toml` lists what it indexes, with paths relative to the location root.
+`kb init` writes them: `data/` for the default store, `data-<name>/` for a named one, or the
+`--source GLOB` you pass (repeatable) to index Markdown where it already lives:
+
+```toml
+[[sources]]
+path   = "data"            # layout "entries": kb add writes here; front matter required
+layout = "entries"
+
+[[sources]]
+glob    = "docs/**/*.md"   # layout "files": every *.md the glob matches, in place
+layout  = "files"
+exclude = ["docs/archive/**"]
+```
+
+- In-place files need no front matter: the title falls back to the first `# ` heading, then the
+  file name; the summary to the first paragraph (cut to 200 characters), else none.
+- A file may belong to one source of a store (two that match it is an error); several stores
+  may index the same file. `.git`, `.kb` and `node_modules` are never walked, and a symlink that
+  leads outside the location root is skipped with a warning (`kb doctor` lists them).
+- `kb rm` refuses an in-place file (delete it and run `kb reindex --all`), and `kb add` needs a
+  store with exactly one `entries` source. A store with no sources indexes nothing.
+- Chunks follow `##` sections. A document that uses only `#` headings becomes one intro section,
+  split at paragraph boundaries every 1500 characters.
+
+```bash
+kb init --model none --source 'README.md' --source 'docs/**/*.md'
+kb reindex --all
+kb search install
+```
+
+## Upgrading
+
+A new kb can change the format of the files it keeps: each store's index database (`kb.sqlite`,
+which holds the search log), its `config.toml`, and the location's `.kb/kb.toml`. After
+installing a new kb, a command that meets an older file stops with exit 1 and
+
+```
+store database /path/.kb/stores/default/kb.sqlite is at schema v2; this kb needs v4. Run: kb migrate up
+```
+
+Run that command. It copies each file to `<file>.bak-v<N>-<time>` beside it (the newest 3 are
+kept, and `.kb/.gitignore` ignores them), upgrades it, and ends with `needs: kb reindex` when a
+step cleared derived data (`kb reindex` rebuilds it; entries are never lost).
+
+```bash
+kb migrate status                 # versions and pending steps; exit 1 if any are pending
+kb migrate up --dry-run           # the plan and the backups it would write; nothing changes
+kb migrate up                     # back up, then upgrade this store and the location file
+kb migrate up --all               # every store of the location, and the global location
+kb migrate verify                 # integrity and schema check; exit 1 on drift
+```
+
+Many projects: `for d in ~/work/*/; do (cd "$d" && kb migrate up); done`. A file written by a newer
+kb is refused with "upgrade kb" and is never changed; to go back, restore a backup (copy
+`kb.sqlite.bak-v<N>-<time>` over `kb.sqlite`). The embedding cache is rebuilt by itself and never
+needs `kb migrate`. `kb doctor`, `kb stores`, `kb config --path` and `kb version` work on any
+version.
 
 ## Exit codes
 

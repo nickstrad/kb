@@ -1,0 +1,282 @@
+package cli
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"flag"
+	"math"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/nickstrad/kb/internal/config"
+	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/store/sqlite"
+)
+
+var updateExplain = flag.Bool("update-explain", false, "rewrite testdata/golden/explain_*.golden")
+
+// newExplainRepo indexes five small entries with the fixture model (the shared two-chunk fixture
+// is too small for bm25: with every chunk matching, idf bottoms out and every score is 0). The
+// corpus has the PLAN accept case: "tmux logout" hits an entry titled "Tmux Notes".
+func newExplainRepo(t *testing.T) string {
+	t.Helper()
+	root := newSearchTestRepo(t, testModel768, testDim768)
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, testDBPath(root), sqlite.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	emb := fake.New(testModel768, testDim768)
+	entries := []struct {
+		path, title string
+		chunks      [][2]string // heading, text
+	}{
+		{"tmux.md", "Tmux Notes", [][2]string{
+			{"", "Tmux Notes: sessions survive a logout when the server keeps running"},
+			{"Detach", "press the prefix then d to detach, and the session stays alive after logout"},
+		}},
+		{"ssh.md", "SSH Config", [][2]string{{"", "SSH Config: keepalive settings stop a logout from dropping the link"}}},
+		{"git.md", "Git Tips", [][2]string{{"", "Git Tips: rebase onto main before opening a pull request"}}},
+		{"docker.md", "Docker Volumes", [][2]string{{"", "Docker Volumes: named volumes outlive their container"}}},
+		{"cache.md", "Build Cache", [][2]string{{"", "Build Cache: layers are reused when the inputs are unchanged"}}},
+	}
+	for _, e := range entries {
+		texts := make([]string, len(e.chunks))
+		for i, c := range e.chunks {
+			texts[i] = embed.DocText(emb, c[1])
+		}
+		vecs, err := emb.Embed(ctx, texts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunks := make([]store.ChunkInput, len(e.chunks))
+		for i, c := range e.chunks {
+			sum := sha256.Sum256([]byte(c[1]))
+			chunks[i] = store.ChunkInput{Ord: i, SourceFile: e.path, Heading: c[0], Text: c[1],
+				TextHash: hex.EncodeToString(sum[:]), Embedding: vecs[i]}
+		}
+		if _, err := st.ReplaceEntry(ctx, store.EntryInput{Path: e.path, Kind: "file", Title: e.title,
+			Summary: "fixture", BodyHash: "hash-" + e.path}, chunks); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// withFixtureEmbedder makes the CLI embed with a fake of the fixture's model and width.
+func withFixtureEmbedder(t *testing.T) {
+	t.Helper()
+	orig := testDeps.embedder
+	testDeps.embedder = func(config.Embed) (embed.Embedder, error) { return fake.New(testModel768, testDim768), nil }
+	t.Cleanup(func() { testDeps.embedder = orig })
+}
+
+// explainGoldenDir is resolved at init: tests chdir into a temp root.
+var explainGoldenDir = func() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+	return filepath.Join(wd, "testdata", "golden")
+}()
+
+func checkExplainGolden(t *testing.T, name, got string) {
+	t.Helper()
+	path := filepath.Join(explainGoldenDir, name)
+	if *updateExplain {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read golden: %v (run with -update-explain)", err)
+	}
+	if string(want) != got {
+		t.Errorf("output differs from %s (run with -update-explain and review the diff):\n--- got\n%s\n--- want\n%s", path, got, want)
+	}
+}
+
+// TestExplainGoldenFTS pins the human output of an FTS explain: the header, the AND match, the
+// per-column scores (a title term: the title column is nonzero) and the RRF arithmetic.
+func TestExplainGoldenFTS(t *testing.T) {
+	useRoot(t, newExplainRepo(t))
+	stdout, stderr, exit := runKB(t, []string{"explain", "tmux", "logout", "--mode", "fts"})
+	if exit != 0 || stderr != "" {
+		t.Fatalf("exit %d stderr %q", exit, stderr)
+	}
+	checkExplainGolden(t, "explain_fts.golden", stdout)
+	if !strings.Contains(stdout, `fts: match "tmux" AND "logout" · AND`) {
+		t.Errorf("no AND match line:\n%s", stdout)
+	}
+}
+
+// TestExplainGoldenHybrid pins a hybrid explain: both lists, both RRF terms, vector distance.
+func TestExplainGoldenHybrid(t *testing.T) {
+	useRoot(t, newExplainRepo(t))
+	withFixtureEmbedder(t)
+	stdout, stderr, exit := runKB(t, []string{"explain", "tmux logout"})
+	if exit != 0 || stderr != "" {
+		t.Fatalf("exit %d stderr %q", exit, stderr)
+	}
+	checkExplainGolden(t, "explain_hybrid.golden", stdout)
+}
+
+// TestExplainJSONShape pins the --json contract: the key sets of the top level, a candidate and
+// its parts, with null (not absent) for what a hit lacks.
+func TestExplainJSONShape(t *testing.T) {
+	useRoot(t, newSearchTestRepo(t, testModel768, testDim768))
+	withFixtureEmbedder(t)
+	stdout, stderr, exit := runKB(t, []string{"explain", "widget", "--json"})
+	if exit != 0 {
+		t.Fatalf("exit %d: %s", exit, stderr)
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(stdout), &top); err != nil {
+		t.Fatalf("json: %v\n%s", err, stdout)
+	}
+	wantKeys(t, "top", top, "candidates", "fts", "k", "mode", "n_fts", "n_vec", "query", "settings", "settings_hash")
+	var settings map[string]json.RawMessage
+	_ = json.Unmarshal(top["settings"], &settings)
+	wantKeys(t, "settings", settings, "bm25_heading", "bm25_text", "bm25_title", "candidate_limit", "fts_weight",
+		"list_limit", "per_entry_cap", "rrf_k", "vec_weight")
+	var fts map[string]json.RawMessage
+	_ = json.Unmarshal(top["fts"], &fts)
+	wantKeys(t, "fts", fts, "match", "op", "or_fallback")
+
+	var cands []map[string]json.RawMessage
+	if err := json.Unmarshal(top["candidates"], &cands); err != nil || len(cands) != 2 {
+		t.Fatalf("candidates: %v %s", err, top["candidates"])
+	}
+	for _, c := range cands {
+		wantKeys(t, "candidate", c, "chunk_id", "columns", "fts", "heading", "path", "rank", "returned_rank",
+			"rrf_score", "rrf_terms", "status", "vec")
+		var f, v, col map[string]json.RawMessage
+		_ = json.Unmarshal(c["fts"], &f)
+		_ = json.Unmarshal(c["vec"], &v)
+		_ = json.Unmarshal(c["columns"], &col)
+		wantKeys(t, "candidate.fts", f, "bm25", "rank")
+		wantKeys(t, "candidate.vec", v, "distance", "rank")
+		wantKeys(t, "candidate.columns", col, "heading", "text", "title")
+	}
+}
+
+func wantKeys(t *testing.T, what string, m map[string]json.RawMessage, want ...string) {
+	t.Helper()
+	got := make([]string, 0, len(m))
+	for k := range m {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("%s keys = %v, want %v", what, got, want)
+	}
+}
+
+// TestExplainDoesNotLogOrChangeIDs: explain leaves the search log alone, so the next real search
+// is still search 1.
+func TestExplainDoesNotLog(t *testing.T) {
+	useRoot(t, newSearchTestRepo(t, testModel768, testDim768))
+	if _, stderr, exit := runKB(t, []string{"explain", "widget", "--mode", "fts"}); exit != 0 {
+		t.Fatalf("explain: exit %d %s", exit, stderr)
+	}
+	stdout, _, exit := runKB(t, []string{"search", "widget", "--mode", "fts"})
+	if exit != 0 || !strings.HasPrefix(stdout, "search 1 · ") {
+		t.Errorf("first logged search = %q, want it to be search 1 (exit %d)", strings.SplitN(stdout, "\n", 2)[0], exit)
+	}
+}
+
+// TestExplainSetOverride: --set changes the settings explain runs with and hashes them.
+func TestExplainSetOverride(t *testing.T) {
+	useRoot(t, newSearchTestRepo(t, testModel768, testDim768))
+	plain, _, _ := runKB(t, []string{"explain", "widget", "--mode", "fts"})
+	set, stderr, exit := runKB(t, []string{"explain", "widget", "--mode", "fts", "--set", "search.rrf_k=1", "--set", "search.bm25.title=9"})
+	if exit != 0 {
+		t.Fatalf("exit %d %s", exit, stderr)
+	}
+	if !strings.Contains(set, "rrf_k=1 ") || !strings.Contains(set, "title=9 ") || !strings.Contains(set, "1/(1+1)=0.500000") {
+		t.Errorf("--set not reflected:\n%s", set)
+	}
+	if line := func(s string) string { return strings.SplitN(s, "\n", 2)[0] }; line(plain) == line(set) {
+		t.Errorf("settings hash did not change with --set: %q", line(set))
+	}
+}
+
+// TestExplainFlagErrors is the usage-error table: each is exit 1 with the problem named.
+func TestExplainFlagErrors(t *testing.T) {
+	root := newSearchTestRepo(t, testModel768, testDim768)
+	useRoot(t, root)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"bad mode", []string{"explain", "x", "--mode", "bogus"}, "invalid --mode"},
+		{"bad set key", []string{"explain", "x", "--set", "search.nope=1"}, "--set search.nope=1"},
+		{"bad set value", []string{"explain", "x", "--set", "search.rrf_k=0"}, "rrf_k"},
+		{"set to an unknown model", []string{"explain", "x", "--set", "embed.model=nope"}, "--set"},
+		{"blank query", []string{"explain", " ", "--mode", "fts"}, "empty query"},
+		{"no query", []string{"explain"}, "requires at least 1 arg"},
+		{"vec with none embedder", []string{"explain", "x", "--mode", "vec", "--set", "embed.model=none"}, "embedder is none"},
+	} {
+		_, stderr, exit := runKB(t, tc.args)
+		if exit != 1 || !strings.Contains(stderr, tc.want) {
+			t.Errorf("%s: exit %d stderr %q, want exit 1 naming %q", tc.name, exit, stderr, tc.want)
+		}
+	}
+	if err := os.Remove(testDBPath(root)); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, exit := runKB(t, []string{"explain", "x"}); exit != 1 || !strings.Contains(stderr, "no index at") {
+		t.Errorf("no database: exit %d stderr %q", exit, stderr)
+	}
+}
+
+// TestExplainNoResults: a query nothing matches prints the header and "no candidates", exit 0.
+func TestExplainNoResults(t *testing.T) {
+	useRoot(t, newSearchTestRepo(t, testModel768, testDim768))
+	stdout, _, exit := runKB(t, []string{"explain", "fluffernutter", "--mode", "fts"})
+	if exit != 0 || !strings.Contains(stdout, "no candidates") || !strings.Contains(stdout, `match "fluffernutter" · AND`) {
+		t.Errorf("exit %d:\n%s", exit, stdout)
+	}
+}
+
+// TestExplainEmbedderUnavailable: hybrid with no downloaded model explains the fts fallback,
+// warns on stderr and exits 2 like kb search.
+func TestExplainEmbedderUnavailable(t *testing.T) {
+	useRoot(t, newSearchTestRepo(t, testModel768, testDim768))
+	stdout, stderr, exit := runKB(t, []string{"explain", "widget"})
+	if exit != ExitEmbedder || !strings.Contains(stderr, "explained --mode fts instead") ||
+		!strings.Contains(stdout, "mode fts-fallback") || !strings.Contains(stdout, "fallback: ") {
+		t.Errorf("exit %d\nstdout:\n%s\nstderr:\n%s", exit, stdout, stderr)
+	}
+}
+
+// TestExplainFormatHelpers: the small formatters at their edges (a missing score, negative zero,
+// a short and a full-length hash).
+func TestExplainFormatHelpers(t *testing.T) {
+	negZero := math.Copysign(0, -1)
+	one := -1.23456
+	for _, tc := range []struct{ got, want string }{
+		{col(nil), "-"}, {col(&negZero), "0.0000"}, {col(&one), "-1.2346"},
+		{shortHash(""), ""}, {shortHash("abc"), "abc"}, {shortHash("0123456789ab"), "0123456789ab"}, {shortHash("0123456789abc"), "0123456789ab"},
+		{num(1), "1"}, {num(0.5), "0.5"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("got %q, want %q", tc.got, tc.want)
+		}
+	}
+}

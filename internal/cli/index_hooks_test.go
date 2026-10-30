@@ -152,3 +152,31 @@ func TestIndexReportsInvalidEntryAndWritesValidRows(t *testing.T) {
 	assertIndexContains(t, root, "valid.md", true)
 	assertIndexContains(t, root, "[invalid.md]", false)
 }
+
+// TestIndexNamedStoreDoesNotClobber: index.md is one file at the location root and describes the
+// default store, so kb index for another store is refused and leaves it alone, and doctor run on
+// another store does not judge it (W7 pass: a files-only store wrote "(0 entries)" over it).
+func TestIndexNamedStoreDoesNotClobber(t *testing.T) {
+	root := newTempRoot(t)
+	useNoneModel(t, root)
+	writeFile(t, filepath.Join(root, "data", "a.md"), validFrontMatter("A", "a"))
+	addStore(t, root, "notes")
+	if _, errOut, code := run(t, "index"); code != 0 {
+		t.Fatalf("index: %d %q", code, errOut)
+	}
+	before := readFileT(t, filepath.Join(root, "index.md"))
+	_, errOut, code := run(t, "--store", "notes", "index")
+	if code != ExitUsage || !strings.Contains(errOut, `describes the default store ("default")`) {
+		t.Fatalf("index for notes: %d %q", code, errOut)
+	}
+	if readFileT(t, filepath.Join(root, "index.md")) != before {
+		t.Error("kb --store notes index changed index.md")
+	}
+	writeFile(t, filepath.Join(root, "index.md"), before+"stale\n")
+	if out, _, _ := run(t, "--store", "notes", "doctor"); !strings.Contains(out, `ok   index.md: not checked: it describes the default store "default"`) {
+		t.Errorf("doctor on notes judged index.md:\n%s", out)
+	}
+	if out, _, _ := run(t, "doctor"); !strings.Contains(out, "warn index.md: optional snapshot is stale") {
+		t.Errorf("doctor on the default store lost the stale check:\n%s", out)
+	}
+}

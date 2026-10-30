@@ -19,9 +19,18 @@ import (
 // root and to the --global store). args are returned unchanged.
 func withNone(args ...string) []string { return args }
 
+// dataSource is the [[sources]] table kb init writes for a default store: the entries directory
+// data/. setConfig appends it to a body that names no sources, so a scenario that only tunes
+// [embed] or [search] keeps indexing data/ (PLAN 1.5: no [[sources]] means nothing indexed).
+const dataSource = "\n[[sources]]\npath = \"data\"\nlayout = \"entries\"\n"
+
 // setConfig writes body as the config of the scenario root's store (global=false) or of the
 // --global store, at the path kb itself reports (kb config --path), so no layout is assumed.
+// A body without [[sources]] gets dataSource.
 func (h *H) setConfig(body string, global bool) {
+	if !strings.Contains(body, "[[sources]]") {
+		body += dataSource
+	}
 	r := h.kb("config", "--path")
 	if global { // h.kb adds --root, so the global store is asked for without it
 		r = h.kbAt(h.outside, "--global", "config", "--path")
@@ -57,6 +66,9 @@ var scenarios = []scenario{
 	{"stores-layout", "init default and named stores, kb stores, --store, unknown and invalid stores, a missing default_store, a broken kb.toml, bare --root refusal", scStoresLayout},
 	{"search-settings", "[search] tuning keys change kb search: rrf_k/list_weights move the score, every key at its max works, out-of-range and nan/inf values exit 1 naming file and key, nothing logged", scSearchSettings},
 	{"workspace-discovery", "no --root: discovery from nested and symlinked dirs, not-found outside any store, kb init in a fresh dir, the $HOME guard (H28), --global under HOME, relative --root, --root with --global", scWorkspaceDiscovery},
+	{"stores-alias", "store refs: alias, NAME@LOC, path, global, shadowing warns once, an alias with --root is refused, unknown words suggest names, hostile alias targets and refs exit 1 and never 3, kb stores lists a broken alias", scStoresAlias},
+	{"cache-two-stores", "the shared embedding cache (H19): processes on two stores open one cache file at once without locking errors; a garbage or newer cache file warns and falls back, is left alone, and kb model cache --clear removes it; --stats and --clear on a missing cache exit 0", scCacheTwoStores},
+	{"explain-hostile", "kb explain on hostile queries is valid JSON, --set overrides apply and bad ones exit 1, and it never writes the search log", scExplain},
 }
 
 // scWorkspaceDiscovery attacks "kb finds the right store, or none, and never creates one by
@@ -160,12 +172,16 @@ func scStoresLayout(h *H) {
 	}
 	h.must(h.kb("reindex", "--all").Code == 0, "index the default store")
 	h.must(h.kb("--store", "adr", "reindex", "--all").Code == 0, "index the adr store")
-	for _, store := range []string{"default", "adr"} {
-		if _, err := os.Stat(filepath.Join(h.root, ".kb", "stores", store, "kb.sqlite")); err != nil {
-			h.fail("store %s has no database of its own: %v", store, err)
+	// PLAN 1.5: the named store reads its own entries dir data-adr/, not the default store's data/.
+	h.write("data-adr/a.md", entryText("A", "## A\n\nstoreword adronly\n"))
+	h.must(h.kb("--store", "adr", "reindex", "--all").Code == 0, "index the adr store again")
+	for _, tc := range []struct{ store, want, other string }{{"default", "data/s.md", "data-adr/a.md"}, {"adr", "data-adr/a.md", "data/s.md"}} {
+		if _, err := os.Stat(filepath.Join(h.root, ".kb", "stores", tc.store, "kb.sqlite")); err != nil {
+			h.fail("store %s has no database of its own: %v", tc.store, err)
 		}
-		if r := h.kb("--store", store, "search", "storeword"); h.expect(r, 0) && !strings.Contains(r.Stdout, "data/s.md") {
-			h.fail("store %s did not find the entry:\n%s", store, r)
+		r := h.kb("--store", tc.store, "search", "storeword")
+		if h.expect(r, 0) && (!strings.Contains(r.Stdout, tc.want) || strings.Contains(r.Stdout, tc.other)) {
+			h.fail("store %s should find %s and not %s:\n%s", tc.store, tc.want, tc.other, r)
 		}
 	}
 	h.expect(h.kb("init", "--name", "adr", "--model", "none"), 0) // already initialised
@@ -491,8 +507,9 @@ func scPathTraversal(h *H) {
 	h.must(os.Symlink(outsideFile, link) == nil, "symlink")
 	r := h.kb(withNone("reindex", "--all")...)
 	s := h.kb(withNone("search", secret, "--mode", "fts")...)
-	if strings.Contains(s.Stdout, "linked") {
-		h.note("a symlink under data/ to a file outside the root is indexed (reindex exit %d); decide whether that is intended", r.Code)
+	if strings.Contains(s.Stdout, "linked") || r.Code != 0 || !strings.Contains(r.Stderr, "skipped data/linked.md") {
+		// DEFAULTS #65, PLAN 1.5: such a link is skipped with a warning, never indexed.
+		h.fail("a symlink under data/ to a file outside the root: want it skipped with a warning, exit 0\n%s\n%s", r, s)
 	}
 	h.kb(withNone("rm", "data/linked.md")...)
 	if _, err := os.Stat(outsideFile); err != nil {
@@ -718,9 +735,9 @@ func scSearchSettings(h *H) {
 
 	// rrf_k = 1 with the FTS list at weight 1: the top hit scores 1/(1+1) = 0.5.
 	h.setConfig(none+"[search]\nrrf_k = 1\n[search.list_weights]\nvec = 0.0\n", false)
-	r := h.kb(withNone("search", "quasarword")...)
-	if h.expect(r, 0) && !strings.Contains(r.Stdout, "0.5000") {
-		h.fail("rrf_k = 1 did not reach the fused score (want a top score of 0.5000):\n%s", r)
+	r := h.kb(withNone("search", "quasarword", "--json")...)
+	if h.expect(r, 0) && !strings.Contains(r.Stdout, `"rrf_score": 0.5,`) {
+		h.fail("rrf_k = 1 did not reach the fused score (want a top rrf_score of 0.5):\n%s", r)
 	}
 	// fts weight 0: every hit scores 0 but is still listed.
 	h.setConfig(none+"[search.list_weights]\nfts = 0.0\n", false)
@@ -767,5 +784,214 @@ func scSearchSettings(h *H) {
 	}
 	if fileHash(h.dbPath()) != before {
 		h.fail("a search refused for its config still changed the database (logged?)")
+	}
+}
+
+// scCacheTwoStores is H19. It runs on the default model, which cannot be downloaded here, so no
+// vector is ever computed: it attacks the shared file, not the reuse (the Go test
+// TestEmbedCacheSharedAcrossStores covers reuse). Commands still open the cache before they find
+// the model missing, so reindex exits 2 and the cache must stay quiet, intact and unlocked.
+func scCacheTwoStores(h *H) {
+	cacheFile := filepath.Join(h.home, "Library", "Caches", "kb", "embed-cache.sqlite")
+	second := h.makeLocation(filepath.Join(h.outside, "second"))
+	h.write("data/c.md", entryText("C", "## A\n\ncacheword body\n"))
+	h.write(filepath.Join(second, "data", "c.md"), entryText("C", "## A\n\ncacheword body\n"))
+
+	// A missing cache is "nothing cached", not an error, and neither flag creates it.
+	os.Remove(cacheFile)
+	for _, flag := range []string{"--stats", "--clear"} {
+		r := h.kb("model", "cache", flag)
+		if h.expect(r, 0) && !strings.Contains(r.Stdout, "not created yet") {
+			h.fail("kb model cache %s on a missing cache: want 'not created yet':\n%s", flag, r)
+		}
+		if _, err := os.Stat(cacheFile); err == nil {
+			h.fail("kb model cache %s created the cache file", flag)
+		}
+	}
+
+	// Two stores and a stats call open the one file at the same time.
+	type proc struct {
+		args []string
+		done chan res
+	}
+	var procs []proc
+	start := func(args ...string) {
+		p := proc{args: args, done: make(chan res, 1)}
+		go func() { p.done <- h.kbQuiet(args...) }()
+		procs = append(procs, p)
+	}
+	for range 3 {
+		start("reindex", "--all")
+		start("--root", second, "reindex", "--all")
+		start("model", "cache", "--stats")
+	}
+	for _, p := range procs {
+		r := <-p.done
+		h.invariants(r)
+		for _, bad := range []string{"locked", "busy", "embedding cache not used", "embedding cache disabled"} {
+			if strings.Contains(r.Stderr, bad) {
+				h.fail("a healthy shared cache reported %q:\n%s", bad, r)
+			}
+		}
+		if p.args[len(p.args)-1] == "--stats" {
+			h.expect(r, 0)
+		} else {
+			h.expect(r, 2) // the model is missing; nothing else may differ
+		}
+	}
+
+	// A garbage file: warn, fall back (exit as without a cache), never modify, --clear removes.
+	garbage := bytes.Repeat([]byte("not a database "), 512)
+	h.must(os.WriteFile(cacheFile, garbage, 0o644) == nil, "write garbage cache")
+	r := h.kb("reindex", "--all")
+	h.expect(r, 2)
+	if !strings.Contains(r.Stderr, "embedding cache not used") || !strings.Contains(r.Stderr, "kb model cache --clear") {
+		h.fail("a garbage cache gave no warning naming the way out:\n%s", r)
+	}
+	if b, _ := os.ReadFile(cacheFile); !bytes.Equal(b, garbage) {
+		h.fail("a garbage cache file was modified")
+	}
+	if r := h.kb("model", "cache", "--stats"); h.expect(r, 1) && !strings.Contains(r.Stderr, "--clear") {
+		h.fail("stats of a garbage cache does not name --clear:\n%s", r)
+	}
+	h.expect(h.kb("model", "cache", "--clear"), 0)
+	if _, err := os.Stat(cacheFile); err == nil {
+		h.fail("--clear left the garbage cache file")
+	}
+
+	// A newer schema: refused with the same warning, the version untouched, --clear removes it.
+	h.expect(h.kb("model", "cache", "--stats"), 0)
+	h.expect(h.kb("reindex", "--all"), 2) // creates a fresh cache
+	os.Remove(cacheFile + "-wal")
+	os.Remove(cacheFile + "-shm")
+	h.must(setUserVersion(cacheFile, 99) == nil, "set cache user_version")
+	r = h.kb("reindex", "--all")
+	h.expect(r, 2)
+	if !strings.Contains(r.Stderr, "embedding cache not used") {
+		h.fail("a newer cache gave no warning:\n%s", r)
+	}
+	if b, _ := os.ReadFile(cacheFile); len(b) < 64 || binary.BigEndian.Uint32(b[60:64]) != 99 {
+		h.fail("the newer cache's user_version was changed")
+	}
+	h.expect(h.kb("model", "cache", "--stats"), 1)
+	h.expect(h.kb("model", "cache", "--clear"), 0)
+	h.expect(h.kb("model", "cache", "--stats"), 0)
+}
+
+// scExplain attacks kb explain: it must be valid JSON on hostile queries (FTS5 syntax, quotes,
+// huge input), take --set overrides, refuse bad ones with exit 1, and never write the search log
+// (the next real search is still search 1).
+func scExplain(h *H) {
+	const none = "[embed]\nmodel = \"none\"\n"
+	h.write("data/explain-a.md", entryText("Explain A", "## Body\n\nquasarword appears here.\n"))
+	h.write("data/explain-b.md", entryText("Explain B", "## Body\n\nquasarword and nebulaword live here.\n"))
+	h.setConfig(none, false)
+	h.must(h.kb(withNone("reindex", "--all")...).Code == 0, "index with an FTS-only config")
+
+	for _, q := range []string{
+		"quasarword", "quasarword nebulaword", "quasarword missingword", `"quasarword`, "NEAR(quasarword", "quasar*",
+		"title:quasarword", "quasarword AND OR NOT", "&&", "'; DROP TABLE chunks; --", strings.Repeat("quasarword ", 2000), "日本語 quasarword",
+	} {
+		r := h.kb(withNone("explain", q, "--mode", "fts", "--json")...)
+		if !h.expect(r, 0) {
+			continue
+		}
+		if !json.Valid([]byte(r.Stdout)) {
+			h.fail("explain %.40q --json is not valid JSON:\n%s", q, r)
+		}
+	}
+	r := h.kb(withNone("explain", "quasarword", "--mode", "fts", "--set", "search.rrf_k=1", "--set", "search.bm25.title=1000")...)
+	if h.expect(r, 0) && !strings.Contains(r.Stdout, "rrf_k=1 ") {
+		h.fail("--set search.rrf_k=1 not reflected:\n%s", r)
+	}
+	for _, bad := range [][]string{
+		{"--set", "search.rrf_k=0"}, {"--set", "search.nope=1"}, {"--set", "search.bm25.title=nan"}, {"--mode", "bogus"}, {"--set", "embed.model=none", "--mode", "vec"},
+	} {
+		h.expect(h.kb(withNone(append([]string{"explain", "quasarword"}, bad...)...)...), 1)
+	}
+	r = h.kb(withNone("search", "quasarword", "--mode", "fts")...)
+	if h.expect(r, 0) && !strings.HasPrefix(r.Stdout, "search 1 ·") {
+		h.fail("explain wrote the search log (first real search is not search 1):\n%s", r)
+	}
+}
+
+// scStoresAlias attacks store refs (PLAN 3.1): every grammar form on the real binary, with
+// discovery (no --root), plus hostile alias targets in kb.toml.
+func scStoresAlias(h *H) {
+	other := filepath.Join(h.outside, "other")
+	h.expect(h.kbAt(h.outside, "--root", other, "init", "--model", "none"), 0)
+	h.expect(h.kbAt(h.outside, "--root", other, "init", "--name", "adr", "--model", "none"), 0)
+	h.expect(h.kb("init", "--name", "adr", "--model", "none"), 0)
+	tomlPath := filepath.Join(h.root, ".kb", "kb.toml")
+	h.write(tomlPath, "version = 1\ndefault_store = \"default\"\n[aliases]\n"+
+		"ext = \"adr@"+other+"\"\nwhere = \""+other+"\"\nadr = \"default\"\nbroken = \"adr@"+other+"/nowhere\"\nloop = \"loop\"\n")
+	at := func(args ...string) res { return h.kbAt(h.root, args...) }
+	cfgPath := func(root, store string) string { return filepath.Join(root, ".kb", "stores", store, "config.toml") }
+	wantPath := func(r res, path string) {
+		if h.expect(r, 0) && strings.TrimSpace(r.Stdout) != path {
+			h.fail("%s: config path %q, want %q", strings.Join(r.Args, " "), strings.TrimSpace(r.Stdout), path)
+		}
+	}
+	wantPath(at("--store", "ext", "config", "--path"), cfgPath(other, "adr"))
+	wantPath(at("--store", "where", "config", "--path"), cfgPath(other, "default"))
+	wantPath(at("--store", "adr@"+other, "config", "--path"), cfgPath(other, "adr"))
+	wantPath(at("--store", other+"/", "config", "--path"), cfgPath(other, "default"))
+	wantPath(at("--store", "default@global", "config", "--path"), cfgPath(filepath.Join(h.home, ".local", "share", "kb"), "default"))
+	wantPath(at("--store", "global", "config", "--path"), cfgPath(filepath.Join(h.home, ".local", "share", "kb"), "default"))
+
+	// The store adr shadows the alias adr: the store wins, with one warning.
+	if r := at("--store", "adr", "config", "--path"); h.expect(r, 0) {
+		wantPath(r, cfgPath(h.root, "adr"))
+		if strings.Count(r.Stderr, "shadows the alias") != 1 {
+			h.fail("want one shadow warning:\n%s", r)
+		}
+	}
+	// An alias names its own location, so --root and --global refuse it.
+	for _, flag := range []string{"--root=" + h.root, "--global"} {
+		if r := at(flag, "--store", "ext", "config", "--path"); h.expect(r, 1) && !strings.Contains(r.Stderr, "alias") && !strings.Contains(r.Stderr, "no store") {
+			h.fail("%s with an alias: %s", flag, r)
+		}
+		h.expect(at(flag, "--store", "adr@"+other, "config", "--path"), 1)
+		h.expect(at(flag, "--store", other, "config", "--path"), 1)
+	}
+	// Unknown words list what exists and suggest the nearest.
+	if r := at("--store", "exte", "config", "--path"); h.expect(r, 1) && !strings.Contains(r.Stderr, `did you mean "ext"`) {
+		h.fail("no suggestion for a near-miss:\n%s", r)
+	}
+	h.expect(at("--store", "loop", "config", "--path"), 1) // an alias never chains
+	h.expect(at("--store", "broken", "config", "--path"), 1)
+	h.expect(at("--store", "adr@"+other+"/nowhere", "config", "--path"), 1)
+	h.expect(at("--store", "ghost@"+other, "config", "--path"), 1)
+	h.expect(at("--store", filepath.Join(h.outside, "absent"), "config", "--path"), 1)
+	// kb stores shows the aliases, a broken one as a row, and still exits 0.
+	if r := at("stores"); h.expect(r, 0) && (!strings.Contains(r.Stdout, "BROKEN") || !strings.Contains(r.Stdout, "-> adr@"+other)) {
+		h.fail("kb stores alias rows:\n%s", r)
+	}
+	if r := at("stores", "--json"); h.expect(r, 0) && !json.Valid([]byte(r.Stdout)) {
+		h.fail("kb stores --json is not valid JSON:\n%s", r)
+	}
+	// Hostile refs on the command line: Usage, never an incident.
+	for _, ref := range []string{"adr@", "@", "@@", "a@b@c", "~bob/x", "~bob", "docs/x", "c:x", "Adr@/p", "global@/p", "x\x01y",
+		"/" + strings.Repeat("a", 5000), strings.Repeat("a", 33) + "@/p", "adr@~bob", "../../../../../../etc"} {
+		if r := at("--store", ref, "config", "--path"); r.Code == 3 {
+			h.fail("--store %.40q reached an incident:\n%s", ref, r)
+		} else {
+			h.expect(r, 1)
+		}
+	}
+	// Hostile alias targets in kb.toml are a well-formed error or an unresolvable alias, not a crash.
+	for name, target := range map[string]string{
+		"empty": "", "control": "a\\u0001b", "huge": strings.Repeat("a", 5000), "tilde-user": "~bob/x", "nul": "a\\u0000b",
+		"dots": "../../../../../../../../etc", "at": "@", "colon": "adr:x",
+	} {
+		h.write(tomlPath, "version = 1\ndefault_store = \"default\"\n[aliases]\nbad = \""+target+"\"\n")
+		if r := at("--store", "bad", "config", "--path"); r.Code == 3 {
+			h.fail("alias target %s reached an incident:\n%s", name, r)
+		} else {
+			h.expect(r, 1)
+		}
+		if r := at("stores"); r.Code == 3 {
+			h.fail("kb stores with alias target %s reached an incident:\n%s", name, r)
+		}
 	}
 }

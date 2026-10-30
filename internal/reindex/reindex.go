@@ -20,6 +20,7 @@ import (
 
 	"github.com/nickstrad/kb/internal/assert"
 	"github.com/nickstrad/kb/internal/chunk"
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/errs"
@@ -32,8 +33,10 @@ const defaultBatchSize = 16
 // Options configures a reindex run. Store must already have EnsureEmbedMeta called on it for
 // Embedder (the caller decides what to do about a mismatch; see cli/reindex.go). Force skips the
 // body_hash comparison, which the CLI sets after ResetIndex for `kb reindex --all` on a mismatch.
+// Sources is the store's [[sources]] list, which All discovers; One does not read it.
 type Options struct {
 	Root      string
+	Sources   []config.Source
 	Store     store.Index
 	Embedder  embed.Embedder
 	BatchSize int
@@ -70,13 +73,15 @@ func (s Summary) String() string {
 	return fmt.Sprintf("%s; chunks: %d; embed calls: %d", entries, s.Chunks, s.EmbedCalls)
 }
 
-// All reindexes every entry Discover finds under o.Root, then deletes any DB entry whose path no
-// longer exists on disk (Summary.Removed). It stops and returns an error the first time an entry
-// fails for a reason other than its own content (an embedder or database failure); a bad entry's
-// own content (missing front matter, unreadable file) never stops the run — see the package doc.
+// All reindexes every entry Discover finds in o.Sources under o.Root, then deletes any DB entry
+// whose path no longer exists on disk (Summary.Removed). It stops and returns an error the first
+// time an entry fails for a reason other than its own content (an embedder or database failure);
+// a bad entry's own content (missing front matter, unreadable file) never stops the run — see the
+// package doc. A path Discover skipped (a symlink out of the root) is one warning on Stderr.
 //
-// A root with no data/ directory yet is an empty corpus, not an error: `kb add` creates data/ on
-// demand, so a reindex on a fresh root (possibly racing that add) has simply nothing to scan.
+// A source directory that does not exist yet is an empty source, not an error, and a store with
+// no sources has nothing to index (a warning says so): in both cases rows from earlier runs are
+// pruned, since the index is derived from what is on disk.
 //
 // Pruning and concurrent writers: another kb process may add an entry after this run's Discover.
 // That entry's row is then in Entries but not in the first discovery, and pruning on the
@@ -100,9 +105,15 @@ func all(ctx context.Context, o Options) (Summary, error) {
 	o.Stderr = orDiscard(o.Stderr)
 	var sum Summary
 
-	entries, err := discover(o.Root)
+	if len(o.Sources) == 0 {
+		fmt.Fprintln(o.Stderr, "warning: this store has no [[sources]] in its config: nothing to index")
+	}
+	entries, skipped, err := discover(o.Root, o.Sources)
 	if err != nil {
 		return sum, err
+	}
+	for _, s := range skipped {
+		fmt.Fprintf(o.Stderr, "warning: skipped %s\n", s)
 	}
 
 	onDisk := make(map[string]bool, len(entries))
@@ -127,7 +138,7 @@ func all(ctx context.Context, o Options) (Summary, error) {
 		return sum, nil
 	}
 	// Re-check on disk now, after Entries: see the doc comment.
-	now, err := discover(o.Root)
+	now, _, err := discover(o.Root, o.Sources)
 	if err != nil {
 		return sum, err
 	}
@@ -148,14 +159,10 @@ func all(ctx context.Context, o Options) (Summary, error) {
 	return sum, nil
 }
 
-// discover is entry.Discover (which reads a missing data/ as an empty corpus, see All) with a read
-// failure turned into a well-formed Usage error.
-func discover(root string) ([]entry.Entry, error) {
-	entries, err := entry.Discover(root)
-	if err != nil {
-		return nil, errs.Wrap(err, errs.Usage, "reindex.All", "could not read the entries under %s: %v", entry.DataRoot(root), err)
-	}
-	return entries, nil
+// discover is entry.Discover, whose errors (an unreadable source, two sources claiming one file)
+// are already well-formed Usage errors naming the source.
+func discover(root string, sources []config.Source) ([]entry.Entry, []entry.Skipped, error) {
+	return entry.Discover(root, sources)
 }
 
 // One reindexes a single entry, typically the result of entry.Resolve. It never touches any other

@@ -42,12 +42,12 @@ func (c *concurrentAddEmbedder) Embed(ctx context.Context, texts []string) ([][]
 			return
 		}
 		defer other.Close()
-		e, err := entry.Resolve(c.root, "late.md")
+		e, err := entry.Resolve(c.root, dataSources, "late.md")
 		if err != nil {
 			c.t.Errorf("resolve late entry: %v", err)
 			return
 		}
-		if _, err := One(ctx, Options{Root: c.root, Store: other, Embedder: c.Embedder}, e); err != nil {
+		if _, err := One(ctx, Options{Root: c.root, Sources: dataSources, Store: other, Embedder: c.Embedder}, e); err != nil {
 			c.t.Errorf("concurrent add: %v", err)
 		}
 	})
@@ -77,7 +77,7 @@ func TestAllKeepsEntryAddedDuringRun(t *testing.T) {
 
 	emb := &concurrentAddEmbedder{Embedder: base, t: t, root: root, dbPath: dbPath}
 	var stdout bytes.Buffer
-	sum, err := All(context.Background(), Options{Root: root, Store: s, Embedder: emb, Stdout: &stdout})
+	sum, err := All(context.Background(), Options{Root: root, Sources: dataSources, Store: s, Embedder: emb, Stdout: &stdout})
 	if err != nil {
 		t.Fatalf("All: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestAllMissingDataDir(t *testing.T) {
 				store.EntryInput{Path: "data/old.md", Kind: entry.KindFile, Title: "Old", Summary: "s"}, nil); err != nil {
 				t.Fatal(err)
 			}
-			sum, err := All(context.Background(), Options{Root: root, Store: s, Embedder: base})
+			sum, err := All(context.Background(), Options{Root: root, Sources: dataSources, Store: s, Embedder: base})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("All err = %v, wantErr %v", err, tc.wantErr)
 			}

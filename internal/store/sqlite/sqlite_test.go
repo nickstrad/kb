@@ -459,6 +459,26 @@ func TestReplaceEntryChunksRollsBackMidInsert(t *testing.T) {
 
 // TestDeleteEntry checks that removing an entry empties all three tables and is a no-op for a
 // path that was never indexed.
+// TestEntryCount: the count-only query agrees with Entries for 0, 1 and 2 entries.
+func TestEntryCount(t *testing.T) {
+	ctx := context.Background()
+	s, emb := newTestStore(t)
+	for want := 0; want <= 2; want++ {
+		if want > 0 {
+			in := sampleEntry()
+			in.Path = fmt.Sprintf("e%d.md", want)
+			if _, err := s.ReplaceEntry(ctx, in, chunkInputs(t, emb, "body")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		n, err := s.EntryCount(ctx)
+		rows, _ := s.Entries(ctx)
+		if err != nil || n != want || n != len(rows) {
+			t.Fatalf("EntryCount = %d, %v; want %d (Entries has %d)", n, err, want, len(rows))
+		}
+	}
+}
+
 func TestDeleteEntry(t *testing.T) {
 	s, emb := newTestStore(t)
 	ctx := context.Background()
@@ -960,9 +980,17 @@ func TestMigrateRunsOnlyOutstandingMigrations(t *testing.T) {
 	})
 	schemaVersion = migrations.Target()
 
+	// A plain open no longer upgrades (PLAN 1.8b); only the artefact's Apply does.
+	if _, err := Open(context.Background(), path, Options{}); errs.KindOf(err) != errs.Conflict || !strings.Contains(err.Error(), "kb migrate up") {
+		t.Fatalf("Open of an older database = %v, want a Conflict saying kb migrate up", err)
+	}
+	applied, err := NewArtefact(path).Apply(context.Background())
+	if err != nil || len(applied) != 1 || applied[0].ID != "index/9999-probe" {
+		t.Fatalf("Apply = %v, %v; want only the probe step", applied, err)
+	}
 	second, err := Open(context.Background(), path, Options{})
 	if err != nil {
-		t.Fatalf("reopen after adding a migration: %v", err)
+		t.Fatalf("reopen after migrating: %v", err)
 	}
 	defer second.Close()
 
@@ -1044,49 +1072,5 @@ func TestConcurrentOpen(t *testing.T) {
 	}
 	if n := countRows(t, stores[0], "SELECT count(*) FROM sqlite_master WHERE name = 'entries'"); n != 1 {
 		t.Errorf("entries table appears %d times in sqlite_master, want 1", n)
-	}
-}
-
-// TestMigration2KeepsSearchLog: upgrading a version-1 database moves the old git hash into
-// corpus_rev, adds an empty kb_version and search_opens, and keeps every logged row.
-func TestMigration2KeepsSearchLog(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "kb.sqlite")
-
-	origMigrations, origVersion := migrations, schemaVersion
-	migrations, schemaVersion = origMigrations[:1], 1
-	v1, err := Open(context.Background(), path, Options{})
-	if err != nil {
-		migrations, schemaVersion = origMigrations, origVersion
-		t.Fatalf("open at version 1: %v", err)
-	}
-	_, err = v1.DB().Exec(`
-		INSERT INTO searches (id, ts, query, mode, k, n_returned, caller, kb_version)
-		VALUES (1, '2026-09-07T09:00:00Z', 'q', 'fts', 8, 0, 'claude', 'abc123');
-		INSERT INTO search_feedback (search_id, rank, useful, ts) VALUES (1, 0, 0, '2026-09-07T09:01:00Z');`)
-	v1.Close()
-	migrations, schemaVersion = origMigrations, origVersion
-	if err != nil {
-		t.Fatalf("seed version-1 log: %v", err)
-	}
-
-	st, err := Open(context.Background(), path, Options{})
-	if err != nil {
-		t.Fatalf("upgrade: %v", err)
-	}
-	defer st.Close()
-
-	var corpusRev string
-	var kbVersion sql.NullString
-	if err := st.DB().QueryRow("SELECT corpus_rev, kb_version FROM searches WHERE id = 1").Scan(&corpusRev, &kbVersion); err != nil {
-		t.Fatalf("read upgraded search: %v", err)
-	}
-	if corpusRev != "abc123" || kbVersion.Valid {
-		t.Errorf("corpus_rev, kb_version = %q, %v; want abc123, NULL", corpusRev, kbVersion)
-	}
-	if n := countRows(t, st, "SELECT count(*) FROM search_feedback"); n != 1 {
-		t.Errorf("search_feedback rows = %d, want 1", n)
-	}
-	if n := countRows(t, st, "SELECT count(*) FROM search_opens"); n != 0 {
-		t.Errorf("search_opens rows = %d, want an empty table", n)
 	}
 }

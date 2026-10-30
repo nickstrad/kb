@@ -2,17 +2,21 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/nickstrad/kb/internal/config"
+	"github.com/nickstrad/kb/internal/embed/cache"
 	"github.com/nickstrad/kb/internal/embed/local"
 	"github.com/nickstrad/kb/internal/errs"
 )
 
-// newModelCmd builds `kb model pull` and `kb model list`.
+// newModelCmd builds `kb model pull`, `path`, `list` and `cache`.
 func newModelCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "model",
@@ -54,8 +58,122 @@ func newModelCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 				return runModelList(d, stdout)
 			},
 		},
+		newModelCacheCmd(d, stdout),
 	)
 	return cmd
+}
+
+// newModelCacheCmd builds `kb model cache`.
+func newModelCacheCmd(d *deps, stdout io.Writer) *cobra.Command {
+	var stats, clear bool
+	cmd := &cobra.Command{
+		Use:   "cache [--stats | --clear]",
+		Short: "Show or clear the embedding cache shared by every store on this machine",
+		Long: "Embeddings are cached in one file per machine, keyed by model and text, so the same\n" +
+			"text is never embedded twice, in any store or project. --stats (the default) lists the\n" +
+			"entries per model. --clear deletes them; a cache that cannot be opened (damaged, or\n" +
+			"written by a newer kb) is removed. A cache that is missing is not an error.",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if stats && clear {
+				return usageErr("--stats and --clear cannot be used together")
+			}
+			if clear {
+				return runModelCacheClear(cmd, d, stdout)
+			}
+			return runModelCacheStats(cmd, d, stdout)
+		},
+	}
+	cmd.Flags().BoolVar(&stats, "stats", false, "list the cached entries per model (the default)")
+	cmd.Flags().BoolVar(&clear, "clear", false, "delete every cached embedding")
+	return cmd
+}
+
+// embedCacheFileIfExists is the cache file's path and whether it exists. Neither flag creates it.
+func embedCacheFileIfExists(d *deps) (path string, exists bool, err error) {
+	if d.embedCachePath == nil {
+		return "", false, usageErr("the embedding cache is not available")
+	}
+	path, err = d.embedCachePath()
+	if err != nil {
+		return "", false, err
+	}
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return path, false, nil
+		}
+		return path, false, errs.Wrap(err, errs.Usage, "cli.modelCache", "cannot read the embedding cache %s", path).With("path", path)
+	}
+	return path, true, nil
+}
+
+func runModelCacheStats(cmd *cobra.Command, d *deps, stdout io.Writer) error {
+	path, exists, err := embedCacheFileIfExists(d)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		fmt.Fprintf(stdout, "embedding cache %s: not created yet, nothing cached\n", path)
+		return nil
+	}
+	ctx := cmd.Context()
+	c, err := cache.Open(ctx, path)
+	if err != nil {
+		return errs.Wrap(err, errs.Conflict, "cli.modelCache", "%v; kb model cache --clear removes it", err).With("path", path)
+	}
+	defer c.Close()
+	rows, err := c.Stats(ctx)
+	if err != nil {
+		return errs.Wrap(err, errs.Conflict, "cli.modelCache", "%v; kb model cache --clear removes it", err).With("path", path)
+	}
+	var total int64
+	for _, r := range rows {
+		total += r.Entries
+	}
+	var size int64
+	if fi, err := os.Stat(path); err == nil {
+		size = fi.Size()
+	}
+	fmt.Fprintf(stdout, "embedding cache %s: %d entries, %d bytes\n", path, total, size)
+	for _, r := range rows {
+		fmt.Fprintf(stdout, "%-40s %4d dims  %d entries\n", r.Model, r.Dim, r.Entries)
+	}
+	return nil
+}
+
+// runModelCacheClear empties the cache. A file that cannot be opened is deleted with its WAL
+// files: it is disposable, and clearing is the way out the damage messages promise.
+func runModelCacheClear(cmd *cobra.Command, d *deps, stdout io.Writer) error {
+	path, exists, err := embedCacheFileIfExists(d)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		fmt.Fprintf(stdout, "embedding cache %s: not created yet, nothing to clear\n", path)
+		return nil
+	}
+	ctx := cmd.Context()
+	c, openErr := cache.Open(ctx, path)
+	if openErr == nil {
+		defer c.Close()
+		if err := c.Clear(ctx); err != nil {
+			return errs.Wrap(err, errs.Conflict, "cli.modelCache", "%v", err).With("path", path)
+		}
+		fmt.Fprintf(stdout, "cleared the embedding cache %s\n", path)
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return errs.Wrap(err, errs.Usage, "cli.modelCache", "cannot remove the unreadable embedding cache %s: %v", p, err).With("path", p)
+		}
+	}
+	fmt.Fprintf(stdout, "removed the unreadable embedding cache %s (%v)\n", path, openErr)
+	return nil
 }
 
 // configuredEmbed is the [embed] table of the store this command runs on, or the defaults outside
@@ -116,7 +234,7 @@ func runModelPull(cmd *cobra.Command, d *deps, stdout, stderr io.Writer) error {
 	}
 	cache, err := d.modelCacheDir()
 	if err != nil {
-		return usageErr("%s", err)
+		return err
 	}
 	e := local.New(spec, cache)
 	if e.Cached() {
@@ -135,7 +253,7 @@ func runModelPull(cmd *cobra.Command, d *deps, stdout, stderr io.Writer) error {
 func runModelList(d *deps, stdout io.Writer) error {
 	cache, err := d.modelCacheDir()
 	if err != nil {
-		return usageErr("%s", err)
+		return err
 	}
 	for _, id := range local.Supported() {
 		spec, _ := local.Lookup(id) // id comes from Supported, so it is in the table

@@ -38,7 +38,22 @@ type storesJSON struct {
 	DefaultStore string            `json:"default_store"`
 	Stores       []storeRow        `json:"stores"`
 	Skipped      []string          `json:"skipped_dirs,omitempty"` // directories under stores/ with an invalid name
-	Aliases      map[string]string `json:"aliases"`
+	Aliases      map[string]string `json:"aliases"`                // this location's [aliases], as written
+	// AliasStatus has one row per alias of this location, then of the global location, with its
+	// resolved target. A broken alias is a row with Resolves false and a Problem.
+	AliasStatus []aliasRow `json:"alias_status"`
+}
+
+// aliasRow is one alias in `kb stores`. The JSON shape is a stable contract.
+type aliasRow struct {
+	Name       string `json:"name"`
+	Scope      string `json:"scope"`    // "location" or "global"
+	Target     string `json:"target"`   // the ref as written
+	Resolves   bool   `json:"resolves"` // the store it names exists
+	Resolved   string `json:"resolved"` // NAME@ABSROOT, "" when it does not resolve
+	Problem    string `json:"problem,omitempty"`
+	Shadowed   bool   `json:"shadowed"`   // a store of this location has the same name and wins
+	Overridden bool   `json:"overridden"` // a global alias hidden by an alias of this location
 }
 
 // newStoresCmd builds `kb stores`.
@@ -49,7 +64,8 @@ func newStoresCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		Short: "List the stores of the current location",
 		Long: "kb stores lists the named stores of the current location: the default one (marked *),\n" +
 			"its model, how many entries are indexed and the database size, or \"not indexed\".\n" +
-			"Aliases from the location's kb.toml follow. Create a store with kb init --name NAME.",
+			"The aliases of the location's kb.toml and of the global location follow, each with the store it\n" +
+			"resolves to, or what is wrong with it. Create a store with kb init --name NAME.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -58,7 +74,7 @@ func newStoresCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			doc, err := collectStores(cmd.Context(), d, loc, lf)
+			doc, err := collectStores(cmd.Context(), cmd, d, loc, lf)
 			if err != nil {
 				return err
 			}
@@ -78,12 +94,18 @@ func newStoresCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 }
 
 // collectStores gathers one row per store, sorted by name.
-func collectStores(ctx context.Context, d *deps, loc *workspace.Location, lf config.Location) (storesJSON, error) {
+func collectStores(ctx context.Context, cmd *cobra.Command, d *deps, loc *workspace.Location, lf config.Location) (storesJSON, error) {
 	names, skipped, err := loc.Stores()
 	if err != nil {
 		return storesJSON{}, err
 	}
-	doc := storesJSON{Location: loc.Root, DefaultStore: lf.DefaultStore, Stores: []storeRow{}, Skipped: skipped, Aliases: lf.Aliases}
+	doc := storesJSON{Location: loc.Root, DefaultStore: lf.DefaultStore, Stores: []storeRow{}, Skipped: skipped, Aliases: lf.Aliases, AliasStatus: []aliasRow{}}
+	res := d.resolver(cmd)
+	res.Warn = nil // listing is not resolving for use: shadowing is shown in the row
+	for _, a := range res.ListAliases(loc, locationInfo(lf)) {
+		doc.AliasStatus = append(doc.AliasStatus, aliasRow{Name: a.Name, Scope: a.Scope, Target: a.Target, Resolves: a.Problem == "",
+			Resolved: a.Resolved, Problem: a.Problem, Shadowed: a.Shadowed, Overridden: a.Overridden})
+	}
 	for _, name := range names {
 		ws, err := loc.StoreAt(name)
 		if err != nil { // unreachable: Stores returns valid names only
@@ -121,11 +143,21 @@ func countEntries(ctx context.Context, d *deps, dbPath string) (int, error) {
 		return 0, err
 	}
 	defer st.Close()
+	if c, ok := st.(entryCounter); ok {
+		return c.EntryCount(ctx)
+	}
 	rows, err := st.Entries(ctx)
 	if err != nil {
 		return 0, err
 	}
 	return len(rows), nil
+}
+
+// entryCounter is the optional count-only query a backend may offer (sqlite does); kb stores
+// falls back to reading every entry row without it. A small interface here keeps store.Store
+// unchanged (PLAN 6.4 rule 1).
+type entryCounter interface {
+	EntryCount(ctx context.Context) (int, error)
 }
 
 func writeStoresText(w io.Writer, doc storesJSON) error {
@@ -158,16 +190,24 @@ func writeStoresText(w io.Writer, doc storesJSON) error {
 	for _, s := range doc.Skipped {
 		fmt.Fprintf(w, "warning: ignoring %s/.kb/stores/%s: not a valid store name\n", doc.Location, s)
 	}
-	if len(doc.Aliases) > 0 {
-		keys := make([]string, 0, len(doc.Aliases))
-		for k := range doc.Aliases {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
+	if len(doc.AliasStatus) > 0 {
 		fmt.Fprintln(w, "\naliases:")
 		at := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-		for _, k := range keys {
-			fmt.Fprintf(at, "  %s\t%s\n", k, doc.Aliases[k])
+		for _, a := range doc.AliasStatus {
+			to := "-> " + a.Resolved
+			if !a.Resolves {
+				to = "BROKEN: " + a.Problem
+			}
+			switch {
+			case a.Shadowed:
+				to += "  (shadowed by the store " + a.Name + ")"
+			case a.Overridden:
+				to += "  (overridden by an alias of this location)"
+			}
+			if a.Scope == "global" {
+				to += "  (global)"
+			}
+			fmt.Fprintf(at, "  %s\t%s\t%s\n", a.Name, a.Target, to)
 		}
 		return at.Flush()
 	}

@@ -48,6 +48,8 @@ Standards-pass skills (in `.claude/skills/`; they report, they don't fix):
 CLI harness, and the wave-end coverage verdict.
 `leverage-check` validates `.agent/leverage/` against the code: stale paths, resolved weaknesses
 to archive, coverage claims that no longer hold, and new candidates.
+`testability-check` validates `.agent/testability/` against the code (designs that make tests
+brittle or hard to write), archives entries whose remedy landed, and finds new candidates.
 
 ## Working rules (agreed with the owner)
 
@@ -76,6 +78,7 @@ to archive, coverage claims that no longer hold, and new candidates.
   sandbox/         git-ignored throwaway snapshots of the tree (scripts/sandbox.sh); anything that
                    mutates code or builds works only in one, never in the live tree
   leverage/        the ~10 highest-leverage weak points to track; index.md lists them
+  testability/     the ~10-15 designs that make tests brittle or hard to write; index.md ranks them
   queue/           low-findings.md: small fixes waiting for a Haiku sub-agent
                    harness-improvements.md: suggested adversarial-tool improvements, for later
 ```
@@ -145,6 +148,22 @@ contention (SQLite writers, the shared cache), resource management that drives p
   Don't leave it active or delete it.
 - `leverage/index.md` MUST list every entry with its status and one-line summary
   (`index-check` verifies it).
+
+**testability/** — the designs that make tests brittle, slow, non-hermetic or hard to write:
+hidden coupling, global or process state, wide interfaces, an un-injected clock or env,
+decisions mixed with effects, logic observable only as human text, error paths with no fault
+seam. `leverage/` is about runtime weak points; this folder is about the tests. Format and rules:
+`.agent/testability/README.md`.
+
+- **Point them out.** When a test is hard to write because of the design, or you work around it
+  (a `t.Chdir`, a raw-SQL fixup, a sleep, a survivor triaged "unreachable"), say so in your
+  report. Add or update an entry only with concrete evidence. The list is curated, about 10–15
+  active entries, ranked.
+- **Use them.** Before working in a listed area, read its entry. If your item owns the files,
+  apply the remedy (each entry names the PLAN item that should absorb it).
+- **Review and retire.** Every wave-end pass runs `testability-check`. It updates the entries the
+  wave touched and archives resolved ones (`.agent/testability/archive/`, with a Resolution line).
+- `testability/index.md` MUST list every active entry (`index-check` verifies it).
 
 **Harness-improvements queue** (`queue/harness-improvements.md`). Every wave-end pass states
 whether the adversarial tools already probe what the wave changed. Each gap becomes an `H<n>`

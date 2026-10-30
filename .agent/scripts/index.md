@@ -8,7 +8,7 @@ with the folder: add a line when you add a script, remove it when you delete one
   flag logs not updated in N minutes and paths owned by two active logs.
   Usage: `bash .agent/scripts/state-status.sh [stale-minutes]` (default 30).
 - [index-check](index-check/README.md) — report entries missing from or extra in `scripts/index.md`,
-  `knowledge/index.md` and `leverage/index.md`; exit 1 when out of sync.
+  `knowledge/index.md`, `leverage/index.md` and `testability/index.md`; exit 1 when out of sync.
   Usage: `go run ./.agent/scripts/index-check`.
 - [sandbox.sh](sandbox.sh) — throwaway snapshots of the working tree (uncommitted and untracked
   files included) under `.agent/sandbox/` for anything that mutates code or builds; refuses paths

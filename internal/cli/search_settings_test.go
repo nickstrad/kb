@@ -12,11 +12,11 @@ func TestSearchUsesConfigSettings(t *testing.T) {
 	useRoot(t, root)
 	writeConfig(t, root, "[embed]\nmodel = \""+testModel768+"\"\n[search]\nrrf_k = 1\n")
 
-	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts"})
+	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts", "--json"})
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%s", exit, stderr)
 	}
-	if !strings.Contains(stdout, "#1  0.5000  ") {
+	if !strings.Contains(stdout, `"rrf_score": 0.5,`) {
 		t.Errorf("top hit does not score 1/(rrf_k+1) = 0.5000 with rrf_k = 1:\n%s", stdout)
 	}
 }

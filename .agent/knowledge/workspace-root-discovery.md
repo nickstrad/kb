@@ -14,7 +14,7 @@ stores); `StoreAt` builds the Workspace without that check (init). `ValidName` (
 model cache; production `deps.modelCacheDir` uses it.
 
 cli: `deps.location(cmd)` = resolve + `config.ReadLocation` (a missing kb.toml is NotFound "run kb init"); `deps.workspace(cmd)`
-adds the store (`--store` via `workspace.ParseRef`: "", `global`, or a local name; a ref with `@` or `:` is Usage "not supported yet" until 3.1; `global` + `--root` is Usage). A
+adds the store (`--store` through `d.resolveRef` in cli/refs.go: `workspace.ParseRef` is syntax only (NAME, `global`, NAME@LOC, PATH = `/`, `~`, `./`, `../`, `.`, `..`; `docs/x` and `c:x` are refused), `workspace.Resolver` (resolve.go; config is passed in as `LocationInfo`/`Read` because config imports workspace) resolves a bare NAME: local store, then alias of the current location, then of the global location; the store wins with a stderr warning; an alias target's bare NAME is a store of the declaring location (no chaining) and its relative paths are relative to the declaring root; `global`/NAME@LOC/PATH name their own location, so with `--root`/`--global` they and aliases are Usage; `global` + `--root` is Usage; `deps.openStoreReadOnly(cmd, ref)` is the read-only open for 3.2: unusable stores warn and return nil). A
 `default_store` that names no store is NotFound naming kb.toml. `--debug` prints `kb <cmd>: location <root> store <name> (--root |
 --global | --store global | discovered from <cwd>)` first. The incident log is `<KBDir>/kb.log`, per location, else the user
 cache dir. `kb stores`, `kb doctor` use `d.location` directly so a broken store does not hide the others.
@@ -34,4 +34,4 @@ parallel. TestMain overrides home/XDG/cache in `testDeps.workspaceEnv`, so `--gl
 init with the default model and accept exit 2), `H.makeLocation` writes the files of an initialised-but-never-indexed store. Under
 `--debug` tests asserting an empty stderr must skip the location line.
 
-**Seen in:** internal/workspace, internal/config/location.go, internal/cli/{root,setup,stores,init,doctor}.go, .agent/scripts/adversarial/harness · 2026-10-30 W6
+**Seen in:** internal/workspace, internal/config/location.go, internal/cli/{root,setup,stores,init,doctor}.go, .agent/scripts/adversarial/harness · 2026-10-30 W6, W7 (3.1)

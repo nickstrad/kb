@@ -137,8 +137,17 @@ func TestInitDecisions(t *testing.T) {
 						if err != nil || cfg.Embed.Model != "none" {
 							t.Errorf("config: %+v %v", cfg.Embed, err)
 						}
-						if fi, err := os.Stat(filepath.Join(root, "data")); err != nil || !fi.IsDir() {
-							t.Errorf("data/ not created: %v", err)
+						// The entries dir: data/ for the default store, data-<name>/ for a named one,
+						// written as the store's one source.
+						dataDir := "data"
+						if storeName != config.DefaultStoreName {
+							dataDir = "data-" + storeName
+						}
+						if fi, err := os.Stat(filepath.Join(root, dataDir)); err != nil || !fi.IsDir() {
+							t.Errorf("%s/ not created: %v", dataDir, err)
+						}
+						if len(cfg.Sources) != 1 || cfg.Sources[0].Path != dataDir || cfg.Sources[0].Layout != config.LayoutEntries {
+							t.Errorf("sources = %+v, want the entries dir %s", cfg.Sources, dataDir)
 						}
 						st, err := sqlite.Open(context.Background(), filepath.Join(root, ".kb", "stores", storeName, "kb.sqlite"), sqlite.Options{ReadOnly: true})
 						if err != nil {
@@ -259,7 +268,9 @@ func TestInitFlagRefusals(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"init", "--source", "docs/**/*.md"}, "--source is not supported yet"},
+		{[]string{"init", "--source", "/etc/*.md"}, "--source: sources[1].glob"},
+		{[]string{"init", "--source", "../*.md"}, `".." segment`},
+		{[]string{"init", "--source", "docs/*.md", "--source", "docs/*.md"}, "repeats sources[1]"},
 		{[]string{"--store", "adr", "init"}, "--name, not --store"},
 		{[]string{"init", "--model", "acme/unknown"}, "unknown embedding model"},
 		{[]string{"--root", "x", "--global", "init"}, "root"},
@@ -374,8 +385,23 @@ func TestInitRecordsEmbedderAndLoadsModel(t *testing.T) {
 		if !exists(filepath.Join(root, ".kb", "stores", "default", "config.toml")) {
 			t.Error("the store should stay created")
 		}
-		if out, _, code := run(t, "init"); code != 0 || !strings.Contains(out, "already initialised") {
-			t.Errorf("rerun: %d %q", code, out)
+		if strings.Count(errOut, "kb model pull") != 1 {
+			t.Errorf("the kb model pull hint is repeated (Q57): %q", errOut)
+		}
+		// A rerun is not a no-op: it retries step 4 (still offline: exit 2 again, a second pull).
+		out, errOut, code := run(t, "init")
+		if code != ExitEmbedder || !strings.Contains(out, "already initialised") || !strings.Contains(errOut, "the store is created") || len(*calls) != 2 {
+			t.Errorf("rerun offline: %d %q %q pulls %v", code, out, errOut, *calls)
+		}
+		// Once the model loads (a stand-in with the default model's identity), a rerun finishes.
+		spec, _ := local.Lookup(local.DefaultModel)
+		orig := testDeps.embedder
+		t.Cleanup(func() { testDeps.embedder = orig })
+		testDeps.embedder = func(config.Embed) (embed.Embedder, error) {
+			return modelEmbedder{Embedder: fake.New(spec.ID, spec.Dim)}, nil
+		}
+		if out, errOut, code := run(t, "init"); code != 0 || !strings.Contains(out, "already initialised") || !strings.Contains(errOut, "kb init: loading model") {
+			t.Errorf("rerun with the model: %d %q %q", code, out, errOut)
 		}
 	})
 	t.Run("a missing model is downloaded with progress on stderr", func(t *testing.T) {
@@ -392,7 +418,7 @@ func TestInitRecordsEmbedderAndLoadsModel(t *testing.T) {
 
 func TestStoreConfigTextParses(t *testing.T) {
 	for _, id := range append(local.Supported(), "none", "") {
-		text, ecfg, err := storeConfigText(id)
+		text, ecfg, err := storeConfigText(id, nil)
 		if err != nil {
 			t.Errorf("model %q: %v", id, err)
 			continue
@@ -408,7 +434,7 @@ func TestStoreConfigTextParses(t *testing.T) {
 			t.Errorf("model %q: generated config does not parse: %v\n%s", id, err, text)
 		}
 	}
-	if _, _, err := storeConfigText(`x"y`); errs.KindOf(err) != errs.Usage {
+	if _, _, err := storeConfigText(`x"y`, nil); errs.KindOf(err) != errs.Usage {
 		t.Errorf("a model that needs escaping: %v", err)
 	}
 	if got := quoteTOML(`a\b"c`); got != `"a\\b\"c"` {
@@ -465,7 +491,7 @@ func TestDoctorAfterInitChecks(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("doctor: %d %q %q", code, out, errOut)
 	}
-	for _, want := range []string{"ok   config: ", "ok   sources: none configured", "ok   embed_meta: model=none dim=0", "ok   model: none: FTS-only", "doctor: 0 failed, 0 warnings"} {
+	for _, want := range []string{"ok   config: ", `ok   sources: 1 configured: "data" (entries)`, "ok   embed_meta: model=none dim=0", "ok   model: none: FTS-only", "doctor: 0 failed, 0 warnings"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("doctor output lacks %q:\n%s", want, out)
 		}
@@ -475,7 +501,7 @@ func TestDoctorAfterInitChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, _, code = run(t, "doctor")
-	if code != 0 || !strings.Contains(out, "warn entries: no ") || !strings.Contains(out, "doctor: 0 failed, 1 warnings") {
+	if code != 0 || !strings.Contains(out, `warn sources: sources[1] "data" (entries): no directory `) || !strings.Contains(out, "doctor: 0 failed, 1 warnings") {
 		t.Fatalf("doctor without data/: %d\n%s", code, out)
 	}
 }

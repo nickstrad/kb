@@ -8,11 +8,14 @@
 //  2. Create .kb/kb.toml (default_store = this store) and .kb/.gitignore when there is no
 //     location yet. An existing location is read, never rewritten: adding a second store leaves
 //     default_store alone.
-//  3. Create .kb/stores/NAME/config.toml and data/. A store that already exists is "already
-//     initialised": exit 0, nothing written.
+//  3. Create .kb/stores/NAME/config.toml with explicit [[sources]] (PLAN 1.5): the default store
+//     reads the entries directory data/, a named store data-NAME/ (both created now), and
+//     --source GLOB (repeatable) replaces that with in-place files sources and creates no
+//     directory. A store that already exists is "already initialised": nothing is written, and
+//     step 4 runs again with the store's own [embed], so a rerun finishes an init that exited 2.
 //  4. Create the database at the current schema and record the embedder in embed_meta, then load
 //     the model (downloading it when missing, with progress on stderr). A model that cannot be
-//     loaded exits 2 and leaves the store created: kb model pull finishes the job.
+//     loaded exits 2 and leaves the store created: kb model pull, or kb init again, finishes it.
 package cli
 
 import (
@@ -53,7 +56,9 @@ func newInitCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		Short: "Create a location and a named store",
 		Long: "kb init creates the location (.kb/kb.toml) in the current directory (or --root DIR, or the\n" +
 			"global location with --global) if there is none, then a store in it (default name \"default\",\n" +
-			"or --name NAME): its config.toml, its database and the data/ directory. The first store of a\n" +
+			"or --name NAME): its config.toml, its database and its entries directory (data/ for the\n" +
+			"default store, data-NAME/ for a named one). With --source GLOB (repeatable) the store\n" +
+			"indexes the Markdown files the globs match where they are, instead. The first store of a\n" +
 			"location becomes its default_store; a later kb init --name adr adds a store and leaves it alone.\n" +
 			"Running it again on an existing store changes nothing. --model picks the embedding model\n" +
 			"(kb model list) or none for full-text search only, and the model is downloaded now.\n" +
@@ -62,24 +67,22 @@ func newInitCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(sources) > 0 {
-				return usageErr("--source is not supported yet: in-place sources arrive with a later release, and kb reads data/ only")
-			}
 			if s, _ := cmd.Flags().GetString("store"); s != "" {
 				return usageErr("kb init names the store with --name, not --store")
 			}
-			return runInit(cmd, d, stdout, stderr, initOptions{name: name, model: model, force: force})
+			return runInit(cmd, d, stdout, stderr, initOptions{name: name, model: model, sources: sources, force: force})
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", config.DefaultStoreName, "the store's name: 1-32 characters from a-z, 0-9, _ and -")
 	cmd.Flags().StringVar(&model, "model", "", "embedding model id, or none for full-text search only (default "+local.DefaultModel+")")
-	cmd.Flags().StringArrayVar(&sources, "source", nil, "reserved: a source glob (not supported yet)")
+	cmd.Flags().StringArrayVar(&sources, "source", nil, "index the *.md files this glob matches in place, relative to the location root (repeatable; replaces the entries directory)")
 	cmd.Flags().BoolVar(&force, "force", false, "allow creating a location at $HOME or /")
 	return cmd
 }
 
 type initOptions struct {
 	name, model string
+	sources     []string // --source globs; none = the store's entries directory
 	force       bool
 }
 
@@ -87,8 +90,12 @@ func runInit(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, o initOption
 	if err := workspace.ValidName(o.name); err != nil {
 		return err
 	}
-	// Build the store config first: a bad --model fails before anything is written.
-	cfgText, ecfg, err := storeConfigText(o.model)
+	// Build the store config first: a bad --model or --source fails before anything is written.
+	srcs, err := initSources(o.name, o.sources)
+	if err != nil {
+		return err
+	}
+	cfgText, ecfg, err := storeConfigText(o.model, srcs)
 	if err != nil {
 		return err
 	}
@@ -109,13 +116,19 @@ func runInit(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, o initOption
 	if err != nil {
 		return err
 	}
-	created, err := createStoreFiles(ws, cfgText)
+	created, err := createStoreFiles(ws, cfgText, srcs)
 	if err != nil {
 		return err
 	}
 	if !created {
 		fmt.Fprintf(stdout, "store %q is already initialised in %s\n", o.name, loc.Root)
-		return nil
+		// Step 4 is idempotent and may not have finished last time (the model could not be
+		// downloaded: exit 2), so run it again, with the store's own [embed], not the flags.
+		cfg, _, err := config.Read(ws.ConfigPath)
+		if err != nil {
+			return err
+		}
+		return prepareIndex(cmd.Context(), cmd, d, stderr, ws, cfg.Embed)
 	}
 	if newLocation {
 		fmt.Fprintf(stdout, "created location %s\n", loc.KBDir)
@@ -125,9 +138,32 @@ func runInit(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, o initOption
 	return prepareIndex(cmd.Context(), cmd, d, stderr, ws, ecfg)
 }
 
+// initSources returns the [[sources]] a new store starts with: the --source globs as files
+// sources, else one entries directory, data/ for the default store and data-NAME/ for a named one
+// (not data/NAME/, which the default store would read as one of its directory entries).
+func initSources(name string, globs []string) ([]config.Source, error) {
+	if len(globs) == 0 {
+		dir := entry.DataDir
+		if name != config.DefaultStoreName {
+			dir = entry.DataDir + "-" + name
+		}
+		return []config.Source{{Path: dir, Layout: config.LayoutEntries, Exclude: []string{}}}, nil
+	}
+	srcs := make([]config.Source, len(globs))
+	for i, g := range globs {
+		srcs[i] = config.Source{Glob: g, Layout: config.LayoutFiles, Exclude: []string{}}
+	}
+	c := config.Default()
+	c.Sources = srcs
+	if err := c.Validate("--source"); err != nil {
+		return nil, err
+	}
+	return srcs, nil
+}
+
 // storeConfigText renders the new store's config.toml for the chosen model ("" = the default) and
-// checks that kb itself would read it back.
-func storeConfigText(model string) (text string, ecfg config.Embed, err error) {
+// sources, and checks that kb itself would read it back.
+func storeConfigText(model string, srcs []config.Source) (text string, ecfg config.Embed, err error) {
 	ecfg = config.Default().Embed
 	if model != "" {
 		ecfg.Model = model
@@ -138,8 +174,17 @@ func storeConfigText(model string) (text string, ecfg config.Embed, err error) {
 		"# A supported model (kb model list), or \"none\" for full-text search only.\n" +
 		"# Changing it on an existing index needs kb reindex --all.\n" +
 		"model = " + quoteTOML(ecfg.Model) + "\n\n" +
-		"# Sources: until in-place sources arrive, every store indexes the entries under data/\n" +
-		"# of the location root. [[sources]] tables are reserved and rejected for now.\n"
+		"# Sources: what this store indexes, relative to the location root. layout \"entries\" is a\n" +
+		"# directory kb add writes to (front matter required); layout \"files\" indexes the *.md files\n" +
+		"# a glob matches where they are (front matter optional; exclude = [...] leaves some out).\n" +
+		"# A file may belong to one source only. No [[sources]] means nothing is indexed.\n"
+	for _, src := range srcs {
+		if src.Layout == config.LayoutEntries {
+			text += "[[sources]]\npath = " + quoteTOML(src.Path) + "\nlayout = \"entries\"\n"
+		} else {
+			text += "[[sources]]\nglob = " + quoteTOML(src.Glob) + "\nlayout = \"files\"\n"
+		}
+	}
 	cfg, err := config.Parse([]byte(text), "the new store config")
 	if err != nil { // a --model value TOML cannot hold (a newline): Parse's error is already Usage
 		return "", ecfg, err
@@ -200,9 +245,10 @@ func isHomeOrRoot(root, home string) bool {
 	return r == string(filepath.Separator) || (home != "" && r == real(home))
 }
 
-// createStoreFiles creates the store directory, its config.toml and data/. created is false when
-// the config already exists: the store was initialised before and nothing is touched.
-func createStoreFiles(ws *workspace.Workspace, cfgText string) (created bool, err error) {
+// createStoreFiles creates the store directory, its config.toml and its entries directories.
+// created is false when the config already exists: the store was initialised before and nothing
+// is touched.
+func createStoreFiles(ws *workspace.Workspace, cfgText string, srcs []config.Source) (created bool, err error) {
 	if fi, statErr := os.Stat(ws.ConfigPath); statErr == nil && fi.Mode().IsRegular() {
 		return false, nil
 	}
@@ -215,8 +261,14 @@ func createStoreFiles(ws *workspace.Workspace, cfgText string) (created bool, er
 	case err != nil:
 		return false, usageErr("create %s: %v", ws.ConfigPath, err)
 	}
-	if err := os.MkdirAll(entry.DataRoot(ws.Root), 0o755); err != nil {
-		return true, usageErr("create %s: %v", entry.DataRoot(ws.Root), err)
+	for _, src := range srcs {
+		if src.Layout != config.LayoutEntries {
+			continue
+		}
+		dir := filepath.Join(ws.Root, filepath.FromSlash(src.Path))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return true, usageErr("create %s: %v", dir, err)
+		}
 	}
 	return true, nil
 }
@@ -260,7 +312,7 @@ func prepareIndex(ctx context.Context, cmd *cobra.Command, d *deps, stderr io.Wr
 				return err
 			}
 			return errs.Wrap(err, errs.Unavailable, "cli.init",
-				"the store is created, but the model could not be loaded: %v; run kb model pull when the network is back", err)
+				"the store is created, but the model could not be loaded: %v", err)
 		}
 	}
 	return nil

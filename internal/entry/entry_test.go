@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/nickstrad/kb/internal/config"
 )
 
 // realRepoRoot is the actual knowledge repository this module lives in:
@@ -197,9 +199,9 @@ func TestParseFrontMatterOverRealRepo(t *testing.T) {
 		t.Skipf("real repo root not found at %s (expected when the module moves): %v", root, err)
 	}
 
-	entries, err := Discover(root)
+	entries, err := discoverData(root)
 	if err != nil {
-		t.Fatalf("Discover(%s): %v", root, err)
+		t.Fatalf("discoverData(%s): %v", root, err)
 	}
 	if len(entries) == 0 {
 		t.Fatal("Discover found no entries in the real repo")
@@ -260,7 +262,7 @@ func TestDiscover(t *testing.T) {
 	write(".kb/README.md", fm)                        // excluded directory
 	write("data/nodocs/notes.md", fm)                 // directory without a README.md
 
-	entries, err := Discover(root)
+	entries, err := discoverData(root)
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -318,7 +320,7 @@ func TestDiscoverToleratesOneBadEntry(t *testing.T) {
 	write("data/good.md", "---\ntitle: Good\nsummary: This one parses fine.\n---\nbody\n")
 	write("data/bad.md", "---\ntitle: Bad\n---\nbody\n") // missing summary
 
-	entries, err := Discover(root)
+	entries, err := discoverData(root)
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -397,9 +399,9 @@ func TestDiscoverMatchesRealRepoListing(t *testing.T) {
 	}
 	sort.Strings(want)
 
-	entries, err := Discover(root)
+	entries, err := discoverData(root)
 	if err != nil {
-		t.Fatalf("Discover(%s): %v", root, err)
+		t.Fatalf("discoverData(%s): %v", root, err)
 	}
 	var got []string
 	for _, e := range entries {
@@ -454,7 +456,7 @@ func TestResolve(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.arg, func(t *testing.T) {
-			e, err := Resolve(root, c.arg)
+			e, err := Resolve(root, dataSources, c.arg)
 			if err != nil {
 				t.Fatalf("Resolve(%q): %v", c.arg, err)
 			}
@@ -467,7 +469,7 @@ func TestResolve(t *testing.T) {
 	badCases := []string{"nope.md", "nodir", "", "/etc/passwd", filepath.Join(root, "foo.md"), "../foo.md", "data/../foo.md"}
 	for _, arg := range badCases {
 		t.Run("bad:"+arg, func(t *testing.T) {
-			if _, err := Resolve(root, arg); err == nil {
+			if _, err := Resolve(root, dataSources, arg); err == nil {
 				t.Errorf("Resolve(%q): expected an error", arg)
 			}
 		})
@@ -492,7 +494,7 @@ func TestLoadAndBodyHash(t *testing.T) {
 	write("data/droplet/docs/a.md", "a content\n")
 	write("data/droplet/docs/b.md", "b content\n")
 
-	entries, err := Discover(root)
+	entries, err := discoverData(root)
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -534,23 +536,32 @@ func TestLoadAndBodyHash(t *testing.T) {
 // listed as a directory.
 func TestDiscoverMissingOrUnreadableData(t *testing.T) {
 	root := t.TempDir()
-	if got, err := Discover(root); err != nil || len(got) != 0 {
+	if got, err := discoverData(root); err != nil || len(got) != 0 {
 		t.Fatalf("missing data/: %v, %v; want an empty corpus", got, err)
 	}
-	if got, err := Discover(filepath.Join(root, "no-such-root")); err != nil || len(got) != 0 {
+	if got, err := discoverData(filepath.Join(root, "no-such-root")); err != nil || len(got) != 0 {
 		t.Fatalf("missing root: %v, %v; want an empty corpus", got, err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "data"), []byte("not a dir"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Discover(root); err == nil || !strings.Contains(err.Error(), "read corpus") {
+	if _, err := discoverData(root); err == nil || !strings.Contains(err.Error(), "cannot read the entries directory") {
 		t.Fatalf("data/ as a file: %v; want a read error", err)
 	}
 	empty := t.TempDir()
 	if err := os.Mkdir(filepath.Join(empty, "data"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := Discover(empty); err != nil || len(got) != 0 {
+	if got, err := discoverData(empty); err != nil || len(got) != 0 {
 		t.Fatalf("empty data/: %v, %v", got, err)
 	}
+}
+
+// dataSources is the default store's one source: the entries directory data/.
+var dataSources = []config.Source{{Path: DataDir, Layout: config.LayoutEntries}}
+
+// discoverData is Discover over dataSources, dropping the skipped list.
+func discoverData(root string) ([]Entry, error) {
+	entries, _, err := Discover(root, dataSources)
+	return entries, err
 }

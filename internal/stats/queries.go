@@ -1,4 +1,4 @@
-// The `kb stats` query registry: five named analytic queries over the search log. Adding a metric
+// The `kb stats` query registry: named analytic queries over the search log. Adding a metric
 // means appending a Query here, not widening the command.
 //
 // Every query shares these definitions:
@@ -320,6 +320,49 @@ SELECT
 FROM grouped AS g
 WHERE g.useful = 0
 ORDER BY times_asked DESC, last_asked DESC, query`,
+	},
+	{
+		Name:    "settings",
+		Summary: "One row per search configuration ever used: volume, hit rate and MRR by settings hash.",
+		Help: "One row per distinct settings_hash: the fingerprint of the [embed] and [search] settings a\n" +
+			"search ran with (the hash `kb config --json` prints). Change a ranking setting and the new\n" +
+			"searches get a new row, so the effect of the change is a comparison of two rows, not of\n" +
+			"two time periods. searches, judged, coverage_pct, hit_rate_pct and mrr are the same\n" +
+			"measures as in overview, restricted to the searches of that configuration; first_seen and\n" +
+			"last_seen are the timestamps of its first and last search. settings_hash shows the first 12\n" +
+			"characters of the hash. settings is the canonical JSON the hash covers, so two rows can\n" +
+			"be diffed. A row with a NULL hash holds the searches logged before settings were\n" +
+			"recorded (schema v3 and older), which cannot be told apart.\n" +
+			"Read it with the coverage in mind: a row with few judged searches proves little, and\n" +
+			"rows differ in the queries they saw as well as in their settings.\n" +
+			"Decision: whether a setting change helped; which configuration to keep.",
+		SQL: filterCTE + `,
+per_search AS (
+    SELECT
+        s.settings_hash,
+        s.settings,
+        s.ts,
+        (SELECT count(*) FROM search_feedback AS f WHERE f.search_id = s.id) > 0 AS is_judged,
+        (SELECT min(f.rank) FROM search_feedback AS f
+          WHERE f.search_id = s.id AND f.useful) AS first_useful_rank
+    FROM fs AS s
+)
+SELECT
+    substr(settings_hash, 1, 12) AS settings_hash,
+    count(*) AS searches,
+    count(*) FILTER (WHERE is_judged) AS judged,
+    round(100.0 * count(*) FILTER (WHERE is_judged) / nullif(count(*), 0) * 10) / 10 AS coverage_pct,
+    round(100.0 * count(*) FILTER (WHERE first_useful_rank IS NOT NULL)
+          / nullif(count(*) FILTER (WHERE is_judged), 0) * 10) / 10 AS hit_rate_pct,
+    round(sum(CASE WHEN first_useful_rank IS NULL THEN 0.0
+                   ELSE 1.0 / first_useful_rank END)
+          / nullif(count(*) FILTER (WHERE is_judged), 0) * 1000) / 1000 AS mrr,
+    min(ts) AS first_seen,
+    max(ts) AS last_seen,
+    min(settings) AS settings
+FROM per_search
+GROUP BY settings_hash
+ORDER BY last_seen DESC, settings_hash`,
 	},
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/fake"
 	"github.com/nickstrad/kb/internal/entry"
@@ -117,6 +118,7 @@ func TestReindexLifecycle(t *testing.T) {
 	newOpts := func() Options {
 		return Options{
 			Root:      root,
+			Sources:   dataSources,
 			Store:     s,
 			Embedder:  emb,
 			BatchSize: 16,
@@ -261,13 +263,13 @@ func TestResolveOne(t *testing.T) {
 	s := newTestStore(t, base)
 	ctx := context.Background()
 
-	e, err := entry.Resolve(root, "tmux-daemons-die-at-logout.md")
+	e, err := entry.Resolve(root, dataSources, "tmux-daemons-die-at-logout.md")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 
 	opts := Options{
-		Root: root, Store: s, Embedder: base, BatchSize: 16,
+		Root: root, Sources: dataSources, Store: s, Embedder: base, BatchSize: 16,
 		Stdout: io.Discard, Stderr: io.Discard,
 	}
 	sum, err := One(ctx, opts, e)
@@ -366,7 +368,7 @@ func TestReindexChunkSplitFailureIsPerEntry(t *testing.T) {
 	stderr := &bytes.Buffer{}
 
 	sum, err := All(ctx, Options{
-		Root: root, Store: s, Embedder: base, BatchSize: 16,
+		Root: root, Sources: dataSources, Store: s, Embedder: base, BatchSize: 16,
 		Stdout: io.Discard, Stderr: stderr,
 	})
 	if err != nil {
@@ -435,7 +437,7 @@ func TestReindexNeverStoresDocPrefix(t *testing.T) {
 	ctx := context.Background()
 
 	if _, err := All(ctx, Options{
-		Root: root, Store: s, Embedder: base, BatchSize: 16,
+		Root: root, Sources: dataSources, Store: s, Embedder: base, BatchSize: 16,
 		Stdout: io.Discard, Stderr: io.Discard,
 	}); err != nil {
 		t.Fatalf("All: %v", err)
@@ -460,3 +462,6 @@ func TestReindexNeverStoresDocPrefix(t *testing.T) {
 		}
 	}
 }
+
+// dataSources is the default store's one source: the entries directory data/.
+var dataSources = []config.Source{{Path: entry.DataDir, Layout: config.LayoutEntries}}

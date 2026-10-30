@@ -504,6 +504,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Carried from the adversarial harness (W2): a symlink under `data/` that points outside the root is followed and indexed today. Discovery must skip such links with a warning, and doctor must report them (DEFAULTS #65). Add the harness scenario to the acceptance checks.
 - Changed by D9: source paths and globs are relative to the **location root**, not the store directory. Sources are always explicit (`kb init` writes them), and a store config with no `[[sources]]` indexes nothing (doctor warns). Overlap inside one store is a config error (step 5); overlap **across stores is allowed** (same corpus under another model, or a subset). `kb add --store REF` copies into that store's single `entries` source; none or several is Usage. The `files` layout also always skips `.kb/**` (already in step 2), which covers every store directory.
 - Model: Opus (touches entry/chunk/reindex/cli/index; goldens must hold); review: Sonnet via testing-standards-pass
+- Status: done (W7). `entry.Discover`/`Resolve` now take `[]config.Source`; hand-written test configs must include the data source.
 - Files: `internal/entry/entry.go` (`Discover(root, []config.Source)`, `Resolve`, new `fallbackMeta`), `internal/chunk/chunk.go:Split` (empty-summary case), `reindex.All`, `cli/add.go` and `cli/rm.go` (refuse non-`entries` sources), `index` (entries source only).
 - Steps:
   1. The `entries` layout keeps today's code verbatim (`excludedRootFiles`, `excludedDirs`, `dirFiles`).
@@ -620,6 +621,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Carried from 1.8a: build `sqlite.NewArtefact(<store DB path>)` and `cache.NewArtefact(<cache path>)` in `cli/migrate_cmd.go` and call `migrate.Run`/`Status`. Change the read-only refusal text in `sqlite.checkVersion` ("run kb doctor once to upgrade it") to "run kb migrate up". Turn off auto-migration on open for the index DB; the cache keeps auto-migrating. Q52: delete `TestMigration2KeepsSearchLog` (duplicates `TestStepEffects/index/0002`).
 - Carried from W5 pass: `config.Parse` already emits the older-version Conflict "run kb migrate up" through `checkVersion`. Add the config migration step, plus a test at current+1 once `config.SchemaVersion` is 2.
 - Model: Sonnet (command and wiring from spec); review: Opus via testing-standards-pass
+- Status: done (W7)
 - Files: `internal/store/sqlite/sqlite.go` (`Options.Create`: only a version-0 file is migrated on open; an older one is Conflict "store … is at schema vN; this kb needs vM. Run: kb migrate up"); new `internal/config/migrate.go` (config and location artefacts: `Steps[map[string]any]`, temp-file + rename, `config.Save`); new `cli/migrate_cmd.go`; `cli/init.go` (`Options.Create`). The `AddCommand` line is added by the orchestrator. It does not edit `cli/setup.go` (3.3b owns it in W7). The refusal comes from `sqlite.Open`, and `report` already maps Conflict to exit 1.
 - Steps:
   1. `kb migrate status [--store REF | --all] [--json]` exits 1 when anything is pending or newer. `kb migrate up [...] [--dry-run] [--no-backup]` ends with the combined effects ("needs: kb reindex"). `kb migrate verify`.
@@ -655,6 +657,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **2.2 `kb explain "<query>"`**
 - Carried from W6 pass: `FTS` with an empty non-nil `ChunkIDs` runs nothing but returns the MATCH expression (a storetest contract). Call it directly for the single-column re-scores; do not route it through `Searcher.ftsList`, whose OR retry fires on "0 rows and a non-empty Match".
 - Model: Sonnet (new command over existing trace); review: Sonnet via testing-standards-pass
+- Status: done (W7)
 - Files: new `cli/explain.go` and `search/explain.go`.
 - Steps:
   1. Run the search without logging.
@@ -674,6 +677,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **2.3 `kb eval` core**
+- Carried from testability (#3, #4): `parseSince(s, now)` with an injected clock; give eval a real read API for logged searches instead of raw `.DB()` SQL in tests.
 - Model: Opus (eval methodology: gold extraction, metrics, CI); review: Opus via testing-standards-pass
 - Files: new `internal/eval/{gold.go,replay.go,metrics.go}` and `cli/eval.go`. Add `SearchLog.Judged` in sqlite.
 - Steps:
@@ -712,6 +716,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **2.5 Log effective settings**
 - Carried from W6 pass: `Outcome.Settings` already carries the per-store `JSON`/`Hash` (each named store's own `[search]`, `TestSearchSettingsArePerStore`); log those, not `config.Default()`'s.
 - Model: Sonnet (additive migration, hash plumbing); review: Sonnet via testing-standards-pass
+- Status: done (W7)
 - Files: migration 3→4, `sqlite/log.go`, `search` (SearchRecord gets Settings, SettingsHash, FTSMatch), `stats/queries.go` (a `settings` query grouping hit-rate/MRR by `settings_hash`).
 - Tests: the logged row has a hash equal to `config.EffectiveJSON` hash.
 - Accept: `kb stats settings` shows one row per config ever used.
@@ -737,6 +742,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **3.1 Store registry and read-only open**
 - Carried from W6 pass: `workspace.ParseRef` refuses a ref containing `@` or `:` with "NAME@LOCATION refs are not supported yet" (`TestParseRef` rows); 3.1 replaces that branch with the real grammar and must update those rows.
 - Model: Sonnet (resolution order and warnings, clear spec); review: Sonnet via error-handling-pass
+- Status: done (W7). 3.2 fans out with `deps.openStoreReadOnly(cmd, ref)` (internal/cli/refs.go) and adds `--stores all`.
 - Changed by D9: refs instead of names; aliases live in `kb.toml [aliases]`.
 - Files: `internal/workspace/refs.go` (extends 1.7b's), `sqlite.Open(..ReadOnly)` (from 1.2).
 - Steps:
@@ -753,6 +759,9 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **3.2 Merge and log**
+- Carried from testability (#1, #2, #3): (a) extract a shared `d.openSearcher` + pure `resolveMode` used by search and explain (Q63); `renderHits` takes a one-method interface, not `store.Store`. (b) Replace the sqlite package vars `migrations`/`schemaVersion` reassigned by tests with a `steps` field on `Options`/`Artefact` (as `config.tomlArtefact` does), then allow `t.Parallel`. (c) Set `SearchRecord.TS` from an injected clock (`Searcher.Now`) instead of `sqlite.nowUTC`.
+- Carried from 4.1: `render.Hit` has no store field, so cross-store hits need a store tag in the header (`[r] store:path › heading`). Add the field and update the goldens.
+- Carried from W7 pass: (a) Q63 part (a) is done: `deps.openSearch`/`searchEmbedder` in cli/search.go are shared by search and explain (explain opens read-only); `renderHits` still takes `store.Store`. (b) `--store` resolution now has three copies: `resolveRef`, `resolveRefIn` (fan-out) and `migrateRefStore` (kb migrate, which reads kb.toml leniently through `rawLocationInfo`), plus `isDefaultStore` (index.go) reading kb.toml a third way. Fold them into one resolver that takes the `Read` func, before 3.2 adds fan-out refs; `TestMigrateScopeMatchesStoreRefs` and `TestStoreRefDecisions` pin the behaviour. (c) Render looks up one entry row per hit path (`renderHits`, memoised); with fan-out, batch it per store (`EntriesByPath`). (d) Harness H39: fan-out over an older store, one with no database and one ok. (e) The settings/settings_hash/fts_query round-trip is tested only in sqlite (searchlog_test.go); add it to storetest once the log has a read method. (f) `index.md` describes the location's default store only (`kb index` refuses others, doctor skips the check); if per-store snapshots are wanted, write them per store rather than lifting the refusal.
 - Model: Opus (cross-store fusion, per-store models, migration, logging); review: Opus via testing-standards-pass
 - Files: `search/multi.go`, migration 4→5, `sqlite/log.go`, `cli/search.go` (`--stores a,b`; default `search.stores`; `--stores ''` disables).
 - Steps:
@@ -770,7 +779,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **3.3 Shared embedding cache ∥**
 - Carried from W6 pass (3.3b): the cache's damage and newer-schema messages (`cache.Artefact`, docs/design/migrations.md) tell the user to run `kb model cache --clear`; that command must exist when the cache is wired.
 - Model: Opus (concurrent writers, WAL, degrade-on-error decorator); review: Opus via testing-standards-pass + error-handling-pass
-- Status: 3.3a done (W2): `internal/embed/cache` plus `embed.Cached`, not wired. 3.3b wiring notes from 3.3a:
+- Status: 3.3a done (W2), 3.3b done (W7): `internal/embed/cache` plus `embed.Cached`, not wired. 3.3b wiring notes from 3.3a:
   - Open `cache.DefaultPath()` (or a config override) in setup. On any `Open` error, including `ErrNewerSchema`, warn and use the plain embedder.
   - Wrap with `embed.Cached(e, c)` (not `None`) and close the cache at exit.
   - After reindex, add and search, warn if `ce.Err() != nil`. `Stats().ModelCalls` is the acceptance number ("embed calls: 0").
@@ -795,6 +804,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 
 **4.1 Compact rendering + `--budget`**
 - Model: Sonnet (renderer with golden tests); review: Sonnet via testing-standards-pass
+- Status: done (W7)
 - Files: new `internal/render/render.go`; `cli/search.go:printResults` (replaced).
 - Steps:
   1. Header line: `search N · M hits` (unchanged).
@@ -809,6 +819,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: output format break; listed in Breaking changes.
 
 **4.2 `--expand section|entry`**
+- Carried from W7 pass: one entry's chunks can appear as several hits, and a hit header repeats the chunk's own context line ("› (intro)" then "Alpha › (intro)"); dedupe per entry and drop the repeated context line when expanding.
 - Model: Sonnet (bounded rendering feature)
 - Files: `render/expand.go`; `Index.Chunks`; `ChunkMeta` gains entry_id/ord/source_file.
 - Steps:
@@ -980,6 +991,18 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 
 ---
 
+**T1 Test infrastructure: per-test deps, typed CLI outcomes, shared fault seams** (from .agent/testability #4–#9)
+- Model: Sonnet (mechanical test refactor); review: Opus via testability-check
+- Status: planned. Schedule: its own wave after W8 (it touches every cli test file).
+- Steps:
+  1. `newTestDeps(t)`, with the cwd set through `workspaceEnv`. Move per-run caches out of `deps`, so CLI tests can use `t.Parallel`.
+  2. An `execute` variant that returns the typed error, so decision tests assert kind and cause. Keep one wording test per message family.
+  3. Doctor records `[]doctorCheck{Name, Level, Detail}` and prints once at the end (Q60).
+  4. Move the sqlite fault driver into a shared test-support package; give `cache.Open` the same hook (Q47).
+  5. Add a `sqlitetest` helper plus a `failingLog` wrapper to replace raw `.DB()` SQL in non-sqlite tests.
+  6. Harness: a `--debug` progress line to wait on instead of sleeps (H23), and a `harnessfake` build tag with a `fake:<dim>` model (DEFAULTS #189), enabling H2, H14 and H18.
+- Accept: `go test -race ./internal/cli/` passes with `t.Parallel` in the CLI tests; no `.DB()` outside the sqlite packages' own tests; the harness runs vector scenarios with the fake model.
+
 ## 4. Breaking changes / migration notes
 
 **Obsolete (D8):** there are no users before v1, so nothing below needs a migration path or a user note. The table is kept for history only. Its layout rows (`.kb/kb.sqlite`, `~/knowledge` adoption, `[stores]`) are superseded by D9. After v1, upgrades go through `kb migrate` (D10).
@@ -1101,7 +1124,7 @@ A wave starts when every item of the previous wave is merged and its review pass
   - lane B: 2.1: search.go, sqlite/retrieve.go, store/types.go, cli/search.go. It also adds the retrieval-side fields that later items need (see 6.5). 1.7b may touch cli/search.go only where it must to compile, and coordinates with 2.1.
   - lane C: 1.8a: migrate/ (new), sqlite/sqlite.go, sqlite/migrations.go, sqlite/artefact.go, embed/cache/. No overlap with 2.1 (retrieve.go) or lane A.
   - 3.1 moves to W7: it needs 1.7b's location file and refs.
-- **W7:**
+- **W7 (done):**
   - 1.5: entry, chunk, reindex, add.go, rm.go, index.
   - 2.2: explain new files only.
   - lane 1.8b → 2.5. 1.8b: sqlite/sqlite.go, config/migrate.go, cli/migrate_cmd.go, cli/init.go. 2.5: mig v4 (written as a `migrate.Step`), sqlite/log.go, migrations.go, search.go, store/types.go, stats/queries.go.
@@ -1163,6 +1186,8 @@ A wave starts when every item of the previous wave is merged and its review pass
    **Adversarial coverage verdict (part of every pass).** After the two skills, the pass states, per item in the wave, whether the existing adversarial tools (`docs/ADVERSARIAL_TESTING.md`, the `adversarial-testing` skill, `.agent/scripts/adversarial/`) already probe what changed. Examples: a mutation run over the changed packages; a CLI-harness scenario for each new command, flag, exit code or integration point; hostile inputs for each new parser. The verdict is either **"suffices"**, naming which tool or scenario covers it, or **"gaps"**, with concrete suggestions. Run the relevant tools when they exist; a survivor or a failing scenario is a finding like any other. Each suggestion goes to `.agent/queue/harness-improvements.md` as an `H<n>` entry, to be worked on later, not in the same wave unless it's High value and cheap.
 
    **Leverage review (part of every pass).** Run the `leverage-check` skill. Update the `.agent/leverage/` entries the wave touched, and archive any whose area was refactored, redesigned or stripped out (`.agent/leverage/archive/`) (status, evidence, coverage today, next checks, last reviewed). Propose additions or retirements, keeping it to about 10 active entries. Turn any "next check" that is now due into an H entry, a queue entry or a PLAN note.
+
+   **Testability review (part of every pass).** Run the `testability-check` skill. Update the `.agent/testability/` entries the wave touched (symptoms, counts, status, suggested PLAN home, last reviewed), archive the ones whose remedy landed (`.agent/testability/archive/`), and add new candidates only with evidence, keeping about 10–15 active entries. When an upcoming item owns an entry's files, note the remedy on that item.
 
    The orchestrator records the pass result (counts per severity, what was fixed or deferred, and the adversarial verdict) in the wave's state log and folds lasting lessons into `.agent/knowledge/`. Model for the pass: Opus for waves that contain Opus items, Sonnet otherwise.
 5. **Judgment calls** that deviate from or fill gaps in this plan go in `DEFAULTS.md`, with the item id.
