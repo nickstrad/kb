@@ -99,11 +99,11 @@ func TestEffectiveJSON(t *testing.T) {
 	if err := json.Unmarshal(data, &top); err != nil {
 		t.Fatal(err)
 	}
-	if len(top) != 2 || top["embed"] == nil || top["search"] == nil {
-		t.Errorf("top-level keys = %v, want exactly embed and search", keys(top))
+	if len(top) != 3 || top["embed"] == nil || top["search"] == nil || top["prior"] == nil {
+		t.Errorf("top-level keys = %v, want exactly embed, prior and search", keys(top))
 	}
 	// Canonical: keys sorted at every level, no whitespace.
-	if !strings.HasPrefix(string(data), `{"embed":{"batch":16,"dim":0,"int8":false,"model":"BAAI/bge-small-en-v1.5","workers":0},"search":{"bm25":{"heading":2,"text":1,"title":3},"candidate_limit":40,`) {
+	if !strings.HasPrefix(string(data), `{"embed":{"batch":16,"dim":0,"int8":false,"model":"BAAI/bge-small-en-v1.5","workers":0},"prior":{"enabled":false,"half_life_days":90,"max_boost":0.2,"min_judged":50,"query_memory":false},"search":{"bm25":{"heading":2,"text":1,"title":3},"candidate_limit":40,`) {
 		t.Errorf("not canonical: %s", data)
 	}
 	if len(hash) != 64 {
@@ -111,7 +111,7 @@ func TestEffectiveJSON(t *testing.T) {
 	}
 
 	// Same settings, same bytes; a different setting, a different hash; a setting outside
-	// [embed]+[search] does not change it.
+	// [embed]+[search]+[prior] does not change it.
 	again, hash2, _ := Default().EffectiveJSON()
 	if string(again) != string(data) || hash2 != hash {
 		t.Errorf("EffectiveJSON is not deterministic")
@@ -135,6 +135,23 @@ func TestEffectiveJSON(t *testing.T) {
 	} {
 		other := Default()
 		tc.edit(&other.Search)
+		if _, h, _ := other.EffectiveJSON(); h == hash {
+			t.Errorf("changing %s did not change the hash", tc.key)
+		}
+	}
+	// Every [prior] key reaches the hash too: a baseline run with the prior on is not comparable.
+	for _, tc := range []struct {
+		key  string
+		edit func(*Prior)
+	}{
+		{"prior.enabled", func(p *Prior) { p.Enabled = true }},
+		{"prior.min_judged", func(p *Prior) { p.MinJudged = 51 }},
+		{"prior.half_life_days", func(p *Prior) { p.HalfLifeDays = 91 }},
+		{"prior.max_boost", func(p *Prior) { p.MaxBoost = 0.3 }},
+		{"prior.query_memory", func(p *Prior) { p.QueryMemory = true }},
+	} {
+		other := Default()
+		tc.edit(&other.Prior)
 		if _, h, _ := other.EffectiveJSON(); h == hash {
 			t.Errorf("changing %s did not change the hash", tc.key)
 		}

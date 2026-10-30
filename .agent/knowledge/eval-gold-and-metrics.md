@@ -24,6 +24,8 @@ gold apart (`Query.OtherUseful/OtherOpens`, never a negative either) and `Report
 it; it is never checked against this index, where a same-named path is another entry.
 `eval.Replayable` decides whether the embedder must load.
 
+**Evidence times (6.2, W12).** `Verdict.At` (`search_feedback.ts`) and `JudgedSearch.OpenedAt[path]` (`search_opens.ts`) come back with the log; eval ignores them, the feedback prior (`search/prior.go`) uses them as event times. A damaged ts fails `Judged`.
+
 **Baselines (2.4, W9).** `eval.Baseline` (baseline.go) = version 1 + name, kb version, date, embed
 model, entry count, settings JSON+hash and the whole `Report` (per_query first_gold_rank, other_store).
 It lives at `<store>/eval/<name>.json` (gitignored by init's `stores/*/eval/`), written atomically;

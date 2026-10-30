@@ -726,6 +726,7 @@ func searchLogRoundTrip(t *testing.T, st store.Store) {
 		t.Errorf("search_opens = %s, want %s", got, want)
 	}
 	exactRoundTrip(t, st, at)
+	priorRoundTrip(t, st, at)
 }
 
 // exactRoundTrip: a hit's place in the exact list is logged with it, NULL when it was not there.
@@ -744,6 +745,34 @@ func exactRoundTrip(t *testing.T, st store.Store, at time.Time) {
 	}{
 		{"SELECT exact_rank, exact_score FROM search_results WHERE search_id = ? ORDER BY rank", [][]any{{int64(1), -2.5}}},
 		{"SELECT exact_rank, exact_score FROM search_candidates WHERE search_id = ? ORDER BY fused_rank", [][]any{{int64(1), -2.5}, {nil, nil}}},
+	} {
+		tab, err := st.QueryLog(ctx, q.sql, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := fmt.Sprint(tab.Rows), fmt.Sprint(q.want); got != want {
+			t.Errorf("%s = %s, want %s", q.sql, got, want)
+		}
+	}
+}
+
+// priorRoundTrip: the feedback prior's multiplier is logged on the result and candidate rows, NULL
+// (not 1) when the prior was inactive for the hit.
+func priorRoundTrip(t *testing.T, st store.Store, at time.Time) {
+	mult := 1.125
+	active := store.LoggedHit{ChunkID: 3, EntryPath: "x.md", RRFScore: 0.02, Prior: &mult}
+	inactive := store.LoggedHit{ChunkID: 4, EntryPath: "y.md", RRFScore: 0.01}
+	id, err := st.LogSearch(ctx, store.SearchRecord{TS: at, Query: "prior", Mode: "fts", K: 5, Caller: "c",
+		Results: []store.LoggedHit{active}, Candidates: []store.LoggedHit{active, inactive}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []struct {
+		sql  string
+		want [][]any
+	}{
+		{"SELECT prior FROM search_results WHERE search_id = ? ORDER BY rank", [][]any{{1.125}}},
+		{"SELECT prior FROM search_candidates WHERE search_id = ? ORDER BY fused_rank", [][]any{{1.125}, {nil}}},
 	} {
 		tab, err := st.QueryLog(ctx, q.sql, id)
 		if err != nil {
@@ -820,10 +849,11 @@ func judgedLog(t *testing.T, st store.Store) {
 	}
 	want := []store.JudgedSearch{{ID: 1, TS: "2026-10-30T12:00:00Z", Query: "q", Mode: "fts", K: 8, Caller: "c",
 		Verdicts: []store.Verdict{
-			{Rank: 2, Store: notes, Useful: true, EntryPath: "a.md", Heading: "H"},
-			{Rank: 5, Store: notes, EntryPath: "only.md", Heading: "H"},
+			{Rank: 2, Store: notes, Useful: true, At: at, EntryPath: "a.md", Heading: "H"},
+			{Rank: 5, Store: notes, At: at, EntryPath: "only.md", Heading: "H"},
 		},
 		Opens:      []string{"a.md"},
+		OpenedAt:   map[string]time.Time{"a.md": at},
 		OtherOpens: []store.StorePath{{Store: adr, Path: "n.md"}, {Store: notes, Path: "a.md"}, {Store: notes, Path: "only.md"}},
 	}}
 	if fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", want) {

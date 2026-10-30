@@ -39,6 +39,7 @@ Also check by reading, since grep cannot find these:
 
 - **Missing context.** The error at the boundary should name the entry path, search id, database path or model. If it doesn't, the user cannot act on it (§1.2 item 2).
 - **Partial success.** A function that returns `(value, err)` with both set must say so in its doc comment, and its callers must print the value and warn (§1.5, the `ErrLogFailed` pattern).
+- **Failures told apart only by text.** Two outcomes that callers or tests must distinguish share a kind and differ only in `Msg` (for example several `usageErr` cases that tests match by substring). Give them a typed error, a result field or a distinct kind (§1.5; CODING_STYLE §12.3). Report as Low unless a caller branches on the text (then check 4).
 - **Top level.** `report` in `internal/cli/root.go` must show the `Msg` of well-formed errors, record bugs in the incident log with an ID and a stack trace, and map kinds to the exit codes in §1.5. Flag any new path that writes errors to stderr and bypasses `report`.
 
 ## 3. Classify each finding

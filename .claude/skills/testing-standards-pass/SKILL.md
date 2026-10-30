@@ -5,7 +5,7 @@ description: This skill should be used when the user asks for a "testing standar
 
 # Testing standards pass
 
-**Source of truth:** `docs/TESTING.md`. Read §2 (layers and placement rules), §3.1 and §3.5 (assertions), §4.2 to §4.4 (decision-heavy list, coverage gates), §5.2 (properties), §6 (contract suites), §7 (determinism) and §10 (decision checklist) before every pass. Do not restate the rules here or in the report; cite them by section. Where assertions meet errors, `docs/CODING_STYLE.md` §1.7 also applies.
+**Source of truth:** `docs/TESTING.md`. Read §2 (layers and placement rules), §3.1 and §3.5 (assertions), §4.2 to §4.4 (decision-heavy list, coverage gates), §5.2 (properties), §6 (contract suites), §7 (determinism) and §10 (decision checklist) before every pass. Do not restate the rules here or in the report; cite them by section. Where assertions meet errors, `docs/CODING_STYLE.md` §1.7 also applies. Where a gap exists because the code mixes a decision with I/O, cite `docs/CODING_STYLE.md` §12 as well (check 16).
 
 This skill **reports** findings. Do not edit code or tests unless the user explicitly asks.
 
@@ -37,6 +37,7 @@ A grep hit is a **lead**, not a finding. Read the code before you report it.
 | 13 | Build tags | Test or command missing `-tags fts5`; a new tag not in the §8 table; behaviour that changes under `noassert` | §8 |
 | 14 | Coverage | Run the §9 commands (below) and compare against the §4.4 floors | §4.4 |
 | 15 | E2E journeys (TESTING §11; from PLAN E1, before that note it on the E-item) | (a) A new user-facing command, cross-command flow (a REF form, an upgrade step, a new log signal) or changed README workflow in the diff with no new or extended journey in `internal/e2e/testdata/journeys/`. (b) A journey that re-tests unit logic (asserts a ranking, clamp, validation table or metric that a lower layer owns), or carries hostile, concurrent or interrupt cases (harness). (c) A non-hermetic journey: a real model id or download, a host tool, a path outside `$WORK`, a dependency on another journey, an unpinned time window, or an output block that is mostly `...`. (d) A transcript diff from `-update` that the change under review does not explain. | §10 step 7, §11 |
+| 16 | Decision reachable only through I/O | A changed rule (validation, mode, gate, ordering) whose only tests run the CLI, a real file or raw SQL, or match stderr text to learn the branch, while no pure function holds the rule. The test is at the wrong layer because of the design: suggest the extraction (a pure `buildX`/`planX` returning a structured result) plus the L2 table, per CODING_STYLE §12.1 and §12.3. Don't repeat an open `.agent/testability` entry; cite it. | §1 principle 5, §2.1, §10 |
 
 ## 3. Run
 
@@ -56,7 +57,7 @@ make e2e 2>/dev/null || go test -tags fts5,e2e ./internal/e2e/   # once internal
 ## 4. Severity
 
 - **High**: failing tests (journeys included); an assertion on user input; a §4.2 decision with no table test; a host-tool or network dependency; a backend or embedder not wired to its contract suite; a package below its coverage floor; a test that passes vacuously (it passes because of the failure it should detect).
-- **Medium**: missing §3.5 assertion; decision table missing a branch outcome; untested boundary or fuzz-unreached line with no unit test (check 7); missing §5.2 property or regression seed; duplication across layers; wrong layer; a new user-facing command or flow with no journey, or a journey that re-tests unit logic (check 15).
+- **Medium**: a decision reachable only through I/O (check 16); missing §3.5 assertion; decision table missing a branch outcome; untested boundary or fuzz-unreached line with no unit test (check 7); missing §5.2 property or regression seed; duplication across layers; wrong layer; a new user-facing command or flow with no journey, or a journey that re-tests unit logic (check 15).
 - **Low**: weak property, message format, an unguarded but cheap assertion argument, a table whose row names do not say which outcome they prove.
 
 ## 5. Report format

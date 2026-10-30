@@ -79,6 +79,9 @@ func TestOpenAppliesToEveryHeadingOfPath(t *testing.T) {
 	if got := m.Useful("a.md", "Other"); !near(got, 0.5) {
 		t.Fatalf("Useful = %v, want 0.5", got)
 	}
+	if got := m.Opened("a.md"); !near(got, 0.5) || m.Opened("b.md") != 0 {
+		t.Fatalf("Opened = %v / %v, want 0.5 / 0", got, m.Opened("b.md"))
+	}
 }
 
 func TestCapBoundary(t *testing.T) {
@@ -178,7 +181,7 @@ func TestKeysAreIndependent(t *testing.T) {
 
 func TestZeroModelAndValidate(t *testing.T) {
 	var z Model
-	if z.Active() || z.Judged() != 0 || z.Mult("a", "b") != 1 || z.Useful("a", "b") != 0 {
+	if z.Active() || z.Judged() != 0 || z.Mult("a", "b") != 1 || z.Useful("a", "b") != 0 || z.Opened("a") != 0 {
 		t.Fatal("zero Model is not neutral")
 	}
 	if err := DefaultParams().Validate(); err != nil {

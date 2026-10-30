@@ -191,14 +191,15 @@ func clone(c Config) Config {
 }
 
 // EffectiveJSON is the canonical form of the settings that decide what a search returns and what
-// the index holds, [embed] and [search]: compact JSON with every object's keys sorted. hash is the
+// the index holds, [embed], [search] and [prior]: compact JSON with every object's keys sorted. hash is the
 // hex SHA-256 of those bytes, the settings_hash a search log records. Equal settings give equal
 // bytes whatever order the file listed them in.
 func (c Config) EffectiveJSON() (data []byte, hash string, err error) {
 	raw, err := json.Marshal(struct {
 		Embed  Embed  `json:"embed"`
 		Search Search `json:"search"`
-	}{c.Embed, c.Search})
+		Prior  Prior  `json:"prior"`
+	}{c.Embed, c.Search, c.Prior})
 	if err != nil {
 		return nil, "", errs.Wrap(err, errs.Internal, "config.EffectiveJSON", "cannot encode the effective settings")
 	}

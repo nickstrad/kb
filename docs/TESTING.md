@@ -1,6 +1,6 @@
 # kb testing strategy
 
-Audience: contributors, people and agents alike. Read time: about 15 minutes. This covers today's code and the v2 rework (rembed embedder, storage-backend seam, root discovery and `.kb/config.toml`, `kb eval`/`explain`/`context`, cross-store search, edges, synonyms, feedback priors). Error handling is in [CODING_STYLE.md](CODING_STYLE.md) §1; this document covers only where errors and assertions meet (§3.1).
+Audience: contributors, people and agents alike. Read time: about 15 minutes. This covers today's code and the v2 rework (rembed embedder, storage-backend seam, root discovery and `.kb/config.toml`, `kb eval`/`explain`/`context`, cross-store search, edges, synonyms, feedback priors). Error handling is in [CODING_STYLE.md](CODING_STYLE.md) §1; this document covers only where errors and assertions meet (§3.1). How to shape code so that it is testable (domain code separated from infrastructure, injected inputs, observable results) is in CODING_STYLE.md §12.
 
 Platform: kb is developed and tested on macOS (darwin/arm64). Tests run there, locally and in CI. Other platforms get release builds only (§9).
 
@@ -10,6 +10,7 @@ Platform: kb is developed and tested on macOS (darwin/arm64). Tests run there, l
 2. **Assertions state what is always true. Tests choose inputs.** A fuzz run is how the two meet: the fuzzer generates inputs, and the assertions in the code check every one of them.
 3. **Tests are hermetic.** No network, no model downloads, no host tools (`sed`, `git` config, real editors), no wall-clock sleeps. All files go in `t.TempDir()`.
 4. **Decision-heavy code gets a table test per branch outcome (plus a fuzz property where the input space is large); the rest gets statement coverage.** Do not spend this effort on plumbing. MC/DC is not required (§4.2).
+5. **Test the shape the design gives you.** Decisions are pure functions over values, and adapters and the CLI shell do the I/O around them (CODING_STYLE.md §12). The pure core gets assertions, tables and properties (L1 to L3). Adapters get contract suites and fault tests (L5). The shell gets one success and one failure per command (L6). If a decision can be reached only through the shell or through real I/O, extract it before you write the test.
 
 ## 2. Layers and ownership
 
@@ -33,6 +34,7 @@ Platform: kb is developed and tested on macOS (darwin/arm64). Tests run there, l
 - **Every boundary is tested, by a property or a unit test.** Boundaries are the edges of a range or a limit: empty and nil input; 0, 1 and the maximum; exactly at, one below and one above a limit (`MaxChunkChars`, `MinK`/`MaxK`, `ListLimit`, `CandidateLimit`, `PerEntryCap`, a token budget, a date window); the first and last element; and the switch points between modes. A property may own a boundary only if its generator demonstrably produces it (add the boundary value as an `f.Add` seed); otherwise write a table test with one row per boundary value. Name the rows after the boundary (`"at MaxChunkChars"`, `"MaxChunkChars+1"`).
 - **Golden files pin bytes. They do not pin invariants.** If a golden diff is the only thing that would catch a bug, ask whether an L1 assertion or an L3 property should own it instead.
 - **Journeys never own a lower layer's claim.** A journey may *show* a ranking, a clamp or a validation message, but a wrong value there is fixed and pinned at the layer that owns it, then the transcript is updated. Hostile inputs, concurrency and interruption belong to the adversarial harness, not to journeys (§11.4).
+- **A decision buried in I/O is extracted, not tested end to end.** If the only way to reach a rule is a full CLI run, a real file or raw SQL, move the rule into a pure function (CODING_STYLE.md §12.1) and table-test it at L2. Keep the CLI test for wiring only. Example: `buildStale` holds the `kb stale` rules, and `runStale` gets one wiring test.
 - **Integration tests never re-check service logic.** "`kb search --k 99` returns 20 hits" is a `ClampK` unit test. The CLI test checks only that `--k` reaches `Request.K`.
 
 ### 2.2 Package matrix
@@ -171,7 +173,7 @@ Statement coverage tells you which branches ran. It does not show that each cond
 
 Dropped for now (owner decision, 2026-10-29): MC/DC. No Go tool measures it, so it could only be checked by hand in review. It may be revisited later if a tool appears.
 
-The rule instead: a decision-heavy function gets a **table-driven test that covers each branch outcome** (read the coverage profile to see which branches ran), plus a **fuzz property** where the input space is large. Name each row after the outcome it proves. The list is kept short; add to it only by PR.
+The rule instead: a decision-heavy function gets a **table-driven test that covers each branch outcome** (read the coverage profile to see which branches ran), plus a **fuzz property** where the input space is large. Name each row after the outcome it proves. The list is kept short; add to it only by PR. A decision-heavy function does no I/O. If one does, extract the decision first (CODING_STYLE.md §12.5), so that the table calls it with values.
 
 - `search.Searcher.Search`: the embedder-fallback and mode decision (§4.3) and mode validation. `ClampK`.
 - `search.SanitizeFTS` field rules (`ftsBaseRune`, operator words, `*`, `-`). Large input space: also `FuzzSanitizeFTS`.
@@ -308,7 +310,7 @@ func FuzzFuse(f *testing.F) {
 
 `ClampK` is a three-row unit table, not a property.
 
-The table lists the properties, not every fuzz target. The `make fuzz` block in §9 names all 30 targets, including the ones this table does not describe (`FuzzExactTerms`, `FuzzExactMatch`, `FuzzMerge`, `FuzzSpell`, `FuzzSynonyms`, `FuzzPrior`, `FuzzSteps`, `FuzzExtract`, `FuzzTranscript`, `FuzzRelated` and others).
+The table lists the properties, not every fuzz target. The `make fuzz` block in §9 names all 31 targets, including the ones this table does not describe (`FuzzExactTerms`, `FuzzExactMatch`, `FuzzMerge`, `FuzzSpell`, `FuzzSynonyms`, `FuzzPrior`, `FuzzSteps`, `FuzzExtract`, `FuzzTranscript`, `FuzzRelated` and others).
 
 ### 5.3 Practicalities
 
@@ -392,7 +394,7 @@ Every versioned artefact (CODING_STYLE.md §6.1) has these, in its own package. 
 - **Store:** real SQLite in `t.TempDir()`. Never mock the database in store, search or reindex tests, because FTS5 and sqlite-vec behaviour is the thing under test.
 - **Doubles keep the error contract.** A test double returns only errors the real dependency can return, with the same `errs` kind (e.g. a fake cache fails with `errs.Usage`, as `cache.Open` does). A double that returns a bare error passes tests that production would fail (testability `test-doubles-break-error-contract`).
 - **Real models (`embed/local`, rembed):** these tests carry `//go:build model`, not a `testing.Short` or "skip if not cached" gate. Default runs never download a model. The `model` job fetches it in an explicit step before the tests run. Under the tag, a missing model is `t.Fatal`, not a skip, so the job cannot pass vacuously.
-- **Time:** assert durations (`EmbedMs`, `TotalMs`) are `>= 0`, never exact. No `time.Sleep`. Synchronise with channels or `ctx`.
+- **Time:** assert durations (`EmbedMs`, `TotalMs`) are `>= 0`, never exact. No `time.Sleep`. Synchronise with channels or `ctx`. Pin "now" through the injected clock (`deps.now`, `Searcher.Now`) or pass it as a value (`asOf`, `now`) to a pure function (CODING_STYLE.md §12.4). Never compute an expected value from `time.Now()`.
 - **Randomness:** seed explicitly and print the seed on failure. Map iteration order must never reach output (the total order in `Fuse` guarantees this for search).
 - **No host tools.** Tests never shell out to `sed`, `awk` or other host tools: an injected `deps.editor` (a Go func) replaces `$EDITOR`. Only the rows that test `runEditor` itself shell out (DEFAULTS #103).
 - **Env vars:** v2 reads none. Until then, tests that need one use `t.Setenv`. Note that `t.Setenv` and `t.Parallel` cannot be combined. Once config arrives through `deps`, these tests can run in parallel.
@@ -451,6 +453,7 @@ fuzz:   # time-boxed; FUZZTIME=2m in CI. One -fuzz per run: the regex must match
 	go test -tags $(TAGS) ./internal/search    -run '^$$' -fuzz '^FuzzMerge$$'               -fuzztime $(FUZZTIME)
 	go test -tags $(TAGS) ./internal/search    -run '^$$' -fuzz '^FuzzSpell$$'               -fuzztime $(FUZZTIME)
 	go test -tags $(TAGS) ./internal/search    -run '^$$' -fuzz '^FuzzSynonyms$$'            -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/search    -run '^$$' -fuzz '^FuzzMemoryKey$$'           -fuzztime $(FUZZTIME)
 	go test -tags $(TAGS) ./internal/store/sqlite -run '^$$' -fuzz '^FuzzSanitizeFTS$$'      -fuzztime $(FUZZTIME)
 	go test -tags $(TAGS) ./internal/store/sqlite -run '^$$' -fuzz '^FuzzStoreModel$$'       -fuzztime $(FUZZTIME)
 	go test -tags $(TAGS) ./internal/store/sqlite -run '^$$' -fuzz '^FuzzRelated$$'          -fuzztime $(FUZZTIME)
@@ -488,7 +491,7 @@ Work down the list and stop at the first yes.
 7. **Is it a user flow across commands** (the output of one command is the input or the precondition of the next, as README or `kb help` describes it)? An **E2E journey** (§11): add a new journey or extend an existing one. A new user-facing command, a new cross-command flow (a REF form, an upgrade step, a new log signal) or a changed README workflow needs one, in the same item. A new flag on an existing command usually doesn't: it gets the L6 wiring test. When the journey belongs to a later E-item's set (PLAN Phase 7), note it on that item instead.
 8. **Already owned by a lower layer?** Stop. If the lower-layer test is missing, add it there.
 
-Bug fixes: put the regression at the layer that owns the root cause. If the fuzzer found the bug, commit the crasher. Any test that needs the network, a model, a host tool or a sleep: redesign it (a double, injection, `t.TempDir()`). If it truly needs a real model, tag it `model`.
+Bug fixes: put the regression at the layer that owns the root cause. If the fuzzer found the bug, commit the crasher. Any test that needs the network, a model, a host tool or a sleep: redesign it (a double, injection, `t.TempDir()`). If it truly needs a real model, tag it `model`. If a test at the layer this list picks is hard to write (long setup, raw SQL, `t.Chdir`, `t.Setenv`, a sleep, matching text to learn a decision), the design is the problem: apply CODING_STYLE.md §12, or record a `.agent/testability/` entry if your item does not own the files.
 
 ### 10.1 Checking the tests themselves
 

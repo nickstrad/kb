@@ -10,7 +10,7 @@ touches `~/knowledge` or uses the network.
 | Tool | Language | What it does |
 |---|---|---|
 | `mutate/` | Go | Mutation testing: one source change at a time, runs the package's tests, reports survivors and a score |
-| `harness/` | Go | Builds kb once and runs hostile CLI scenarios against temp roots; reports pass/fail with evidence. `harness/loadfixture/` is its SQLite helper (built beside kb) that makes the older and oversized index databases the `migrate-*` scenarios attack; `-bin` runs skip those. kb is built with `-tags fts5,harnessfake`, which adds the deterministic `fake:<dim>` embedding model (DEFAULTS #189; never in release builds) for scenarios that need vectors from several models (`stores-fanout`); a `-bin` binary without the tag fails those |
+| `harness/` | Go | Builds kb once and runs hostile CLI scenarios against temp roots; reports pass/fail with evidence. `harness/loadfixture/` is its SQLite helper (built beside kb) that makes the older, oversized and hand-damaged index databases the `migrate-*` and `prior-hostile` scenarios attack (`load`, `fill`, `setver`, `exec DB SQL`, `check`); `-bin` runs skip those. kb is built with `-tags fts5,harnessfake`, which adds the deterministic `fake:<dim>` embedding model (DEFAULTS #189; never in release builds) for scenarios that need vectors from several models (`stores-fanout`); a `-bin` binary without the tag fails those |
 | `boundaries/` | Go | Lists numeric limits and whether tests name them at, -1 and +1 (docs/TESTING.md §2.1) |
 | `coverage-gaps.sh` | Bash | Functions below a coverage threshold, measured with the package's own tests and seeds |
 | `flaky.sh` | Bash | Runs tests N times with `-race -shuffle=on` and reports tests that ever failed |

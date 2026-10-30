@@ -126,13 +126,14 @@ type Eval struct {
 	Holdout   float64 `toml:"holdout"`
 }
 
-// Prior is [prior]. Reserved.
+// Prior is [prior], the feedback prior of kb search (PLAN 6.2). Enabled turns it on; it applies
+// once MinJudged searches carry a verdict or an open. QueryMemory is read by PLAN 6.3.
 type Prior struct {
-	Enabled      bool    `toml:"enabled"`
-	MinJudged    int     `toml:"min_judged"`
-	HalfLifeDays int     `toml:"half_life_days"`
-	MaxBoost     float64 `toml:"max_boost"`
-	QueryMemory  bool    `toml:"query_memory"`
+	Enabled      bool    `toml:"enabled" json:"enabled"`
+	MinJudged    int     `toml:"min_judged" json:"min_judged"`
+	HalfLifeDays int     `toml:"half_life_days" json:"half_life_days"`
+	MaxBoost     float64 `toml:"max_boost" json:"max_boost"`
+	QueryMemory  bool    `toml:"query_memory" json:"query_memory"`
 }
 
 // Agent is [agent]: who the person or tool running kb is.

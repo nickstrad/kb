@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,21 +42,30 @@ func judgedLog(t *testing.T, driver string) *Store {
 		}
 	}
 	steps := []func() error{
-		func() error { return st.Feedback(ctx, 1, 1, true, "", time.Time{}) },
-		func() error { return st.Feedback(ctx, 1, 1, false, "changed my mind", time.Time{}) }, // the latest verdict wins
-		func() error { return st.Feedback(ctx, 1, 3, true, "", time.Time{}) },
-		func() error { return st.FeedbackNone(ctx, 2, "", time.Time{}) },
+		func() error { return st.Feedback(ctx, 1, 1, true, "", judgedVerdictAt) },
+		func() error {
+			return st.Feedback(ctx, 1, 1, false, "changed my mind", judgedVerdictAt.Add(time.Minute))
+		}, // the latest verdict wins
+		func() error { return st.Feedback(ctx, 1, 3, true, "", judgedVerdictAt.Add(2*time.Minute)) },
+		func() error { return st.FeedbackNone(ctx, 2, "", judgedVerdictAt) },
 	}
 	for i, step := range steps {
 		if err := step(); err != nil {
 			t.Fatalf("step %d: %v", i, err)
 		}
 	}
-	if ok, err := st.RecordOpen(ctx, store.OpenRecord{EntryPath: "d.md", At: time.Now(), Window: time.Hour}); err != nil || !ok {
+	if ok, err := st.RecordOpen(ctx, store.OpenRecord{EntryPath: "d.md", At: judgedOpenAt, Window: time.Hour}); err != nil || !ok {
 		t.Fatalf("RecordOpen: %v %v", ok, err)
 	}
 	return st
 }
+
+// The times judgedLog records its feedback and its one open with: the verdicts are placed so that
+// the latest wins and its time is the one read back, and the open is at the log's second resolution.
+var (
+	judgedVerdictAt = time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
+	judgedOpenAt    = time.Now().UTC().Truncate(time.Second)
+)
 
 // TestJudgedReadsVerdictsNoneAndOpens: the read side of the log returns every search, the latest
 // verdict per rank joined to the path and heading logged at that rank, --none and opens.
@@ -73,10 +83,11 @@ func TestJudgedReadsVerdictsNoneAndOpens(t *testing.T) {
 	}
 	want := []store.JudgedSearch{
 		{ID: 1, Query: "Tmux  Logout", Mode: "hybrid", K: 8, Caller: "claude", Verdicts: []store.Verdict{
-			{Rank: 1, Useful: false, EntryPath: "a.md", Heading: "H a.md"},
-			{Rank: 3, Useful: true, EntryPath: "c.md", Heading: "H c.md"},
+			{Rank: 1, Useful: false, At: judgedVerdictAt.Add(time.Minute), EntryPath: "a.md", Heading: "H a.md"},
+			{Rank: 3, Useful: true, At: judgedVerdictAt.Add(2 * time.Minute), EntryPath: "c.md", Heading: "H c.md"},
 		}},
-		{ID: 2, Query: "ssh", Mode: "fts", K: 3, Caller: "codex", None: true, Opens: []string{"d.md"}},
+		{ID: 2, Query: "ssh", Mode: "fts", K: 3, Caller: "codex", None: true, Opens: []string{"d.md"},
+			OpenedAt: map[string]time.Time{"d.md": judgedOpenAt}},
 		{ID: 3, Query: "git", Mode: "fts", K: 8, Caller: "claude"},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -118,8 +129,8 @@ func TestJudgedFilter(t *testing.T) {
 	}
 }
 
-// TestJudgedDriverFailures: a failure in each of the three reads is the injected fault, wrapped
-// once as Internal.
+// TestJudgedDriverFailures: a failure in each of the three reads, at the query, at a row's scan
+// or mid-iteration, is an Internal error (the query and iteration faults keep the injected cause).
 func TestJudgedDriverFailures(t *testing.T) {
 	for _, match := range []string{"SELECT s.id, s.ts", "FROM search_feedback AS f", "FROM search_opens AS o"} {
 		t.Run(match, func(t *testing.T) {
@@ -130,6 +141,22 @@ func TestJudgedDriverFailures(t *testing.T) {
 				t.Fatalf("err = %v (kind %v), want the injected fault as Internal", err, errs.KindOf(err))
 			}
 		})
+		for _, mode := range []struct {
+			name string
+			m    rowFault
+		}{{"next", rowsIter}, {"scan", rowsScan}} {
+			t.Run(match+" "+mode.name, func(t *testing.T) {
+				st := judgedLog(t, faultDriverName)
+				failRows(t, match, 1, mode.m)
+				_, err := st.Judged(context.Background(), store.JudgedFilter{})
+				if err == nil || errs.KindOf(err) != errs.Internal {
+					t.Fatalf("err = %v (kind %v), want an Internal error", err, errs.KindOf(err))
+				}
+				if mode.m == rowsIter && !errors.Is(err, errFault) {
+					t.Errorf("err = %v, want the injected fault kept as the cause", err)
+				}
+			})
+		}
 	}
 }
 
@@ -158,4 +185,29 @@ func emptyLog(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { st.Close() })
 	return st
+}
+
+// TestJudgedRejectsDamagedTimestamps: a verdict or an open whose ts is not RFC 3339 cannot be
+// placed in time, which the prior needs, so reading the log fails instead of guessing: a Conflict
+// (exit 1, a damaged database) whose message names the row, never an internal error.
+func TestJudgedRejectsDamagedTimestamps(t *testing.T) {
+	for _, tc := range []struct{ name, sql, row string }{
+		{"feedback", "UPDATE search_feedback SET ts = 'yesterday' WHERE search_id = 1 AND rank = 1", `verdict on search 1 rank 1 has timestamp "yesterday"`},
+		{"open", "UPDATE search_opens SET ts = '' WHERE search_id = 2", `after search 2 has timestamp ""`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := judgedLog(t, "")
+			if _, err := st.DB().Exec(tc.sql); err != nil {
+				t.Fatal(err)
+			}
+			_, err := st.Judged(context.Background(), store.JudgedFilter{})
+			var e *errs.Error
+			if !errors.As(err, &e) || e.Kind != errs.Conflict || e.Ctx["db"] != st.path {
+				t.Fatalf("Judged = %v (kind %v), want a Conflict with the db path", err, errs.KindOf(err))
+			}
+			if !strings.Contains(e.Msg, tc.row) {
+				t.Errorf("Msg = %q, want it to name the row (%s)", e.Msg, tc.row)
+			}
+		})
+	}
 }

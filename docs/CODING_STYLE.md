@@ -2,7 +2,7 @@
 
 Audience: contributors to kb, people and agents alike. Read time: about 10 minutes. These rules cover today's code and the v2 rework: the in-process embedder (rembed), the storage-backend interface, root discovery with `.kb/config.toml`, no env vars, and the new commands (`init`, `eval`, `explain`, `context`, `related`, `stale`).
 
-Testing, assertions, fuzzing and build tags are covered in [TESTING.md](TESTING.md). This guide does not repeat them; it says where they meet the code style.
+Testing, assertions, fuzzing and build tags are covered in [TESTING.md](TESTING.md). This guide does not repeat them; it says where they meet the code style. §12 explains how to shape code so that those tests are cheap to write: domain code separated from infrastructure, injected inputs and observable results.
 
 ---
 
@@ -177,7 +177,7 @@ if err != nil && !errors.Is(err, search.ErrLogFailed) {
 - Dependencies point one way: `cmd/kb → cli → services (search, reindex, index, stats, eval) → store, embed, entry, chunk`. **No package imports `cli`.** Leaf packages (`chunk`, `entry`) import no other kb package except `errs` and `assert`.
 - **The consumer defines the interface, and keeps it small.** `search` declares the two or three store methods it calls. It does not import a wide `store.Store` interface. `embed.Embedder` (`Embed`, `Model`, `Dim`) is the right size.
 - Backend seam (v2): `internal/store` holds the backend-neutral types and the contract test suite (TESTING.md §6). Each backend lives in its own subpackage (`internal/store/sqlite`). Nothing outside the backend imports a driver.
-- `internal/cli` has one file per command. A command file parses flags, builds dependencies from config, calls one service function and prints. Logic that a test would want to call without cobra belongs in a service package.
+- `internal/cli` has one file per command. A command file parses flags, builds dependencies from config, calls one service function and prints. Logic that a test would want to call without cobra belongs in a service package, or at least in a pure function next to the handler (§12.1).
 - Do not create `util` or `common` packages. Put each helper next to the code that uses it.
 
 ## 3. Naming
@@ -195,6 +195,8 @@ if err != nil && !errors.Is(err, search.ErrLogFailed) {
 - Keep a caller's cancellation distinct from a timeout. A cancelled `ctx` returns `ctx.Err()` (wrapped). It does not become `Unavailable`, because neither retrying nor falling back would help. A deadline the client set itself is `Unavailable`. The ollama client already makes this distinction; keep it.
 
 ## 5. State, seams and configuration
+
+The general rules for what to inject and how are in §12.2 and §12.4. This section covers kb's specific seams.
 
 - **No package-level mutable state.** The allowed exceptions are build-stamped values that never change after start-up (`Version`), `sync.Once` for driver registration (`vecOnce`), and immutable lookup tables.
 - `var newEmbedder = func(...)` in `internal/cli/setup.go` is a test seam built from mutable global state, and it goes. Pass dependencies explicitly instead:
@@ -280,7 +282,60 @@ go test -tags fts5 ./...                     # plus the other TESTING.md §9 tar
 - Use `staticcheck` with its default checks. Silence a finding only with a `//lint:ignore CHECK reason` comment on that line.
 - Keep lines around 100 columns where that is easy. Use no other formatter than `gofmt`.
 
-## 12. Review checklist
+## 12. Designing for testability
+
+The ideas come from Maurício Aniche, *Effective Software Testing* (Manning, 2022), chapter 7, "Designing for testability". Section numbers in brackets point to that chapter. The rules below are the kb version: Go packages and functions instead of classes, interfaces declared by the consumer (§2), and plain values passed as arguments. TESTING.md decides which layer owns a test. This section shapes the code so that the test is cheap to write.
+
+### 12.1 Separate domain code from infrastructure code (7.1)
+
+- **Domain code decides.** Examples: ranking, fusion and the per-entry cap, the feedback prior, edge resolution, mode and fallback choice, gating (`--k`, token budgets, staleness), parsing and validation, metric arithmetic, and the output models (`search.Result`, `staleReport`).
+- **Infrastructure code touches the world.** Examples: SQLite, the filesystem, the clock, env vars and the cwd, the model (load, download), stdout and stderr, and signals.
+- **Rule: decisions live in pure functions or types over values. Adapters do the I/O and call them** ("functional core, imperative shell"). A function either decides or does I/O. When a step needs both, it reads, calls a named pure decision, then writes. A table test can call that decision directly.
+
+| Role | kb packages |
+|---|---|
+| Pure core: no I/O, no clock | `chunk`, `glob`, `links`, `prior`, `render`, the `store` types and `store.EdgeResolver`, `eval` metrics and `Split`, `search` `Fuse`/`applyCap` |
+| Orchestration over interfaces: no direct I/O | `search.Searcher`, `reindex` (collaborators are fields) |
+| Adapters | `store/sqlite`, `embed/local`, `embed/cache`, `config.Load`, `workspace.OSEnv`, `entry` discovery, the `eval` baseline file, the `migrate` lock and backups (`migrate.Run` mixes its decision table with backup file I/O; the artefacts are fields) |
+| Shell | `internal/cli` and `cmd/kb`: build `deps`, read flags and config, call the core, render, map errors to exit codes |
+
+Good: `buildStale(now, days, entries, edges)` decides and `runStale` reads the store and the clock, then renders. `store.EdgeResolver` is the one rule, `sqlite.ResolveEdges` reads the targets and writes the ids, and `storetest` checks that every backend applies the rule. Fix when you touch the code: `runAddFile`/`runAddDir` in `cli/add.go` and the inline doctor checks (testability `add-validation-interleaved-with-copy`, `doctor-checks-print-text`).
+
+### 12.2 Controllability: inject what varies (7.2)
+
+- A test must be able to set every input that changes the outcome. Inject the clock, the env and cwd, filesystem roots, the store and the log, the embedder and the editor. In `cli` these are `deps` fields (`d.now`, read through `d.clock()`; `workspaceEnv`; `openStore`; `editor`). In services they are struct fields (`Searcher.Store`, `Log`, `Prior`, `Embedder`, `Now`; `migrate.Options.Now`).
+- Domain code never calls `time.Now`, `os.Getenv`, `os.Getwd`, `os.UserCacheDir` or unseeded `rand`. An adapter reads them once and passes a value: `workspace.OSEnv` is the only place `workspace` reads process state, and `ResolveLocation` takes the resulting `Env`. Elapsed-time measurements (`EmbedMs`) are exempt, because tests assert only `>= 0` (TESTING.md §7).
+- A seam is a field or a parameter, never a package-level var (§5). Make the code that parses outside input injectable too: `harnessClock(lookup, warn)` takes `os.LookupEnv` and `os.Stderr` as arguments, so a table test needs no `t.Setenv`.
+- An adapter that can fail in the OS or the driver accepts a fault hook (sqlite `Options.driver`), so that its error paths can be tested. An adapter without a fault hook is a testability gap (`fault-seams-only-in-sqlite`).
+
+### 12.3 Observability: return what happened (7.3)
+
+- A decision returns a structured result that a test can compare: a typed outcome, a reason, counts, the chosen mode (`search.Result.Mode` and `FallbackErr`; `staleReport`). A separate function renders it (`renderStale`, the JSON encoder). Tests assert fields. Golden tests own the bytes (TESTING.md L4).
+- Text is never the only place where a decision is visible. If a test must `strings.Contains` stderr to learn which branch ran, the function is missing a return value (`cli-outcomes-only-as-text`).
+- **Effects ("void" methods, 7.3.2).** A function that writes returns what it did: an id, counts, the steps applied (`LogSearch` returns the search id, `migrate.Run` returns a `Report`). Or the port offers a narrow read that a test can use to observe the effect (`store.JudgedLog` reads the log back). Tests use that read, not raw SQL against the schema (`tests-read-sqlite-schema`).
+- **Methods that help assertions (7.3.1).** Add a read method or a result field if a real caller could also use it. Do not export internals only for tests. `(*sqlite.Store).DB()` is for the backend's own tests.
+- When tests must tell two failures apart, the failures differ by `errs.Kind`, by typed error or by result field, not by message (§1.5). Keep one wording test per message family.
+
+### 12.4 Collaborator in a field, value in a parameter (7.4)
+
+- Collaborators that do I/O or have a lifetime go in a struct field or in `deps`. Examples: the store, the log, the embedder, the editor, an opener. The shell sets them once.
+- Plain data is a parameter: the instant, settings, limits, a seed, the request. Pure functions then stay pure, and each call shows all of its inputs: `prior.Build(events, params, asOf)`, `buildStale(now, days, ...)`, `eval.Split(keys, holdout, seed)`, `search.Request.AsOf`.
+- The clock is a field only where code stamps a write or reads "now" (`Searcher.Now`, `deps.now`). That code reads the clock once and passes the `time.Time` down, as `loadEvidence` does for `prior.Build`. Domain code never takes a `func() time.Time`.
+- A struct of values (`Request`, `Params`, `Settings`) as one parameter is fine. A collaborator hidden inside a value struct is not.
+
+### 12.5 Cohesion, coupling and hard tests (7.5)
+
+- **Cohesion.** One function makes one decision. A handler that validates, does I/O and renders in 100 lines is three functions.
+- **Coupling.** Take the values, or the one-method interface, that the code uses. Do not take `store.Store` or the whole `Config` to read one field. A double that must implement twenty methods shows that the port is too wide.
+- **Complex conditions.** Two or more `&&`/`||` terms that choose a mode, an error or a fallback become a named decision function with a table test that has one row per outcome (TESTING.md §4.2). An example is `search.unavailable` together with the mode check in `Search`.
+- **Unexported code.** Tests in the same package may call unexported functions. If a test needs to reach the middle of a function, move that part into its own function. Never export something only so that a test can reach it.
+- **Package state and singletons.** These are not allowed (§5). `init` may only set values that never change after start-up (`harnessNow` in a harnessfake build).
+- **Ports and adapters.** Ports are consumer interfaces. Test adapters against the real dependency with a contract suite and fault tests (TESTING.md §6: real SQLite, `embed/fake`). Do not mock the database.
+- **A hard test is a design signal.** Treat these as a sign that the code mixes concerns or hides an input: a long setup, raw SQL fixups, `t.Chdir`, `t.Setenv`, a sleep, a wide double, or a mutation survivor triaged "unreachable". If your item owns the files, fix the design. If not, record it in `.agent/testability/` (a one-file fix goes to the low-findings queue) and say so in your report.
+
+Layers follow this split (TESTING.md §2.1): the pure core gets L1 to L3, adapters get L5 contracts and fault tests, and the shell gets L6, one success and one failure per command.
+
+## 13. Review checklist
 
 - [ ] Every error leaving a module is an `*errs.Error` with a kind, a friendly `Msg` and context (path, search id, model). Inside a module, wraps use `%w`.
 - [ ] No branching on error strings. `errors.Is` and `errors.As` (or `errs.KindOf`) only.
@@ -291,6 +346,11 @@ go test -tags fts5 ./...                     # plus the other TESTING.md §9 tar
 - [ ] No new package-level mutable state and no env var reads. Dependencies arrive via `deps` and `Config`.
 - [ ] SQL is parameterised, multi-row writes are in one transaction, migrations are append-only and backend SQL stays in the backend.
 - [ ] No package imports `cli`, and interfaces are declared by the consumer.
+- [ ] Decisions are pure functions over values. I/O happens in adapters and in the shell around them, never in the middle of a decision (§12.1).
+- [ ] The clock, env, cwd, filesystem roots, store, log and embedder are injected. Domain code never calls `time.Now`, `os.Getenv` or `os.Getwd` (§12.2).
+- [ ] Each decision returns a structured result or a typed error that a test can assert. Text is rendered from that result, and effects return what they did (§12.3).
+- [ ] Collaborators are fields. Plain data (now, settings, limits, seed) is passed as a parameter (§12.4).
+- [ ] A test that needed `t.Chdir`, raw SQL, a sleep or a wide double led to a design fix or to a `.agent/testability` entry (§12.5).
 - [ ] stdout has only results, `--json` fields are unchanged or only added to, and exit codes match §1.5.
 - [ ] Comments are short, with no phase labels, plan references or history.
 - [ ] `gofmt`, `go vet` and `staticcheck` are clean, and tests sit at the layer TESTING.md assigns.

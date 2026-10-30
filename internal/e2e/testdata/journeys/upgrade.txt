@@ -1,7 +1,7 @@
 upgrade: a store written by an older kb, refused, then migrated and used.
 
-The store's index database is a frozen schema-v6 file (the newest version before the one in
-this build) holding a few entries and five logged searches. kb refuses it and says what to run.
+The store's index database is a frozen schema-v7 file (the newest version before the one in
+this build) holding a few entries and six logged searches. kb refuses it and says what to run.
 migrate up backs the file up first, and the search log survives the upgrade.
 
   $ kb init --model none
@@ -10,16 +10,16 @@ migrate up backs the file up first, and the search log survives the upgrade.
 
   $ rm .kb/stores/default/kb.sqlite
 
-  $ mkfixture index-v6 .kb/stores/default/kb.sqlite
+  $ mkfixture index-v7 .kb/stores/default/kb.sqlite
 
   $ kb search checkpoint --mode fts
-  [stderr] kb search: store database $WORK/proj/.kb/stores/default/kb.sqlite is at schema v6; this kb needs v7. Run: kb migrate up (with the same --store, if any)
+  [stderr] kb search: store database $WORK/proj/.kb/stores/default/kb.sqlite is at schema v7; this kb needs v8. Run: kb migrate up (with the same --store, if any)
   [exit 1]
 
   $ kb doctor
   ok   config: $WORK/proj/.kb/stores/default/config.toml
   ok   sources: 1 configured: "data" (entries)
-  FAIL migrate: $WORK/proj/.kb/stores/default/kb.sqlite is at schema v6, this kb needs v7 (index/0007-edges-tags-aliases); run kb migrate up
+  FAIL migrate: $WORK/proj/.kb/stores/default/kb.sqlite is at schema v7, this kb needs v8 (index/0008-prior); run kb migrate up
   ok   model: none: FTS-only index and search
   ok   entries: 0 entries valid
   ok   index.md: absent (optional export)
@@ -32,44 +32,43 @@ migrate up backs the file up first, and the search log survives the upgrade.
   SCOPE          FILE         VERSION   STATE                         PATH
   location       location     v1        current                       $WORK/proj/.kb/kb.toml
   store default  config       v1        current                       $WORK/proj/.kb/stores/default/config.toml
-  store default  index        v6 -> v7  1 pending: run kb migrate up  $WORK/proj/.kb/stores/default/kb.sqlite
+  store default  index        v7 -> v8  1 pending: run kb migrate up  $WORK/proj/.kb/stores/default/kb.sqlite
   cache          embed-cache  -         not created yet               $WORK/home/Library/Caches/kb/embed-cache.sqlite
 
   store default index:
-    index/0007-edges-tags-aliases  add edges, entry_tags (backfilled) and entries.aliases; edges and aliases fill on the next reindex  [needs kb reindex; effect reindex]
+    index/0008-prior  add search_results.prior and search_candidates.prior
   [exit 1]
 
 The dry run reports the steps and the backup it would write, and changes nothing: the status
-still says v6 and no backup file exists.
+still says v7 and no backup file exists.
 
   $ kb migrate up --dry-run
-  would migrate store default index: v6 -> v7 ($WORK/proj/.kb/stores/default/kb.sqlite)
-    backup would be written to $WORK/proj/.kb/stores/default/kb.sqlite.bak-v6-(time)
-    would apply index/0007-edges-tags-aliases: add edges, entry_tags (backfilled) and entries.aliases; edges and aliases fill on the next reindex
-  needs: kb reindex (store default: index/0007-edges-tags-aliases)
+  would migrate store default index: v7 -> v8 ($WORK/proj/.kb/stores/default/kb.sqlite)
+    backup would be written to $WORK/proj/.kb/stores/default/kb.sqlite.bak-v7-(time)
+    would apply index/0008-prior: add search_results.prior and search_candidates.prior
 
   $ kb migrate status
   SCOPE          FILE         VERSION   STATE                         PATH
   location       location     v1        current                       $WORK/proj/.kb/kb.toml
   store default  config       v1        current                       $WORK/proj/.kb/stores/default/config.toml
-  store default  index        v6 -> v7  1 pending: run kb migrate up  $WORK/proj/.kb/stores/default/kb.sqlite
+  store default  index        v7 -> v8  1 pending: run kb migrate up  $WORK/proj/.kb/stores/default/kb.sqlite
   cache          embed-cache  -         not created yet               $WORK/home/Library/Caches/kb/embed-cache.sqlite
 
   store default index:
-    index/0007-edges-tags-aliases  add edges, entry_tags (backfilled) and entries.aliases; edges and aliases fill on the next reindex  [needs kb reindex; effect reindex]
+    index/0008-prior  add search_results.prior and search_candidates.prior
   [exit 1]
 
   $ ! exists .kb/stores/default/kb.sqlite.bak-*
 
-migrate up backs the file up, applies the step and tells which step needs a reindex.
+migrate up backs the file up and applies the step (this one clears nothing, so no reindex is
+needed).
 
   $ kb migrate up
-  migrated store default index: v6 -> v7 ($WORK/proj/.kb/stores/default/kb.sqlite)
-    backup: $WORK/proj/.kb/stores/default/kb.sqlite.bak-v6-(time)
-    applied index/0007-edges-tags-aliases: add edges, entry_tags (backfilled) and entries.aliases; edges and aliases fill on the next reindex
-  needs: kb reindex (store default: index/0007-edges-tags-aliases)
+  migrated store default index: v7 -> v8 ($WORK/proj/.kb/stores/default/kb.sqlite)
+    backup: $WORK/proj/.kb/stores/default/kb.sqlite.bak-v7-(time)
+    applied index/0008-prior: add search_results.prior and search_candidates.prior
 
-  $ exists .kb/stores/default/kb.sqlite.bak-v6-*
+  $ exists .kb/stores/default/kb.sqlite.bak-v7-*
 
   $ kb migrate verify
   ok   location kb.toml
@@ -80,17 +79,17 @@ migrate up backs the file up, applies the step and tells which step needs a rein
   SCOPE          FILE         VERSION  STATE            PATH
   location       location     v1       current          $WORK/proj/.kb/kb.toml
   store default  config       v1       current          $WORK/proj/.kb/stores/default/config.toml
-  store default  index        v7       current          $WORK/proj/.kb/stores/default/kb.sqlite
+  store default  index        v8       current          $WORK/proj/.kb/stores/default/kb.sqlite
   cache          embed-cache  -        not created yet  $WORK/home/Library/Caches/kb/embed-cache.sqlite
 
-The fixture's five logged searches are still there: the new search is number 6, and the
-overview counts all six.
+The fixture's six logged searches are still there: the new search is number 7, and the
+overview counts all seven.
 
   $ kb search checkpoint --mode fts --caller claude
-  search 6 · 1 hit
+  search 7 · 1 hit
   [1] alpha.md › Body
   checkpoint starvation
-  search_id=6
+  search_id=7
 
   $ kb stats overview --json
   {
@@ -111,15 +110,15 @@ overview counts all six.
     "rows": [
       {
         "avg_embed_ms": null,
-        "coverage_pct": 75,
+        "coverage_pct": 80,
         "hit_rate_pct": 100,
-        "judged": 3,
+        "judged": 4,
         "mode": "hybrid",
         "mrr": 1,
-        "opened_pct": 75,
+        "opened_pct": 80,
         "p50_ms": null,
         "p95_ms": null,
-        "searches": 4,
+        "searches": 5,
         "zero_result_pct": 0
       },
       {
@@ -149,7 +148,7 @@ overview counts all six.
         "zero_result_pct": 100
       }
     ],
-    "searches_loaded": 6,
+    "searches_loaded": 7,
     "since": null,
     "caller": null
   }

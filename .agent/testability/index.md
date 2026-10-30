@@ -3,8 +3,8 @@
 Rules: README.md and AGENTS.md "testability/". About 10–15 active entries, ranked: cheapest
 remedy for the most test pain first. Each line: status · one-line summary → suggested PLAN home.
 
-1. [tests-read-sqlite-schema](tests-read-sqlite-schema.md) — needs work · 14 `.DB()` uses outside sqlite run raw SQL (even `ALTER TABLE` to fault the log); the read side (`store.JudgedLog`) landed in W8 → T1 step 5
-2. [cli-shared-test-deps](cli-shared-test-deps.md) — needs work · one package-level `testDeps` (96 field swaps) and the process cwd (54 `t.Chdir`, 81 `useRoot`) make every CLI test serial → new item
+1. [tests-read-sqlite-schema](tests-read-sqlite-schema.md) — needs work · 13 `.DB()` uses outside sqlite run raw SQL (even `ALTER TABLE` to fault the log); the read side (`store.JudgedLog`) landed in W8 → T1 step 5
+2. [cli-shared-test-deps](cli-shared-test-deps.md) — needs work · one package-level `testDeps` (102 field swaps) and the process cwd (54 `t.Chdir`, 94 `useRoot`) make every CLI test serial → new item
 3. [cli-outcomes-only-as-text](cli-outcomes-only-as-text.md) — needs work · CLI tests see only exit code + stderr: 397 output-text checks vs 26 kind checks → new item (with 5)
 4. [doctor-checks-print-text](doctor-checks-print-text.md) — needs work · doctor checks print ok/FAIL text directly; inline checks untestable (Q60) → with Q55/Q60
 5. [fault-seams-only-in-sqlite](fault-seams-only-in-sqlite.md) — needs work · the fault driver is unexported test code; cache Open paths and vec full-disk untestable (row scan/iteration faults landed, Q125) → new item

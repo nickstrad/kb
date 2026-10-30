@@ -30,10 +30,13 @@ func (d *deps) newSearcher(cmd *cobra.Command, ws *workspace.Workspace, cfg conf
 		return nil, search.Settings{}, err
 	}
 	settings = settings.WithSynonyms(syn.Hash())
-	s := &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: settings, Queries: memo, Synonyms: syn}
+	s := &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: settings, Queries: memo, Synonyms: syn,
+		Now: d.clock}
+	if jl, ok := st.(store.JudgedLog); ok { // the feedback prior reads this store's own log
+		s.Prior = jl
+	}
 	if logged {
 		s.Log = st
-		s.Now = d.clock
 	}
 	return s, settings, nil
 }

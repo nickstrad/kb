@@ -187,12 +187,33 @@ func renderExplanation(ex *search.Explanation) string {
 	case !s.ExactList:
 		b.WriteString("exact: off (search.exact_list = false)\n")
 	}
+	switch pr := ex.Prior; {
+	case pr.Active:
+		fmt.Fprintf(&b, "prior: active · %d/%d judged searches · half-life %s days · max boost %s\n", pr.Judged, pr.MinJudged, num(pr.HalfLifeDays), num(pr.MaxBoost))
+	case pr.Inactive != "":
+		fmt.Fprintf(&b, "%s\n", pr.Inactive)
+	}
+	if m := ex.Memory; m != nil {
+		if m.Active {
+			fmt.Fprintf(&b, "memory: key %q · weight %s · %d earlier judged %s · %d %s", m.Key, num(m.Weight), m.Searches,
+				plural(m.Searches, "search", "searches"), m.Items, plural(m.Items, "row", "rows"))
+			if m.Skipped > 0 {
+				fmt.Fprintf(&b, " · %d no longer in the index", m.Skipped)
+			}
+			b.WriteString("\n")
+		} else {
+			fmt.Fprintf(&b, "%s\n", m.Inactive)
+		}
+	}
 	if ex.FallbackReason != "" {
 		fmt.Fprintf(&b, "fallback: %s\n", ex.FallbackReason)
 	}
 	exactRows := ""
 	if ex.Exact != nil {
 		exactRows = fmt.Sprintf(" · exact %d rows", ex.NExact)
+	}
+	if ex.Memory != nil && ex.Memory.Active {
+		exactRows += fmt.Sprintf(" · memory %d rows", ex.Memory.Items)
 	}
 	fmt.Fprintf(&b, "lists: fts %d rows · vec %d rows%s · %d candidates\n", ex.NFTS, ex.NVec, exactRows, len(ex.Candidates))
 	if len(ex.Candidates) == 0 {
@@ -228,11 +249,17 @@ func renderExplanation(ex *search.Explanation) string {
 		if h.Exact != nil {
 			fmt.Fprintf(&b, "    exact rank %d  bm25 %.4f\n", h.Exact.Rank, h.Exact.BM25)
 		}
+		if h.Memory != nil {
+			fmt.Fprintf(&b, "    memory rank %d  u %.4f\n", h.Memory.Rank, h.Memory.U)
+		}
 		terms := make([]string, len(h.RRF))
 		for i, t := range h.RRF {
 			terms[i] = fmt.Sprintf("%s %s/(%d+%d)=%.6f", t.List, num(t.Weight), ex.Settings.RRFK, t.Rank, t.Term)
 		}
 		fmt.Fprintf(&b, "    rrf  %s\n", strings.Join(terms, " + "))
+		if h.Prior != nil {
+			fmt.Fprintf(&b, "    prior  x%.4f\n", *h.Prior)
+		}
 	}
 	return b.String()
 }

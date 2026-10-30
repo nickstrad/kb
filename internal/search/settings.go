@@ -8,6 +8,7 @@ import (
 	"github.com/nickstrad/kb/internal/assert"
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/prior"
 	"github.com/nickstrad/kb/internal/store"
 )
 
@@ -23,11 +24,15 @@ type Params struct {
 	FTSWeight      float64           `json:"fts_weight"`      // multiplier of the FTS list's RRF term
 	VecWeight      float64           `json:"vec_weight"`      // multiplier of the vector list's RRF term
 	ExactWeight    float64           `json:"exact_weight"`    // multiplier of the exact-identifier list's RRF term
+	MemoryWeight   float64           `json:"memory_weight"`   // multiplier of the query-memory list's RRF term (PLAN 6.3)
 	ExactList      bool              `json:"exact_list"`      // run the exact-identifier list for a query with an identifier
 	Spell          bool              `json:"spell"`           // correct unknown words when the FTS list is short (PLAN 5.6)
 	// SupersedePenalty multiplies the RRF score of a chunk whose entry another entry supersedes
 	// (PLAN 5.3); 1 leaves the order alone.
 	SupersedePenalty float64 `json:"supersede_penalty"`
+	// Prior is [prior] (PLAN 6.2): the feedback prior that multiplies the fused score once enough
+	// searches are judged. It is part of the settings JSON and hash.
+	Prior prior.Params `json:"prior"`
 }
 
 // ParamsFrom maps [search] onto Params. The config must already be validated.
@@ -42,6 +47,7 @@ func ParamsFrom(s config.Search) Params {
 		FTSWeight:      s.ListWeights.FTS,
 		VecWeight:      s.ListWeights.Vec,
 		ExactWeight:    s.ListWeights.Exact,
+		MemoryWeight:   s.ListWeights.Memory,
 		ExactList:      s.ExactList,
 		Spell:          s.Spell,
 
@@ -49,8 +55,19 @@ func ParamsFrom(s config.Search) Params {
 	}
 }
 
+// priorFrom maps [prior] onto prior.Params. The config must already be validated.
+func priorFrom(c config.Prior) prior.Params {
+	return prior.Params{Enabled: c.Enabled, MinJudged: c.MinJudged, HalfLifeDays: float64(c.HalfLifeDays),
+		MaxBoost: c.MaxBoost, QueryMemory: c.QueryMemory}
+}
+
 // DefaultParams are the parameters of the default config.
-func DefaultParams() Params { return ParamsFrom(config.Default().Search) }
+func DefaultParams() Params {
+	c := config.Default()
+	p := ParamsFrom(c.Search)
+	p.Prior = priorFrom(c.Prior)
+	return p
+}
 
 // valid is what config.Validate guarantees: positive limits and finite, non-negative weights.
 // Search asserts it, because an invalid Params can only come from a caller that skipped
@@ -58,8 +75,8 @@ func DefaultParams() Params { return ParamsFrom(config.Default().Search) }
 func (p Params) valid() bool {
 	w := func(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 }
 	return p.ListLimit >= 1 && p.CandidateLimit >= 1 && p.PerEntryCap >= 1 && p.RRFK >= 1 && p.VecOverFetch >= 1 &&
-		w(p.BM25.Text) && w(p.BM25.Heading) && w(p.BM25.Title) && w(p.FTSWeight) && w(p.VecWeight) && w(p.ExactWeight) &&
-		w(p.SupersedePenalty) && p.SupersedePenalty <= 1
+		w(p.BM25.Text) && w(p.BM25.Heading) && w(p.BM25.Title) && w(p.FTSWeight) && w(p.VecWeight) && w(p.ExactWeight) && w(p.MemoryWeight) &&
+		w(p.SupersedePenalty) && p.SupersedePenalty <= 1 && (!p.Prior.Enabled || p.Prior.Validate() == nil)
 }
 
 // Settings is what a search ran with, for its trace: the Params it used, and the canonical
@@ -78,7 +95,9 @@ func NewSettings(c config.Config) (Settings, error) {
 	if err != nil {
 		return Settings{}, errs.Wrap(err, errs.KindOf(err), "search.NewSettings", "%v", err)
 	}
-	return Settings{Params: ParamsFrom(c.Search), JSON: data, Hash: hash}, nil
+	p := ParamsFrom(c.Search)
+	p.Prior = priorFrom(c.Prior)
+	return Settings{Params: p, JSON: data, Hash: hash}, nil
 }
 
 // WithSynonyms is s for a search that expands its query with synonyms whose content hash is h: the

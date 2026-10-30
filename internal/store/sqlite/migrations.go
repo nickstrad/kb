@@ -169,6 +169,18 @@ var indexSteps = migrate.Steps[execer]{
 			return err
 		},
 	},
+	// PLAN 6.2. The feedback prior multiplies a hit's fused score; the multiplier is logged on the
+	// result and candidate rows (rrf_score already includes it). NULL = the prior was inactive for
+	// that search (off, --no-prior, too few judged searches), which every older row is.
+	{
+		Info: migrate.Info{From: 7, ID: "index/0008-prior", Desc: "add search_results.prior and search_candidates.prior"},
+		Up: func(ctx context.Context, db execer) error {
+			_, err := db.ExecContext(ctx, `
+			ALTER TABLE search_results ADD COLUMN prior REAL;
+			ALTER TABLE search_candidates ADD COLUMN prior REAL;`)
+			return err
+		},
+	},
 }
 
 func init() {

@@ -259,6 +259,9 @@ type LoggedHit struct {
 	ExactRank   *int
 	ExactScore  *float64
 	RRFScore    float64
+	// Prior is the feedback-prior multiplier (PLAN 6.2) already folded into RRFScore; nil when the
+	// prior was inactive for the search (off, --no-prior, below prior.min_judged or no source).
+	Prior *float64
 }
 
 // OpenRecord is one read of an entry (kb show) to attach to a recent search: the entry at

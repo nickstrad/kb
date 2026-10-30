@@ -24,15 +24,16 @@ import (
 // `kb search "<q>" [-k 8] [--mode hybrid|fts|vec] [--tag t] [--json] [--caller name]`.
 func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	var (
-		k      int
-		mode   string
-		tag    string
-		asJSON bool
-		caller string
-		budget int
-		stores string
-		expand string
-		nbrs   bool
+		k       int
+		mode    string
+		tag     string
+		asJSON  bool
+		caller  string
+		budget  int
+		stores  string
+		expand  string
+		nbrs    bool
+		noPrior bool
 	)
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -64,26 +65,32 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"hit's entry (kb related), without the entries already returned as hits. It is not\n" +
 			"part of the logged result; --json carries it as \"neighbors\". Hits that name an\n" +
 			"entry another one supersedes are marked \"superseded\" and ranked down by\n" +
-			"[search] supersede_penalty (1 = off).",
+			"[search] supersede_penalty (1 = off).\n\n" +
+			"With [prior] enabled = true, a hit's score is multiplied by a bounded factor from the\n" +
+			"verdicts and opens recorded for that entry and heading, once [prior] min_judged\n" +
+			"searches are judged (kb explain says how many are). --no-prior skips it for one\n" +
+			"search. The factor is logged and shown as \"prior\" in --json.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSearch(cmd, d, stdout, stderr, searchOpts{
-				query:  strings.Join(args, " "),
-				k:      k,
-				mode:   mode,
-				tag:    tag,
-				asJSON: asJSON,
-				caller: caller,
-				budget: budget,
-				stores: stores,
-				expand: expand,
-				nbrs:   nbrs,
-				fanOut: cmd.Flags().Changed("stores"),
+				query:   strings.Join(args, " "),
+				k:       k,
+				mode:    mode,
+				tag:     tag,
+				asJSON:  asJSON,
+				caller:  caller,
+				budget:  budget,
+				stores:  stores,
+				expand:  expand,
+				nbrs:    nbrs,
+				noPrior: noPrior,
+				fanOut:  cmd.Flags().Changed("stores"),
 			})
 		},
 	}
+	cmd.Flags().BoolVar(&noPrior, "no-prior", false, "do not apply the feedback prior to this search (config [prior] enabled turns it on)")
 	cmd.Flags().BoolVar(&nbrs, "neighbors", false, "append a Related: section with the entries linked to the hits (not logged)")
 	cmd.Flags().IntVarP(&k, "k", "k", search.DefaultK, "number of hits to return, 1..20 (config [search] k sets the default)")
 	cmd.Flags().StringVar(&mode, "mode", search.ModeHybrid, "hybrid, fts or vec")
@@ -98,17 +105,18 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 
 // searchOpts is the parsed, not-yet-validated form of the command's flags.
 type searchOpts struct {
-	query  string
-	k      int
-	mode   string
-	tag    string
-	asJSON bool
-	caller string
-	budget int
-	stores string // --stores as typed
-	expand string // --expand as typed
-	nbrs   bool   // --neighbors
-	fanOut bool   // --stores was given (else [search] stores applies)
+	query   string
+	k       int
+	mode    string
+	tag     string
+	asJSON  bool
+	caller  string
+	budget  int
+	stores  string // --stores as typed
+	expand  string // --expand as typed
+	nbrs    bool   // --neighbors
+	noPrior bool   // --no-prior
+	fanOut  bool   // --stores was given (else [search] stores applies)
 }
 
 // runSearch validates the flags, opens the database (it never creates one), builds the embedder
@@ -141,11 +149,12 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	defer ss.close()
 	cfg := ss.cfg
 	req := search.Request{
-		Query:  opts.query,
-		Mode:   ss.mode,
-		K:      search.ClampK(searchK(cmd.Flags().Changed("k"), opts.k, cfg.Search.K)),
-		Tag:    opts.tag,
-		Caller: callerFor(opts.caller, cfg),
+		Query:   opts.query,
+		Mode:    ss.mode,
+		K:       search.ClampK(searchK(cmd.Flags().Changed("k"), opts.k, cfg.Search.K)),
+		Tag:     opts.tag,
+		Caller:  callerFor(opts.caller, cfg),
+		NoPrior: opts.noPrior,
 	}
 	res, err := ss.run(cmd, d, stderr, req)
 	if err != nil {

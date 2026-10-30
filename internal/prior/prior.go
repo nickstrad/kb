@@ -42,7 +42,7 @@ type Params struct {
 	MinJudged    int     // distinct judged searches needed before the prior applies
 	HalfLifeDays float64 // evidence halves every HalfLifeDays
 	MaxBoost     float64 // multiplier stays within [1-MaxBoost, 1+MaxBoost]
-	QueryMemory  bool    // read by 6.3, unused here
+	QueryMemory  bool    // read by the query-memory list (PLAN 6.3), not by Build
 }
 
 // DefaultParams are the PLAN §2.3 defaults (everything off).
@@ -185,6 +185,16 @@ func (m Model) Useful(entryPath, heading string) float64 {
 		return 0
 	}
 	return m.u[key{entryPath, heading}] + m.open[entryPath]
+}
+
+// Opened returns the decayed, position-weighted mass of opens of the entry (an open counts
+// openWeight of a useful verdict); 0 when the model is inactive. 6.3 ranks an entry that was
+// opened but never judged by it.
+func (m Model) Opened(entryPath string) float64 {
+	if !m.active {
+		return 0
+	}
+	return m.open[entryPath]
 }
 
 // Mult returns the multiplier for (entryPath, heading): 1 when inactive or without evidence,

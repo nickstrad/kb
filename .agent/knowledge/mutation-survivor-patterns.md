@@ -34,7 +34,14 @@ pass are of these kinds. The real gaps there were adjacent constructs (`[a](a.md
 `[[a]][b](b.md)`, two code spans around a link) and edges of character ranges (`a:`, `z:`,
 `A:`, `Z:`, `x0:`, `x9:` as schemes): add rows with constructs packed side by side.
 
-**Seen in:** internal/chunk/chunk.go:36,101,284; internal/chunk/boundary_test.go · 2026-10-29; internal/search/search.go (fusedBefore), internal/store/sqlite/log.go · 2026-10-30; internal/links/links.go, internal/entry/entry.go (ParseFrontMatter) · 2026-10-30 W4 pass
+(6) W12: an `ORDER BY` that an index already yields (`ORDER BY c.ord LIMIT 1` in
+`sqlite.LocateChunks`, where `UNIQUE (entry_id, ord)` makes the planner walk ord order) survives
+even a test that writes rows out of order; keep the contract row anyway, it catches a schema or
+index change. `make(..., len(a)+len(b))` capacity arithmetic (`+`→`-`) is equivalent. Not
+equivalent, and cheap since Q125: `rows.Scan`/`rows.Err` err-checks in a store reader. Add the
+query to a `failRows(t, match, 1, rowsIter|rowsScan)` table (`TestJudgedDriverFailures`).
+
+**Seen in:** internal/chunk/chunk.go:36,101,284; internal/chunk/boundary_test.go · 2026-10-29; internal/search/search.go (fusedBefore), internal/store/sqlite/log.go · 2026-10-30; internal/links/links.go, internal/entry/entry.go (ParseFrontMatter) · 2026-10-30 W4 pass; internal/store/sqlite/{locate,judged}.go, internal/search/search.go (fuse) · 2026-10-30 W12 pass
 
 **Tool caveat (fixed 2026-10-29).** Before the W2 pass, `mutate -diff` applied a different mutant
 from the one it reported (the sandbox re-enumerated without the line filter), so `-diff` results

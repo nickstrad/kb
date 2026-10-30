@@ -23,6 +23,19 @@ A **testability entry** is a design property, not a missing test. Typical shapes
 - **shared fixtures and order dependence**: tests that write raw schema SQL, or harness scenarios
   timed with sleeps.
 
+Each shape breaks one of the design rules in docs/CODING_STYLE.md §12 (from Aniche, *Effective
+Software Testing*, ch. 7). Cite the rule in the entry's **Why it happens**:
+
+| Smell | CODING_STYLE rule it breaks |
+|---|---|
+| decision+effect mixed | §12.1 domain vs infrastructure (functional core, imperative shell) |
+| global/process state, hard-wired I/O/time/env | §12.2 controllability; §12.4 value in a parameter; §5 |
+| output-format coupling | §12.3 observability (structured result, typed error) |
+| untestable error path | §12.2 fault hook in the adapter |
+| wide interface, hidden coupling | §12.5 coupling; §2 consumer interfaces |
+| duplicated rule | §12.1 one rule in one pure function (`store.EdgeResolver`) |
+| shared fixture/order dependence | §12.3 narrow reads instead of raw schema; §12.5 a hard test is a design signal |
+
 How it differs from its neighbours:
 
 | Folder | Holds | Example |
@@ -52,7 +65,8 @@ differently" is not an entry.
 - **Where:** file:symbol, one per line or comma-separated
 - **Symptoms in tests:** concrete brittle, missing or contorted tests, with evidence: test names,
   mutation survivors, workaround code, queue (Q/H) ids, counts
-- **Why it happens:** the coupling or design choice behind the symptoms
+- **Why it happens:** the coupling or design choice behind the symptoms, and the
+  CODING_STYLE §12 rule it breaks
 - **Remedy:** the refactor, smallest step first; which PLAN item (or "new item") should absorb it
 - **Cost/benefit:** rough size of the change vs what it unlocks (parallel tests, killed survivors,
   fewer fixtures, cheaper new tests)

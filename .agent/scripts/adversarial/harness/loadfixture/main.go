@@ -1,10 +1,11 @@
 // Command loadfixture is the harness's SQLite helper (built next to the kb binary): it makes the
-// older and oversized index databases the migrate-* scenarios attack, with the same driver and
+// older, oversized and hand-damaged index databases the harness scenarios attack, with the same driver and
 // sqlite-vec build kb uses. It never runs against a real store.
 //
 //	loadfixture load   DB FIXTURE.sql   replace DB with the SQL text fixture (an older kb's file)
 //	loadfixture fill   DB N             add N filler rows to entries, so a backup or a step takes a while
 //	loadfixture setver DB V             set PRAGMA user_version (fake a newer kb's file)
+//	loadfixture exec   DB SQL           run SQL against DB (damage or bulk-fill a log row by hand)
 //	loadfixture check  DB               print "<user_version> ok" when integrity_check passes; exit 1 otherwise
 package main
 
@@ -27,7 +28,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: loadfixture load|fill|setver|check DB [ARG]")
+		return fmt.Errorf("usage: loadfixture load|fill|setver|exec|check DB [ARG]")
 	}
 	sqlite_vec.Auto()
 	cmd, path := args[0], args[1]
@@ -68,6 +69,11 @@ func run(args []string) error {
 			return fmt.Errorf("setver: V must be a number")
 		}
 		return exec(path, fmt.Sprintf("PRAGMA user_version = %d", v))
+	case "exec":
+		if len(args) != 3 {
+			return fmt.Errorf("exec DB SQL")
+		}
+		return exec(path, args[2])
 	case "check":
 		db, err := sql.Open("sqlite3", "file:"+path+"?mode=ro")
 		if err != nil {

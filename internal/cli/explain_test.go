@@ -159,7 +159,7 @@ func TestExplainJSONShape(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &top); err != nil {
 		t.Fatalf("json: %v\n%s", err, stdout)
 	}
-	wantKeys(t, "top", top, "candidates", "exact", "fts", "k", "mode", "n_exact", "n_fts", "n_vec", "query", "settings", "settings_hash")
+	wantKeys(t, "top", top, "candidates", "exact", "fts", "k", "mode", "n_exact", "n_fts", "n_vec", "prior", "query", "settings", "settings_hash")
 	if string(top["exact"]) != "null" {
 		t.Errorf("exact = %s, want null: widget holds no identifier, so no exact list ran", top["exact"])
 	}

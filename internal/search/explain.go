@@ -34,6 +34,43 @@ type Explanation struct {
 	NVec           int           `json:"n_vec"`
 	NExact         int           `json:"n_exact"`
 	Candidates     []ExplainHit  `json:"candidates"`
+	Prior          ExplainPrior  `json:"prior"`
+	// Memory is the query-memory list (PLAN 6.3); nil unless [prior] query_memory is set.
+	Memory *ExplainMemory `json:"memory,omitempty"`
+}
+
+// ExplainMemory is the query-memory list of the explained search. Active is true when the list ran
+// (Items rows, possibly 0); Inactive then says why it did not. Key is the normalised query,
+// Searches the earlier judged searches with that key and Skipped the remembered hits that no
+// longer resolve to a chunk.
+type ExplainMemory struct {
+	Active   bool    `json:"active"`
+	Inactive string  `json:"inactive,omitempty"`
+	Key      string  `json:"key"`
+	Weight   float64 `json:"weight"`
+	Searches int     `json:"searches"`
+	Items    int     `json:"items"`
+	Skipped  int     `json:"skipped"`
+}
+
+// ExplainMemoryHit is the chunk's place in the query-memory list; U is the decayed, position-weighted
+// useful mass of the remembered (path, heading).
+type ExplainMemoryHit struct {
+	Rank int     `json:"rank"`
+	U    float64 `json:"u"`
+}
+
+// ExplainPrior is the feedback prior's gate for the explained search (PLAN 6.2). Active is true
+// when it multiplied the scores; Inactive then says why it did not ("prior inactive: 12/50 judged
+// searches"), and is "" when [prior] enabled is false. Judged is 0 when the log was not read.
+type ExplainPrior struct {
+	Enabled      bool    `json:"enabled"`
+	Active       bool    `json:"active"`
+	Inactive     string  `json:"inactive,omitempty"`
+	Judged       int     `json:"judged"`
+	MinJudged    int     `json:"min_judged"`
+	HalfLifeDays float64 `json:"half_life_days"`
+	MaxBoost     float64 `json:"max_boost"`
 }
 
 // ExplainParams are the effective [search] numbers that shape ranking.
@@ -68,27 +105,32 @@ type ExplainMatch struct {
 // ExplainHit is one fused candidate. Rank is its place in the fused list (1-based);
 // ReturnedRank is its place among the returned hits (nil unless Status is "returned").
 type ExplainHit struct {
-	Rank         int            `json:"rank"`
-	ChunkID      int64          `json:"chunk_id"`
-	Path         string         `json:"path"`
-	Heading      string         `json:"heading"`
-	Status       string         `json:"status"`
-	ReturnedRank *int           `json:"returned_rank"`
-	RRFScore     float64        `json:"rrf_score"`
-	RRF          []ExplainTerm  `json:"rrf_terms"`
-	FTS          *ExplainFTS    `json:"fts"`
-	Vec          *ExplainVec    `json:"vec"`
-	Exact        *ExplainFTS    `json:"exact"`
-	Columns      *ExplainColumn `json:"columns"`
+	Rank         int           `json:"rank"`
+	ChunkID      int64         `json:"chunk_id"`
+	Path         string        `json:"path"`
+	Heading      string        `json:"heading"`
+	Status       string        `json:"status"`
+	ReturnedRank *int          `json:"returned_rank"`
+	RRFScore     float64       `json:"rrf_score"`
+	RRF          []ExplainTerm `json:"rrf_terms"`
+	FTS          *ExplainFTS   `json:"fts"`
+	Vec          *ExplainVec   `json:"vec"`
+	Exact        *ExplainFTS   `json:"exact"`
+	// Memory is the chunk's place in the query-memory list; omitted when it was not there.
+	Memory  *ExplainMemoryHit `json:"memory,omitempty"`
+	Columns *ExplainColumn    `json:"columns"`
 	// Superseded is true when another entry supersedes this chunk's entry: RRFScore is the sum
-	// of RRF terms times SupersedePenalty (omitted when false).
+	// of RRF terms times SupersedePenalty (times Prior when set; omitted when false).
 	Superseded       bool    `json:"superseded,omitempty"`
 	SupersedePenalty float64 `json:"supersede_penalty,omitempty"`
+	// Prior is the feedback-prior multiplier applied to RRFScore after the RRF terms and the
+	// supersede penalty; omitted when the prior was inactive.
+	Prior *float64 `json:"prior,omitempty"`
 }
 
 // ExplainTerm is one list's addend of the RRF score: Weight/(RRFK+Rank).
 type ExplainTerm struct {
-	List   string  `json:"list"` // "fts", "vec" or "exact"
+	List   string  `json:"list"` // "fts", "vec", "exact" or "memory"
 	Weight float64 `json:"weight"`
 	Rank   int     `json:"rank"`
 	Term   float64 `json:"term"`
@@ -140,10 +182,16 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 			BM25Text: p.BM25.Text, BM25Heading: p.BM25.Heading, BM25Title: p.BM25.Title,
 			ListLimit: p.ListLimit, CandidateLimit: p.CandidateLimit, PerEntryCap: p.PerEntryCap, SupersedePenalty: p.SupersedePenalty,
 		},
+		Prior: ExplainPrior{Enabled: out.Prior.Enabled, Active: out.Prior.Active, Inactive: out.Prior.Inactive(),
+			Judged: out.Prior.Judged, MinJudged: out.Prior.MinJudged, HalfLifeDays: p.Prior.HalfLifeDays, MaxBoost: p.Prior.MaxBoost},
 		NFTS:       out.NFTS,
 		NVec:       out.NVec,
 		NExact:     out.NExact,
 		Candidates: make([]ExplainHit, 0, len(out.Candidates)),
+	}
+	if m := out.Memory; m.Enabled {
+		ex.Memory = &ExplainMemory{Active: m.Active, Inactive: m.Inactive(), Key: m.Key, Weight: p.MemoryWeight,
+			Searches: m.Searches, Items: m.Items, Skipped: m.Skipped}
 	}
 	if out.FallbackErr != nil {
 		ex.FallbackReason = out.FallbackErr.Error()
@@ -187,6 +235,7 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 		if c.Superseded {
 			h.Superseded, h.SupersedePenalty = true, p.SupersedePenalty
 		}
+		h.Prior = c.Prior
 		if r, ok := returnedRank[c.ChunkID]; ok {
 			h.Status, h.ReturnedRank = StatusReturned, &r
 		} else if c.CapDropped {
@@ -206,6 +255,11 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 			h.Exact = &ExplainFTS{Rank: *c.ExactRank, BM25: *c.ExactScore}
 			h.RRF = append(h.RRF, ExplainTerm{List: "exact", Weight: p.ExactWeight, Rank: *c.ExactRank,
 				Term: p.ExactWeight / float64(p.RRFK+*c.ExactRank)})
+		}
+		if c.MemoryRank != nil {
+			h.Memory = &ExplainMemoryHit{Rank: *c.MemoryRank, U: *c.MemoryScore}
+			h.RRF = append(h.RRF, ExplainTerm{List: "memory", Weight: p.MemoryWeight, Rank: *c.MemoryRank,
+				Term: p.MemoryWeight / float64(p.RRFK+*c.MemoryRank)})
 		}
 		ex.Candidates = append(ex.Candidates, h)
 	}

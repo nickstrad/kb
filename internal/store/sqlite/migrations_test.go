@@ -51,6 +51,7 @@ func TestIndexSteps(t *testing.T) {
 		{"index/0005-hit-store", migrate.EffectNone},
 		{"index/0006-exact-list", migrate.EffectNone},
 		{"index/0007-edges-tags-aliases", migrate.EffectReindex},
+		{"index/0008-prior", migrate.EffectNone},
 	}
 	if len(indexSteps) != len(want) {
 		t.Fatalf("%d steps, the effect table lists %d: add the new step's (ID, Effect) row", len(indexSteps), len(want))
@@ -279,6 +280,24 @@ func TestStepEffects(t *testing.T) {
 				t.Errorf("chunks_vec has %d rows; want one per chunk, kept for reuse", n)
 			}
 		},
+		"index/0008-prior": func(t *testing.T, db *sql.DB) {
+			// Effect none: two nullable REAL columns, NULL on every old row (the prior was not
+			// there), and nothing else cleared.
+			for _, table := range []string{"search_results", "search_candidates"} {
+				if n := count(t, db, "SELECT count(*) FROM pragma_table_info('"+table+"') WHERE name = 'prior' AND type = 'REAL' AND \"notnull\" = 0"); n != 1 {
+					t.Errorf("%s.prior: want one nullable REAL column, found %d", table, n)
+				}
+				if n := count(t, db, "SELECT count(*) FROM "+table); n == 0 {
+					t.Errorf("the fixture has no %s rows: the checks would be vacuous", table)
+				}
+				if n := count(t, db, "SELECT count(*) FROM "+table+" WHERE prior IS NOT NULL"); n != 0 {
+					t.Errorf("%d old %s rows have a prior; want NULL", n, table)
+				}
+			}
+			if n := count(t, db, "SELECT count(*) FROM entries WHERE body_hash = ''"); n != 0 {
+				t.Errorf("%d entries lost their body_hash: the step must not ask for a reindex (Effect none)", n)
+			}
+		},
 		"index/0005-hit-store": func(t *testing.T, db *sql.DB) {
 			for _, table := range []string{"search_results", "search_candidates"} {
 				if n := count(t, db, "SELECT count(*) FROM pragma_table_info('"+table+"') WHERE name = 'store' AND type = 'TEXT' AND \"notnull\" = 0"); n != 1 {
@@ -362,6 +381,7 @@ var fixtureSeeds = map[int]func(t *testing.T, s *Store){
 	5: seedV5,
 	6: seedV6,
 	7: seedV7,
+	8: seedV8,
 }
 
 func seedV1(t *testing.T, s *Store) {
@@ -536,6 +556,24 @@ func seedV7(t *testing.T, s *Store) {
 		VALUES (6, 1, 5, 'gamma.md', '', 1, -1.75, 1, 0.125, NULL, NULL, 0.0328, 1, NULL);
 		INSERT INTO search_feedback (search_id, rank, useful, note, ts) VALUES (6, 1, 1, 'alias hit', '2026-10-06T09:01:00Z');
 		INSERT INTO search_opens (search_id, store, entry_path, ts) VALUES (6, NULL, 'gamma.md', '2026-10-06T09:02:00Z');`)
+}
+
+// seedV8 is a v8 store: the v7 data, plus a search that ran with the feedback prior active (its
+// results and candidates carry the multiplier, already folded into rrf_score) and one verdict
+// recorded after it.
+func seedV8(t *testing.T, s *Store) {
+	t.Helper()
+	seedV7(t, s)
+	execAll(t, s.DB(), `
+		INSERT INTO searches (id, ts, query, mode, k, n_returned, caller, corpus_rev, kb_version, settings, settings_hash, fts_query)
+		VALUES (7, '2026-10-07T09:00:00Z', 'kubernetes', 'hybrid', 8, 1, 'claude', NULL, 'v0.8.0',
+		        '{"embed":{"batch":16,"dim":0,"int8":false,"model":"BAAI/bge-small-en-v1.5","workers":0},"prior":{"enabled":true,"half_life_days":90,"max_boost":0.2,"min_judged":1,"query_memory":false},"search":{"exact_list":true,"k":8,"rrf_k":60}}',
+		        '9a1c3e5b7d0f2a4c6e8b0d2f4a6c8e0b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c', '"kubernetes"');
+		INSERT INTO search_results (search_id, rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, store, prior)
+		VALUES (7, 1, 5, 'gamma.md', '', 1, -1.75, 1, 0.125, NULL, NULL, 0.0361, NULL, 1.1);
+		INSERT INTO search_candidates (search_id, fused_rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, returned, store, prior)
+		VALUES (7, 1, 5, 'gamma.md', '', 1, -1.75, 1, 0.125, NULL, NULL, 0.0361, 1, NULL, 1.1);
+		INSERT INTO search_feedback (search_id, rank, useful, note, ts) VALUES (7, 1, 1, 'prior helped', '2026-10-07T09:01:00Z');`)
 }
 
 // TestStep7BackfillsTags: the v7 step backfills entry_tags from entries.tags lowercased and

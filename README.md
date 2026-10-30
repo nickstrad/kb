@@ -112,6 +112,9 @@ and `kb eval` take the same `--set` to try a setting for one run. Commonly chang
 | `search.spell` | true | correct a query word when the full-text list is short (below) |
 | `search.stores` | `[]` | stores every search also reaches |
 | `search.supersede_penalty` | 0.5 | score multiplier for a superseded entry (0–1; 1 turns it off) |
+| `prior.enabled`, `prior.min_judged` | false, 50 | the feedback prior (below): on/off, and how many judged searches it needs |
+| `prior.half_life_days`, `prior.max_boost` | 90, 0.2 | how fast old evidence fades, and the largest score change (±20%) |
+| `prior.query_memory` | false | remember hits judged useful for the same query (below); its list weight is `search.list_weights.memory` (1) |
 | `output.budget`, `output.expand` | 0, `none` | defaults for `--budget` and `--expand` |
 | `agent.caller` | `""` | default `--caller` |
 | `log.open_window` | `30m` | how recent a search must be for `kb show` to count as an open of it |
@@ -157,6 +160,20 @@ the exact list), `path`, `heading` and `text`, plus the exact `kb feedback` comm
 - A hit whose entry another entry supersedes (its front matter lists it under `supersedes`) is
   marked `· superseded` (`"superseded": true` in `--json`) and its score is multiplied by
   `search.supersede_penalty` (0.5 halves it), so it usually ranks below the entry that replaces it.
+- **Feedback prior** (off by default). With `prior.enabled = true`, once `prior.min_judged` searches
+  carry a verdict (`kb feedback`) or an open (`kb show`), a hit's score is multiplied by a factor in
+  `[1 - max_boost, 1 + max_boost]` from the verdicts and opens recorded for that entry and heading:
+  useful ones raise it, not-useful ones lower it, and old ones count less (half-life
+  `prior.half_life_days`). Unjudged results count for nothing. `kb explain --set prior.enabled=true`
+  shows the factor per candidate, or `prior inactive: 12/50 judged searches` while there is too
+  little evidence; `--no-prior` skips it for one search. The factor is logged with the search and
+  shown as `prior` in `--json`.
+  With `prior.query_memory = true` as well, a repeated query remembers its answers: the hits that
+  earlier searches with the same words (any case, order or punctuation) marked useful, or opened,
+  form one more ranked list that is fused like the others (weight `search.list_weights.memory`), so
+  a remembered hit rises even when the words alone would not find it. It follows the prior's gate
+  (`--no-prior` skips it too), skips hits no longer in the index, and shows in `kb explain` as
+  `memory: key "..."` plus a `memory rank` per candidate (`memory_rank` in `--json`).
 - **Identifier queries.** A query field that looks like an identifier (`foo_bar`, `pkg.Func`,
   `--flag`, `path/to`, `a:b`, `camelCase`, `v1beta`) also runs an exact-identifier list that
   matches it only as a whole token, so `kb search reindex_test` ranks the chunk that says

@@ -68,12 +68,17 @@ type Hit struct {
 	FTSRank   *int    `json:"fts_rank"`
 	VecRank   *int    `json:"vec_rank"`
 	ExactRank *int    `json:"exact_rank,omitempty"`
-	Path      string  `json:"path"`
-	Heading   string  `json:"heading"`
-	Text      string  `json:"text"`
+	// MemoryRank is the hit's place in the query-memory list (PLAN 6.3); omitted when it was not there.
+	MemoryRank *int   `json:"memory_rank,omitempty"`
+	Path       string `json:"path"`
+	Heading    string `json:"heading"`
+	Text       string `json:"text"`
 	// Superseded marks a hit whose entry another entry supersedes; its rrf_score was multiplied
 	// by [search] supersede_penalty (omitted when false).
 	Superseded bool `json:"superseded,omitempty"`
+	// Prior is the feedback-prior multiplier already applied to rrf_score (PLAN 6.2); omitted when
+	// the prior was inactive for the search.
+	Prior *float64 `json:"prior,omitempty"`
 }
 
 // Result is one whole search, shaped exactly like the --json output. Hits is never nil — an empty
@@ -98,6 +103,12 @@ type Request struct {
 	K      int
 	Tag    string
 	Caller string
+	// NoPrior turns the feedback prior off for this search (kb search --no-prior).
+	NoPrior bool
+	// AsOf is the time the feedback prior is computed for: only verdicts and opens recorded
+	// before it count. Zero means the searcher's clock; an eval replay sets the original search
+	// time so a replay never sees later feedback (PLAN 6.4).
+	AsOf time.Time
 }
 
 // Logger writes one search to the log (store.SearchLog has it).
@@ -125,6 +136,9 @@ type Searcher struct {
 	// Synonyms expand the query terms of the main full-text list (PLAN 5.5); nil or empty means no
 	// expansion. The exact-identifier list and the vector query never use them.
 	Synonyms *Synonyms
+	// Prior is the judged log the feedback prior reads (PLAN 6.2); nil means the prior never
+	// applies to this searcher (an extra store of a cross-store search: the log is the primary's).
+	Prior store.JudgedLog
 }
 
 // now is s.Now, or the wall clock.
@@ -153,11 +167,18 @@ type Candidate struct {
 	VecDistance *float64
 	ExactRank   *int
 	ExactScore  *float64
+	// MemoryRank/MemoryScore are the chunk's place in the query-memory list and its u (PLAN 6.3);
+	// nil when it was not there.
+	MemoryRank  *int
+	MemoryScore *float64
 	RRFScore    float64
 	CapDropped  bool
 	// Superseded is true when the chunk's entry is the target of a `supersedes` edge from another
 	// entry and RRFScore was multiplied by Params.SupersedePenalty (PLAN 5.3).
 	Superseded bool
+	// Prior is the feedback-prior multiplier folded into RRFScore (PLAN 6.2); nil when the prior
+	// was inactive for the search.
+	Prior *float64
 
 	EntryPath string
 	Ord       int
@@ -202,6 +223,8 @@ type Outcome struct {
 	ExactTerms        []string
 	ExactMatch        string
 	ExactFallbackToOr bool
+	Prior             PriorState  // the feedback prior's gate for this search (PLAN 6.2)
+	Memory            MemoryState // the query-memory list for this search (PLAN 6.3)
 }
 
 // FTSRow and VecRow are the two ranked lists Fuse takes, as the store returns them.
@@ -218,8 +241,14 @@ type (
 // exact list the order is the two-list order. A list of weight 0 still contributes its chunks and
 // ranks, but no score.
 func Fuse(fts []FTSRow, vec []VecRow, exact []FTSRow, p Params) []Candidate {
-	byChunk := make(map[int64]*Candidate, len(fts)+len(vec)+len(exact))
-	order := make([]int64, 0, len(fts)+len(vec)+len(exact))
+	return fuse(fts, vec, exact, nil, p)
+}
+
+// fuse is Fuse with the query-memory list (PLAN 6.3): a chunk also scores p.MemoryWeight/(RRFK+rank)
+// for its place in mem, and the tie-break falls to the memory rank after the exact rank.
+func fuse(fts []FTSRow, vec []VecRow, exact []FTSRow, mem []MemoryRow, p Params) []Candidate {
+	byChunk := make(map[int64]*Candidate, len(fts)+len(vec)+len(exact)+len(mem))
+	order := make([]int64, 0, len(fts)+len(vec)+len(exact)+len(mem))
 
 	get := func(id int64) *Candidate {
 		c, ok := byChunk[id]
@@ -255,6 +284,14 @@ func Fuse(fts []FTSRow, vec []VecRow, exact []FTSRow, p Params) []Candidate {
 		c.ExactScore = &score
 		c.RRFScore += p.ExactWeight / float64(p.RRFK+rank)
 	}
+	for i, r := range mem {
+		rank := i + 1
+		c := get(r.ChunkID)
+		score := r.Score
+		c.MemoryRank = &rank
+		c.MemoryScore = &score
+		c.RRFScore += p.MemoryWeight / float64(p.RRFK+rank)
+	}
 
 	out := make([]Candidate, 0, len(order))
 	for _, id := range order {
@@ -284,6 +321,9 @@ func fusedBefore(a, b Candidate) bool {
 	if ra, rb := rankOrMax(a.ExactRank), rankOrMax(b.ExactRank); ra != rb {
 		return ra < rb
 	}
+	if ra, rb := rankOrMax(a.MemoryRank), rankOrMax(b.MemoryRank); ra != rb {
+		return ra < rb
+	}
 	return a.ChunkID < b.ChunkID
 }
 
@@ -295,7 +335,7 @@ func assertFused(out []Candidate, limit int) {
 	for i, c := range out {
 		assert.Post(!seen[c.ChunkID], "Fuse: chunk %d appears twice", c.ChunkID)
 		seen[c.ChunkID] = true
-		assert.Post(c.FTSRank != nil || c.VecRank != nil || c.ExactRank != nil, "Fuse: chunk %d has no rank", c.ChunkID)
+		assert.Post(c.FTSRank != nil || c.VecRank != nil || c.ExactRank != nil || c.MemoryRank != nil, "Fuse: chunk %d has no rank", c.ChunkID)
 		if i > 0 {
 			assert.Post(fusedBefore(out[i-1], c), "Fuse: out[%d] (chunk %d) does not sort before out[%d] (chunk %d)",
 				i-1, out[i-1].ChunkID, i, c.ChunkID)
@@ -518,11 +558,22 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 			out.ExactFallbackToOr = retried
 		}
 	}
+	// One read of the judged log feeds both the prior and the memory list (Q130).
+	ev, err := s.loadEvidence(ctx, req, p)
+	if err != nil {
+		return nil, err
+	}
+	out.Prior = ev.state
+	mem, memState, err := s.memoryList(ctx, ev, req, p)
+	if err != nil {
+		return nil, err
+	}
+	out.Memory = memState
 	out.NFTS = len(fts)
 	out.NVec = len(vec)
 	out.NExact = len(exact)
 
-	cands := Fuse(fts, vec, exact, p)
+	cands := fuse(fts, vec, exact, mem, p)
 	ids := make([]int64, len(cands))
 	for i, c := range cands {
 		ids[i] = c.ChunkID
@@ -546,6 +597,7 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 	if err := s.demoteSuperseded(ctx, cands, p.SupersedePenalty); err != nil {
 		return nil, err
 	}
+	ev.apply(cands)
 	returned := applyCap(cands, entryOf, k, p.PerEntryCap)
 	if len(cands) > 0 {
 		out.Candidates = cands
@@ -606,9 +658,11 @@ func resultOf(query, mode string, returned []Candidate, label func(store string)
 			Rank:       i + 1,
 			RRFScore:   c.RRFScore,
 			Superseded: c.Superseded,
+			Prior:      c.Prior,
 			FTSRank:    c.FTSRank,
 			VecRank:    c.VecRank,
 			ExactRank:  c.ExactRank,
+			MemoryRank: c.MemoryRank,
 			Path:       c.EntryPath,
 			Heading:    c.Heading,
 			Text:       c.Text,
@@ -729,7 +783,13 @@ func renderedSynonyms(syn map[string][]string) map[string][]string {
 }
 
 // fieldRenders reports whether a query field survives into the MATCH expression.
-func fieldRenders(field string) bool {
+func fieldRenders(field string) bool { return ftsWords(field) != nil }
+
+// ftsWords splits one whitespace-free query field into the words the MATCH expression keeps, as
+// the store's quoteTerm does; nil when the field is dropped (no letter or digit, or a bare
+// operator word). The query-memory key (memory.go) is built from these words, so it agrees with
+// what the full-text list searches.
+func ftsWords(field string) []string {
 	cleaned := strings.TrimSpace(strings.Map(func(r rune) rune {
 		switch r {
 		case '*':
@@ -743,14 +803,14 @@ func fieldRenders(field string) bool {
 		return unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.Is(unicode.Co, r) || unicode.Is(unicode.Cn, r)
 	}
 	if !strings.ContainsFunc(cleaned, base) {
-		return false
+		return nil
 	}
 	words := strings.FieldsFunc(cleaned, func(r rune) bool { return !base(r) && !unicode.IsMark(r) })
 	if len(words) == 1 {
 		switch strings.ToLower(words[0]) {
 		case "and", "or", "not", "near":
-			return false
+			return nil
 		}
 	}
-	return true
+	return words
 }

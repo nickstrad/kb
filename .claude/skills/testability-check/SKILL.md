@@ -8,7 +8,9 @@ description: This skill should be used when the user asks for a "testability che
 **Source of truth:** `.agent/testability/README.md` (what an entry is, the format, the 10–15
 cap, rules, lifecycle), `.agent/testability/archive/README.md` (how to archive), docs/TESTING.md
 §1 and §7 (hermetic tests, doubles, determinism), docs/CODING_STYLE.md §2, §4 and §5 (consumer
-interfaces, ctx, `deps` instead of package state). Cite them; don't restate them.
+interfaces, ctx, `deps` instead of package state) and §12 (designing for testability: domain vs
+infrastructure, controllability, observability, field vs parameter, cohesion and coupling). Cite
+them; don't restate them. Each finding names the §12 rule it breaks (README's smell table).
 
 **Default mode is report only.** Edit, archive or add entries only if the user asks, or when you
 run as part of a wave-end pass (docs/PLAN.md §6.4 rule 4).
@@ -50,7 +52,9 @@ Signals (each is a lead, not a finding):
 | Logic asserted through human text | ratio of `strings.Contains(stderr\|stdout` to `errs.KindOf\|errors.As` in a package's tests |
 | Tests reaching past an interface | `rg -n '\.DB\(\)\|\.\(\*sqlite\.Store\)' -g '*_test.go'` outside `internal/store/sqlite` |
 | Wide interface for a narrow need | a param typed `store.Store` (or another wide interface) that calls one or two methods |
-| Decision mixed with effect | a handler or func over ~80 lines that validates and does I/O; tests named `…BeforeCopy`/`…BeforeWrite` |
+| Decision mixed with effect (§12.1) | a handler or func over ~80 lines that validates and does I/O; tests named `…BeforeCopy`/`…BeforeWrite`; a pure-looking package (README table in §12.1) importing `os`, `database/sql` or `net/http` (`rg -l '"os"\|"database/sql"' internal/{chunk,glob,links,prior,render,search,reindex}`) |
+| Clock passed as a func into domain code (§12.4) | a pure function taking `func() time.Time` or a collaborator, where a `time.Time`/value would do (`rg -n 'func\(\) time\.Time' internal -g '!*_test.go'` outside `deps`/`Options`/struct fields) |
+| Effect with no observable result (§12.3) | an exported func that writes and returns only `error`, whose tests then read the effect back with raw SQL or file reads |
 | Duplicated rule | comments saying "mirrors", "same as", "keep in sync"; a test whose only job is comparing two copies |
 | Untestable error path | survivors triaged "driver-only", "unreachable", "defensive" (`.agent/knowledge/mutation-survivor-patterns.md`, queue) |
 | Doubles off contract | stubs returning `errors.New` or a bare sentinel for a dependency whose doc names an `errs` kind |

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/nickstrad/kb/internal/config"
+	"github.com/nickstrad/kb/internal/prior"
 	"github.com/nickstrad/kb/internal/store"
 )
 
@@ -31,7 +32,8 @@ func TestDefaultParamsMatchConstants(t *testing.T) {
 	want := Params{
 		ListLimit: ListLimit, CandidateLimit: CandidateLimit, PerEntryCap: PerEntryCap, RRFK: RRFConstant,
 		VecOverFetch: vecOverFetch, BM25: store.DefaultBM25(), FTSWeight: 1, VecWeight: 1,
-		ExactWeight: 1, ExactList: true, Spell: true, SupersedePenalty: 0.5,
+		ExactWeight: 1, MemoryWeight: 1, ExactList: true, Spell: true, SupersedePenalty: 0.5,
+		Prior: prior.Params{MinJudged: 50, HalfLifeDays: 90, MaxBoost: 0.2},
 	}
 	if got := DefaultParams(); got != want {
 		t.Errorf("DefaultParams = %+v, want %+v", got, want)
@@ -51,7 +53,7 @@ func TestParamsFromMapsEveryKey(t *testing.T) {
 	}
 	want := Params{ListLimit: 11, CandidateLimit: 12, PerEntryCap: 13, RRFK: 14, VecOverFetch: 15,
 		BM25: store.BM25Weights{Text: 1.5, Heading: 2.5, Title: 3.5}, FTSWeight: 0.25, VecWeight: 0.75,
-		ExactWeight: 0.5, ExactList: true, SupersedePenalty: 0.25}
+		ExactWeight: 0.5, MemoryWeight: 9, ExactList: true, SupersedePenalty: 0.25}
 	if got := ParamsFrom(s); got != want {
 		t.Errorf("ParamsFrom = %+v, want %+v", got, want)
 	}
@@ -179,5 +181,24 @@ func TestParamsValid(t *testing.T) {
 				t.Errorf("%s = %v: valid = %v, want %v", name, tc.v, !tc.want, tc.want)
 			}
 		}
+	}
+}
+
+// TestNewSettingsCarriesPrior: every [prior] key lands in Params.Prior (and, via EffectiveJSON, in
+// the settings hash: config's TestEffectiveJSON).
+func TestNewSettingsCarriesPrior(t *testing.T) {
+	c := config.Default()
+	c.Prior = config.Prior{Enabled: true, MinJudged: 7, HalfLifeDays: 30, MaxBoost: 0.5, QueryMemory: true}
+	s, err := NewSettings(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := prior.Params{Enabled: true, MinJudged: 7, HalfLifeDays: 30, MaxBoost: 0.5, QueryMemory: true}
+	if s.Params.Prior != want {
+		t.Errorf("Params.Prior = %+v, want %+v", s.Params.Prior, want)
+	}
+	off, _ := DefaultSettings()
+	if off.Hash == s.Hash {
+		t.Error("a different [prior] gave the same settings hash")
 	}
 }
