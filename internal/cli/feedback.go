@@ -133,7 +133,11 @@ func runFeedback(cmd *cobra.Command, d *deps, stdout io.Writer, opts feedbackOpt
 	// Check for the file before opening: opening read-write creates an empty database, which
 	// would turn "you never indexed anything" into "no search with id N".
 	ctx := cmd.Context()
-	dbPath := DBPath(Root())
+	ws, err := d.workspace(cmd)
+	if err != nil {
+		return err
+	}
+	dbPath := ws.DBPath
 	if _, err := os.Stat(dbPath); err != nil {
 		return errs.Wrap(err, errs.NotFound, "cli.feedback", "no search database at %s; run `kb reindex --all` first", dbPath)
 	}

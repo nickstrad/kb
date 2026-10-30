@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/nickstrad/kb/internal/embed/local"
+	"github.com/nickstrad/kb/internal/workspace"
 )
 
 // testDeps are the deps every CLI test runs with (through run, runKB and execute). TestMain keeps
@@ -28,6 +29,12 @@ func TestMain(m *testing.M) {
 		return errors.New("download model " + spec.ID + ": downloads are disabled in tests")
 	}
 	testDeps.userCacheDir = func() (string, error) { return tmp + "/cache", nil }
+	// Root discovery must never see the developer's home or XDG_DATA_HOME.
+	testDeps.workspaceEnv = func() workspace.Env {
+		e := workspace.OSEnv()
+		e.Home, e.XDGDataHome, e.CacheBase = tmp+"/home", "", tmp+"/cache"
+		return e
+	}
 	code := m.Run()
 	os.RemoveAll(tmp)
 	os.Exit(code)

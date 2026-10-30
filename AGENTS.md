@@ -53,7 +53,7 @@ to archive, coverage claims that no longer hold, and new candidates.
 
 - **macOS only.** Develop and test on darwin/arm64. No GNU-only shell (`sed -i`, `date -d`).
 - **Build and test with `-tags fts5`**: `go test -tags fts5 ./...`. Without it there is no FTS5.
-- **Don't commit** (or push) unless asked.
+- **Commits:** item and pass agents never commit or push. The orchestrator commits and pushes `main` once per wave, after the wave-end pass, when everything is green (docs/PLAN.md §6.4 rule 7).
 - **Small/medium decisions:** pick a default and log it in `docs/DEFAULTS.md` as a row: decision,
   default picked, alternatives, why, where. Keep going.
 - **Architecture-level changes** (anything that would change a C4 diagram: storage backend,

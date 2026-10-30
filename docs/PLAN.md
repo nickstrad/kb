@@ -1,6 +1,6 @@
 # kb v2 plan
 
-Branch: `kb-v2`. Do not commit unless the owner asks. Every command below assumes `go test -tags fts5 ./...` / `go build -tags fts5 ./cmd/kb`.
+Branch: `main` (the v2 rework replaces the old app). The orchestrator commits and pushes `main` after every wave once it's green (owner, 2026-10-30). Item agents never commit. Every command below assumes `go test -tags fts5 ./...` / `go build -tags fts5 ./cmd/kb`.
 
 ---
 
@@ -27,7 +27,7 @@ Branch: `kb-v2`. Do not commit unless the owner asks. Every command below assume
 | D4 | Remove all `KB_*` / `OPENROUTER_API_KEY` env vars. Replace them with root discovery, `--root`, `--global` and `.kb/config.toml`. `$EDITOR` stays. | `HF_TOKEN` (read by rembed itself) is not kb's variable and keeps working. |
 | D5 | Remove DuckDB. `kb stats` runs on SQLite, with percentiles computed in Go. Add narrow store interfaces with `internal/store/sqlite` as the only implementation. | Drops ~20 indirect deps (arrow, duckdb bindings). A future DuckDB/libSQL backend implements the same 3 interfaces. |
 | D6 | Remove `skills/update-knowledge-store`. A README snippet plus `kb help` become the source of truth. Feedback is optional. `kb show <path>` of a recent hit is logged as an implicit "opened" signal. | Agents skip bookkeeping and the log still gets signal. |
-| D7 | No commits unless asked. | |
+| D7 | Item agents never commit. The orchestrator commits and pushes `main` after each wave-end pass, once vet, tests and staticcheck are green (owner, 2026-10-30). | `main` tracks progress wave by wave; agents stay out of git. |
 
 ### Planner decisions (can be changed; see Open questions)
 - **Config format is TOML** via `github.com/BurntSushi/toml` (zero deps). **Globs** use `github.com/bmatcuk/doublestar/v4` (zero deps), because `filepath.Match` has no `**`.
@@ -388,7 +388,9 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 ### Phase 1: Groundwork
 
 **1.1 Workspace: root discovery, `--root`, `--global`; drop KB_ROOT**
+- Carried from W3 pass: `cli.incidentLogPath` (report.go) finds `<root>/.kb` through the env-reading `Root()`; once discovery resolves the root, pass it through `deps` (or the resolved workspace) so an incident lands in the store the command ran on, and an incident before discovery succeeds goes to the user cache dir. `Root()`, `Caller()` (KB_CALLER) and `runEditor` ($EDITOR) are the last env reads in cli; route the root through deps here and leave KB_CALLER/EDITOR to 1.3.
 - Model: Sonnet (well-specified; many mechanical call-site edits); review: Opus via error-handling-pass
+- Status: done (W4)
 - Files: new `internal/workspace/workspace.go`. Edit `cli/root.go` (delete `Root`, `DefaultRoot`, `defaultRoot`, `KB_ROOT`, `Caller`'s env read), every `Root()` call site (add.go, edit.go, rm.go, show.go, list.go, index.go, search.go, feedback.go, stats.go, doctor.go, reindex.go) and `cli/setup.go`.
 - Steps:
   1. `workspace.Resolve(rootFlag string, global bool) (*Workspace, error)`:
@@ -405,6 +407,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 
 **1.2 Store seam: interfaces + `internal/store/sqlite` ∥**
 - Carried from W2 pass: (a) `search.hasVecTable` duplicates `store.vecTableExists`; keep one, in `sqlite/retrieve.go`. (b) `context.Canceled` (SIGINT/SIGTERM) is mapped to a friendly "interrupted" message only in `kb reindex` (Q21); add/edit/search/show still flatten it into "… context canceled" via `usageErr` — give `report` one rule (errors.Is Canceled → "interrupted", exit 1) once the chain survives to the top. (c) `stats.Open` now refuses any user_version but `store.SchemaVersion()` (Q19); when step 3 adds `sqlite.Open(ReadOnly)`, make stats use it so there is one version check. (d) Mutation survivors that only a driver failure reaches (store EnsureEmbedMeta/ReplaceEntryChunks/clearChunksTx err-checks) are listed in H20; the seam is the natural place for a fault-injecting test backend.
+- Status: done (W3)
 - Model: Opus (store seam, large cross-package move, interface design); review: Opus via testing-standards-pass
 - Files: move `store.go`, `entries.go` and `schema.sql` to `internal/store/sqlite/`. New `internal/store/{store.go,types.go}`. Move the SQL from `search/search.go` (`ftsList`, `runFTS`, `vecList`, `filterByTag`, `loadChunkMeta`, `SanitizeFTS`, `tagPattern`) and `search/log.go` (all SQL) into `sqlite/retrieve.go` and `sqlite/log.go`. `search.Searcher{Store store.Retriever; Log store.SearchLog; ...}`. `reindex.Options.Store store.Index`.
 - Steps:
@@ -423,6 +426,8 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
   - Assertions to add with `internal/assert`: `stats.quantileCont` Pre `0 <= p <= 1` (out of range panics with an index error today; p comes from the registry); `chunk.splitOversized` Pre `len(blocks) > 0` (unreachable from `Split`; covered by `TestSplitOversizedNoBlocks`); `reindex` Pre embedder Model/Dim equal embed_meta (TESTING §3.5).
 
 **1.3 Config package + `kb config`**
+- Carried from W4 pass: `cli.DBPath(root)` and `EnsureDBDir(root)` (root.go) still compute `<root>/.kb/kb.sqlite` beside `workspace.Workspace.DBPath`/`KBDir`; search.go, doctor.go and setup.go use the cli helpers. When setup.go is rewritten, pass the `*workspace.Workspace` (not a root string) to `openForWrite`/`openForRead` and delete the duplicates. `ws.ConfigPath` is where `Load` reads from.
+- Carried from W3 pass: (a) `reindex.preconditions` asserts that embed_meta read back from the database equals the embedder (TESTING §3.5, the documented exception to "no assertions on DB contents"). Another kb process with a different `--embed-model` can change embed_meta between `EnsureEmbedMeta` and that read, which would panic (exit 3) instead of a Conflict. Once the embedder comes from config (one model per store), the race needs two configs on one store; decide then whether the check stays an assertion or becomes a Conflict error. (b) `KB_CALLER` and `$EDITOR` are read with os.Getenv in cli; config/deps should carry them.
 - Carried from the adversarial harness (W2): a store indexed with `--embedder none` makes a plain `kb search` exit 1 unless the flag is passed every time. The config must record the embedder so commands pick it up (DEFAULTS #66).
 - Model: Sonnet (new self-contained package with clear tests); review: Sonnet via error-handling-pass
 - Files: new `internal/config/{config.go,defaults.go,override.go}`. Edit `cli/setup.go` (embedder from config; the `--embedder`/`--embed-model` flags are deleted) and add `cli/config_cmd.go`.
@@ -438,6 +443,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **1.4 `kb init` and `kb model pull`**
+- Carried from W4 pass: (a) `workspace.Workspace.ModelsDir` (`os.UserCacheDir()/kb/models`) is computed but unused; `local.DefaultCacheDir` derives the same path on its own. `kb model pull|path` should take it from the workspace so there is one rule. (b) `--root DIR add` creates a legacy `.kb/kb.sqlite` store anywhere, which then captures discovery for every directory below it (a stray `~/.kb`, H28); once `kb init` exists, decide whether `add`/`reindex` on a `--root` with no `.kb` should still create one or refuse with "run kb init". (c) `kb init` should be the only command that writes `.kb/config.toml`; the harness `workspace-discovery` scenario then gains an init row.
 - Carried from W2 pass: `reindex.All` reads a missing `data/` as an empty corpus via a local `discover` wrapper (Q23). Step 5 (Discover tolerates a missing source dir) should absorb it: move the rule into `entry.Discover` and delete the wrapper. Keep the doctor warning.
 - Model: Sonnet (commands from spec); review: Opus via testing-standards-pass (legacy adoption keeps log)
 - Files: new `cli/init.go` and `cli/model.go`.
@@ -457,6 +463,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **1.5 In-place sources with optional front matter**
+- Carried from W3 pass: Q31 (entry returns plain fmt errors; every cli call site wraps them as Usage). When `Discover`/`Resolve`/`Load` are rewritten here, return `*errs.Error` at the entry boundary (NotFound for "no such entry", Usage with the path for front matter) and drop the `usageErr("%s", err)` wrappers in add/edit/rm/show/reindex.
 - Carried from W2 pass: `reindex.All` prunes only rows that neither the first Discover nor a second Discover run after `ListEntries` found (Q22; concurrent `kb add` writes the file before committing the row). When `Discover(root, []config.Source)` replaces it, keep that two-discovery rule and `TestAllKeepsEntryAddedDuringRun`. Front-matter title/summary now have caps and a control-character rule (`entry.MaxTitleRunes` 200, `MaxSummaryRunes` 1000, Q20); `fallbackMeta` must produce values that pass `checkText` (truncate the fallback summary to 200 runes already does; also strip control characters from a humanised filename).
 - Carried from the adversarial harness (W2): a symlink under `data/` that points outside the root is followed and indexed today. Discovery must skip such links with a warning, and doctor must report them (DEFAULTS #65). Add the harness scenario to the acceptance checks.
 - Model: Opus (touches entry/chunk/reindex/cli/index; goldens must hold); review: Sonnet via testing-standards-pass
@@ -736,6 +743,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 
 **5.1 Link extraction and front-matter lists ∥**
 - Model: Sonnet (pure parsing with table tests); review: Sonnet via testing-standards-pass (fuzz target)
+- Status: done (W4)
 - Files: new `internal/links/links.go`; `internal/entry/entry.go:ParseFrontMatter` (generalise `parseTags` list parsing to `related`, `supersedes`, `depends_on`, `aliases`; `FrontMatter` gains those fields).
 - Steps:
   1. Extract relative Markdown links `[t](../x.md#a)` (ignore URLs with a scheme, ignore fenced code) and resolve them relative to the source file → root-relative path.
@@ -747,6 +755,8 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: the front-matter parser is hand-rolled, so keep list syntax to the two forms it already supports.
 
 **5.2 Schema: edges, entry_tags, aliases**
+- Carried from W4 pass: `links.Extract` does not extract reference-style links (`[t][ref]` + `[ref]: path`) or `[[]](x.md)` (CommonMark makes the latter a link); decide whether edges need them before backfilling. `links.resolve` now asserts its target is a clean relative path (L1); FuzzExtract adds two metamorphic properties (leading blank line shifts lines; a fenced body yields nothing).
+- Carried from 5.1: inline front-matter lists split on every comma, so paths or aliases containing commas need the block form. Front-matter paths resolve against the entry file's own directory (`related: [x.md]` in `data/droplet/README.md` means `data/droplet/x.md`); document this. Use `links.Dedupe` before writing edges. A body link may resolve to a directory (`data/other`); decide whether that matches a directory entry.
 - Model: Opus (backfilled migration, reindex reset, tag semantics change); review: Opus via testing-standards-pass
 - Files: migration 6→7; `sqlite/entries.go:ReplaceEntry` (write edges/tags/aliases; FTS `title` column = `title + " " + aliases`); `Index.ResolveEdges` (`UPDATE edges SET dst_entry_id = (SELECT id FROM entries WHERE path = dst_path OR <wikilink match>)`), called at the end of `reindex.All` and after `One`; the tag filter in `sqlite/retrieve.go` becomes `JOIN entry_tags` (replacing `tagPattern`/`LIKE`).
 - Tests: tag filter is case-insensitive (behaviour change from the case-sensitive LIKE); aliases findable via FTS; migration backfills tags; edges resolved after reindex.
@@ -948,8 +958,8 @@ A wave starts when every item of the previous wave is merged and its review pass
   - 0.7: show.go, search/log.go, cli/search.go, stats/queries.go. No overlap with 0.5b.
   - 3.3a: new `embed/cache/` + `embed/cached.go` only. No wiring.
   - → wave-end standards pass (6.4 rule 4).
-- **W3 (running):** 1.2 alone. It moves store/search/log SQL and rewrites imports across cli, so it collides with everything except 1.6 and 3.3a (which may still be finishing). Move-only commit first, then narrowing.
-- **W4:** 1.1 (owns all of `internal/cli/*`, root.go, setup.go) ∥ 5.1 (links/ new + `entry.ParseFrontMatter`; pulled forward, see 6.5).
+- **W3 (done):** 1.2 alone. It moves store/search/log SQL and rewrites imports across cli, so it collides with everything except 1.6 and 3.3a (which may still be finishing). Move-only commit first, then narrowing.
+- **W4 (done):** 1.1 (owns all of `internal/cli/*`, root.go, setup.go) ∥ 5.1 (links/ new + `entry.ParseFrontMatter`; pulled forward, see 6.5).
 - **W5:** 1.3 (config/ new, setup.go, root.go flags, cli/config_cmd.go) ∥ 5.1 if still running.
 - **W6:**
   - 1.4: init.go, model.go, doctor.go, entry.Discover. 5.1 must be merged first, because both edit entry.go.
@@ -1019,7 +1029,7 @@ A wave starts when every item of the previous wave is merged and its review pass
    The orchestrator records the pass result (counts per severity, what was fixed or deferred, and the adversarial verdict) in the wave's state log and folds lasting lessons into `.agent/knowledge/`. Model for the pass: Opus for waves that contain Opus items, Sonnet otherwise.
 5. **Judgment calls** that deviate from or fill gaps in this plan go in `DEFAULTS.md`, with the item id.
 6. **Green before merge.** `go vet -tags fts5 ./...` and `go test -tags fts5 ./...` pass before merge. Items that touch embedding also run `-tags model`.
-7. No commits unless the owner asks (D7).
+7. **Commit per wave (D7).** After the wave-end pass, when everything is green, the orchestrator scans for secrets, commits once with a summary of the wave's items, and pushes `main`. `docs/DEFAULTS.md`, state logs and sandboxes are never committed.
 
 ### 6.5 Proposed reorders and splits (not yet applied to §3)
 - **0.5 split into 0.5a/0.5b.** 0.5a (the embed side) can run alongside 0.6. 0.5b (the store side, mig v3) must follow 0.6's v2.

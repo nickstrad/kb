@@ -3,7 +3,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -25,7 +24,11 @@ func newEditCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runEdit(cmd.Context(), cmd, d, stdout, stderr, Root(), args[0])
+			ws, err := d.workspace(cmd)
+			if err != nil {
+				return err
+			}
+			return runEdit(cmd.Context(), cmd, d, stdout, stderr, ws.Root, args[0])
 		},
 	}
 }
@@ -64,10 +67,6 @@ func runEdit(ctx context.Context, cmd *cobra.Command, d *deps, stdout, stderr io
 		return usageErr("%s", err)
 	}
 	if e2.Err != nil {
-		var ve *entry.ValidationError
-		if errors.As(e2.Err, &ve) {
-			return usageErr("%s", ve.Error())
-		}
 		return usageErr("%s", e2.Err)
 	}
 

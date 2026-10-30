@@ -48,12 +48,13 @@ type DB struct {
 // New wraps q.
 func New(q Querier) *DB { return &DB{q: q} }
 
-// Run executes a named query under f and fills in its percentile columns. A failure is Internal:
-// the registry's SQL is kb's own.
+// Run executes a named query under f and fills in its percentile columns. The registry's SQL is
+// kb's own, so a query failure keeps the store's kind: Internal for a driver or SQL error, Conflict
+// for a locked or damaged database, Interrupted for a cancel. A bad percentile cell is Internal.
 func (d *DB) Run(ctx context.Context, q Query, f Filter) (*Table, error) {
 	t, err := d.q.QueryLog(ctx, q.SQL, f.args()...)
 	if err != nil {
-		return nil, errs.Wrap(err, errs.Internal, "stats.Run", "%s: %v", q.Name, err).With("query", q.Name)
+		return nil, errs.Wrap(err, errs.KindOf(err), "stats.Run", "%s: %v", q.Name, err).With("query", q.Name)
 	}
 	if err := applyPercentiles(t, q.Percentiles); err != nil {
 		return nil, errs.Wrap(err, errs.Internal, "stats.Run", "%s: %v", q.Name, err).With("query", q.Name)

@@ -65,7 +65,7 @@ var _ store.Store = (*Store)(nil)
 func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	s, err := open(ctx, path, opts)
 	if err != nil {
-		return nil, wrap(err, path, "sqlite.Open", "could not open the database %s", path)
+		return nil, wrap(ctx, err, path, "sqlite.Open", "could not open the database %s", path)
 	}
 	return s, nil
 }
@@ -88,7 +88,7 @@ func open(ctx context.Context, path string, opts Options) (*Store, error) {
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil, errs.Wrap(err, errs.NotFound, "sqlite.Open", "no database at %s; run `kb reindex --all` first", path)
 			}
-			return nil, err
+			return nil, errs.Wrap(err, errs.Usage, "sqlite.Open", "cannot read the database %s: check its permissions", path)
 		}
 		// mode=ro refuses to create the file; _query_only also blocks writes through ATTACH.
 		params = "?mode=ro&_query_only=true&_busy_timeout=5000"
@@ -151,7 +151,7 @@ func (s *Store) Close() error {
 		return nil
 	}
 	if err := s.db.Close(); err != nil {
-		return wrap(err, s.path, "sqlite.Close", "could not close the database %s", s.path)
+		return wrap(context.TODO(), err, s.path, "sqlite.Close", "could not close the database %s", s.path)
 	}
 	return nil
 }
@@ -215,23 +215,23 @@ func (s *Store) DriverInfo(ctx context.Context) (DriverInfo, error) {
 	var info DriverInfo
 	rows, err := s.db.QueryContext(ctx, "PRAGMA compile_options")
 	if err != nil {
-		return info, wrap(err, s.path, "sqlite.DriverInfo", "could not read the SQLite compile options")
+		return info, wrap(ctx, err, s.path, "sqlite.DriverInfo", "could not read the SQLite compile options")
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var opt string
 		if err := rows.Scan(&opt); err != nil {
-			return info, wrap(err, s.path, "sqlite.DriverInfo", "could not read the SQLite compile options")
+			return info, wrap(ctx, err, s.path, "sqlite.DriverInfo", "could not read the SQLite compile options")
 		}
 		if strings.Contains(opt, "ENABLE_FTS5") {
 			info.FTS5 = true
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return info, wrap(err, s.path, "sqlite.DriverInfo", "could not read the SQLite compile options")
+		return info, wrap(ctx, err, s.path, "sqlite.DriverInfo", "could not read the SQLite compile options")
 	}
 	if err := s.db.QueryRowContext(ctx, "SELECT sqlite_version(), vec_version()").Scan(&info.SQLite, &info.Vec); err != nil {
-		return info, wrap(err, s.path, "sqlite.DriverInfo", "could not read the SQLite and sqlite-vec versions")
+		return info, wrap(ctx, err, s.path, "sqlite.DriverInfo", "could not read the SQLite and sqlite-vec versions")
 	}
 	return info, nil
 }
@@ -320,8 +320,10 @@ func userVersion(ctx context.Context, conn *sql.Conn) (int, error) {
 
 // wrap turns an error from inside this package into the boundary *errs.Error. An error that is
 // already well-formed passes through with the db added; a driver error is classified (classify)
-// and gets the friendly message.
-func wrap(err error, path, op, format string, args ...any) error {
+// and gets the friendly message. A cancelled ctx makes any failure Interrupted: after a cancel,
+// database/sql rolls the transaction back in the background, so the error that surfaces may be
+// sql.ErrTxDone rather than the cancel itself. ctx may be nil (Close).
+func wrap(ctx context.Context, err error, path, op, format string, args ...any) error {
 	var e *errs.Error
 	if errors.As(err, &e) {
 		if e.Ctx["db"] == nil {
@@ -329,7 +331,13 @@ func wrap(err error, path, op, format string, args ...any) error {
 		}
 		return err
 	}
-	switch k := classify(err); k {
+	k := classify(err)
+	if ctx != nil && ctx.Err() != nil {
+		k = errs.Interrupted
+	}
+	switch k {
+	case errs.Interrupted:
+		return errs.Wrap(err, k, op, "interrupted").With("db", path)
 	case errs.Conflict:
 		var se sqlite3.Error
 		if errors.As(err, &se) && (se.Code == sqlite3.ErrBusy || se.Code == sqlite3.ErrLocked) {
@@ -338,23 +346,38 @@ func wrap(err error, path, op, format string, args ...any) error {
 		return errs.Wrap(err, k, op, "the database %s is damaged or is not a kb database; move it aside and run kb reindex --all", path).
 			With("db", path)
 	case errs.Usage:
+		var se sqlite3.Error
+		if errors.As(err, &se) && (se.Code == sqlite3.ErrFull || se.Code == sqlite3.ErrIoErr) {
+			return errs.Wrap(err, k, op, "disk full or unwritable: %s; free space and retry", path).With("db", path)
+		}
 		return errs.Wrap(err, k, op, "cannot open or write the database %s: check the file and its permissions", path).With("db", path)
 	default:
 		return errs.Wrap(err, k, op, format, args...).With("db", path)
 	}
 }
 
-// classify maps the SQLite result codes that are known edge cases to a Kind. Everything else,
-// including a cancelled ctx (the CLI reports that separately), is Internal.
+// classify maps the failures that are known edge cases to a Kind. A cancelled ctx is Interrupted
+// whichever way it surfaces: as ctx.Err() from database/sql, or as SQLITE_INTERRUPT when the
+// driver interrupts a running statement. A full or failing disk is Usage (CODING_STYLE §1.1's
+// "a disk write fails"). Everything else is Internal.
 func classify(err error) errs.Kind {
+	if errors.Is(err, context.Canceled) {
+		return errs.Interrupted
+	}
 	var se sqlite3.Error
 	if !errors.As(err, &se) {
 		return errs.Internal
 	}
 	switch se.Code {
+	case sqlite3.ErrInterrupt:
+		return errs.Interrupted
 	case sqlite3.ErrCorrupt, sqlite3.ErrNotADB, sqlite3.ErrBusy, sqlite3.ErrLocked:
 		return errs.Conflict
 	case sqlite3.ErrCantOpen, sqlite3.ErrPerm, sqlite3.ErrReadonly:
+		return errs.Usage
+	case sqlite3.ErrFull, sqlite3.ErrIoErr:
+		// Environmental and fixed by the user (free space, fix the disk), like the permission
+		// codes above: Usage, not Conflict (which means another process or damaged data).
 		return errs.Usage
 	}
 	return errs.Internal

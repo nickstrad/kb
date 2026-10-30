@@ -195,3 +195,22 @@ func TestDBErrors(t *testing.T) {
 		}
 	})
 }
+
+// kindQuerier fails every query with a well-formed store error of a chosen kind.
+type kindQuerier struct{ kind errs.Kind }
+
+func (q kindQuerier) QueryLog(context.Context, string, ...any) (*Table, error) {
+	return nil, errs.New(q.kind, "sqlite.QueryLog", "the database stayed locked")
+}
+
+// TestRunKeepsStoreKind: a named query that fails because of the database (locked, damaged,
+// interrupted) keeps that kind, so kb stats exits 1 with the store's message instead of logging
+// an incident; only a plain driver/SQL failure is Internal.
+func TestRunKeepsStoreKind(t *testing.T) {
+	for _, k := range []errs.Kind{errs.Conflict, errs.Interrupted, errs.Internal} {
+		_, err := New(kindQuerier{k}).Run(context.Background(), Query{Name: "overview", SQL: "x"}, Filter{})
+		if got := errs.KindOf(err); got != k {
+			t.Errorf("store kind %v: Run kind = %v (%v)", k, got, err)
+		}
+	}
+}

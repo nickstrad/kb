@@ -25,13 +25,30 @@ func useFakeEmbedder(t *testing.T) {
 	t.Cleanup(func() { testDeps.embedder = orig })
 }
 
-// newTempRoot creates a fresh repository root and points KB_ROOT at it for the duration of the
-// test.
+// newTempRoot creates a fresh store root (an empty .kb/config.toml, no database yet), makes it
+// the working directory for the test and returns it with symlinks resolved, the form root
+// discovery reports. The CLI tests are not parallel, so t.Chdir is safe.
 func newTempRoot(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
-	t.Setenv("KB_ROOT", root)
-	return root
+	return useRoot(t, t.TempDir())
+}
+
+// useRoot makes dir the store the CLI discovers for the test: it adds an empty .kb/config.toml
+// unless the directory is already a store (has .kb/kb.sqlite or .kb/config.toml), then chdirs
+// there. It returns dir with symlinks resolved.
+func useRoot(t *testing.T, dir string) string {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", dir, err)
+	}
+	_, e1 := os.Stat(filepath.Join(real, ".kb", "config.toml"))
+	_, e2 := os.Lstat(filepath.Join(real, ".kb", "kb.sqlite"))
+	if e1 != nil && e2 != nil {
+		writeFile(t, filepath.Join(real, ".kb", "config.toml"), "")
+	}
+	t.Chdir(real)
+	return real
 }
 
 // writeFile writes content to path, creating parent directories as needed.
@@ -66,16 +83,19 @@ func validFrontMatter(title, summary string) string {
 		"## Section\n\nSome body text for the chunker to index.\n"
 }
 
-// fakeEditor writes an $EDITOR script that replaces from with to in the file it is given, using
-// only POSIX sh and sed (no GNU `sed -i`), and returns its path. from and to must not contain '/'.
-func fakeEditor(t *testing.T, from, to string) string {
+// useFakeEditor replaces deps.editor with a Go function that replaces from with to in the file
+// it is given, so edit tests need no shell or sed (TESTING.md §7).
+func useFakeEditor(t *testing.T, from, to string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "editor.sh")
-	script := "#!/bin/sh\nsed 's/" + from + "/" + to + "/' \"$1\" > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake editor: %v", err)
+	orig := testDeps.editor
+	testDeps.editor = func(_ context.Context, path string) error {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, []byte(strings.ReplaceAll(string(b), from, to)), 0o644)
 	}
-	return path
+	t.Cleanup(func() { testDeps.editor = orig })
 }
 
 // openTestStore opens the database kb add just wrote to, for assertions.
@@ -177,6 +197,9 @@ func TestAddSecretPatternIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "password") {
 		t.Errorf("stderr = %q, want it to name the password pattern", errOut)
+	}
+	if strings.Count(errOut, "kb add:") != 1 {
+		t.Errorf("stderr = %q, want exactly one \"kb add:\" prefix", errOut)
 	}
 	if _, err := os.Stat(filepath.Join(root, "data", "has-secret.md")); !os.IsNotExist(err) {
 		t.Errorf("file with a secret should not have been copied (stat err = %v)", err)

@@ -18,7 +18,8 @@ import (
 //     source as body;
 //  4. a nil error means title and summary are both set and each is one line;
 //  5. a nil error means title and summary are valid UTF-8 with no control characters, within
-//     MaxTitleRunes and MaxSummaryRunes.
+//     MaxTitleRunes and MaxSummaryRunes;
+//  6. a nil error means aliases number at most MaxAliases, each valid and within MaxAliasRunes.
 //
 // Run: go test ./internal/entry/ -run '^$' -fuzz FuzzParseFrontMatter -fuzztime 60s
 func FuzzParseFrontMatter(f *testing.F) {
@@ -31,6 +32,8 @@ func FuzzParseFrontMatter(f *testing.F) {
 		"---\ntitle: T\nsummary: S\n",
 		"no front matter at all\n---\n",
 		"---\n---\n",
+		"---\ntitle: T\nsummary: S\nrelated: [a.md, \"[[b]]\"]\nsupersedes:\n  - c.md\ndepends_on: []\naliases: [x, y]\n---\n",
+		"---\ntitle: T\nsummary: S\naliases:\n  - \"\\x01\"\n  - " + strings.Repeat("a", MaxAliasRunes+1) + "\n---\n",
 		"",
 		"---\ntitle: \x00\x01\x02\nsummary: s\n---\n",
 		"---\ntitle: a\xffb\nsummary: s\n---\n",
@@ -48,7 +51,8 @@ func FuzzParseFrontMatter(f *testing.F) {
 			if err != nil {
 				t.Fatalf("unfenced source: err = %v, want nil", err)
 			}
-			if fm.Title != "" || fm.Summary != "" || fm.Tags != nil || fm.Updated != "" || fm.Verified != "" {
+			if fm.Title != "" || fm.Summary != "" || fm.Tags != nil || fm.Updated != "" || fm.Verified != "" ||
+				fm.Related != nil || fm.Supersedes != nil || fm.DependsOn != nil || fm.Aliases != nil {
 				t.Fatalf("unfenced source: fm = %+v, want zero", fm)
 			}
 			if !bytes.Equal(body, rest) {
@@ -71,6 +75,14 @@ func FuzzParseFrontMatter(f *testing.F) {
 				}
 				if !utf8.ValidString(v) || strings.IndexFunc(v, unicode.IsControl) >= 0 {
 					t.Fatalf("nil error but %s has invalid UTF-8 or a control character: %q", name, v)
+				}
+			}
+			if len(fm.Aliases) > MaxAliases {
+				t.Fatalf("nil error but %d aliases", len(fm.Aliases))
+			}
+			for _, a := range fm.Aliases {
+				if !utf8.ValidString(a) || strings.IndexFunc(a, unicode.IsControl) >= 0 || utf8.RuneCountInString(a) > MaxAliasRunes {
+					t.Fatalf("nil error but alias %q is invalid", a)
 				}
 			}
 			if utf8.RuneCountInString(fm.Title) > MaxTitleRunes || utf8.RuneCountInString(fm.Summary) > MaxSummaryRunes {

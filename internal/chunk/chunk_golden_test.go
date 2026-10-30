@@ -128,12 +128,6 @@ func assertInvariants(t *testing.T, e entry.Entry, chunks []Chunk) {
 
 	sawReadmeChunk := false
 	for i, c := range chunks {
-		if c.TextHash != Hash(c.Text) {
-			t.Errorf("chunk %d: TextHash %q does not match Hash(Text)", i, c.TextHash)
-		}
-		if c.Ord != i {
-			t.Errorf("chunk %d: Ord = %d, want %d (Ord must be sequential)", i, c.Ord, i)
-		}
 
 		// scripts/ is never chunked.
 		if strings.Contains(c.SourceFile, "/scripts/") || strings.HasSuffix(c.SourceFile, ".sh") {

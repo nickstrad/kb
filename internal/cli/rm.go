@@ -27,7 +27,11 @@ func newRmCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRm(cmd.Context(), d, stdout, stderr, Root(), args[0], yes)
+			ws, err := d.workspace(cmd)
+			if err != nil {
+				return err
+			}
+			return runRm(cmd.Context(), d, stdout, stderr, ws.Root, args[0], yes)
 		},
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "confirm removing a directory entry and everything in it")

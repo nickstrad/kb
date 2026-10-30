@@ -5,6 +5,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -15,12 +16,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/nickstrad/kb/internal/assert"
 	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/workspace"
 )
 
 // incidentLogMax is the size the incident log is trimmed back to once it grows past it.
@@ -93,7 +96,7 @@ func report(stderr io.Writer, d *deps, cmd *cobra.Command, args []string, err er
 	}
 
 	id := newIncidentID()
-	where := writeIncident(d, id, args, incident{Kind: kind.String(), Chain: errs.Chain(err), Stack: stackOf(err)})
+	where := writeIncident(d, cmd, id, args, incident{Kind: kind.String(), Chain: errs.Chain(err), Stack: stackOf(err)})
 	fmt.Fprintf(stderr, "%s: internal error (id %s). Details: %s, or rerun with --debug. Please report it.\n", prefix, id, where)
 	return ExitInternal
 }
@@ -106,7 +109,7 @@ func reportPanic(stderr io.Writer, d *deps, cmd *cobra.Command, args []string, r
 		kind = "assert:" + v.Kind
 	}
 	id := newIncidentID()
-	where := writeIncident(d, id, args, incident{Kind: kind, Chain: []string{fmt.Sprint(r)}, Stack: string(stack)})
+	where := writeIncident(d, cmd, id, args, incident{Kind: kind, Chain: []string{fmt.Sprint(r)}, Stack: string(stack)})
 	prefix := "kb"
 	if cmd != nil {
 		prefix = cmd.CommandPath()
@@ -166,10 +169,21 @@ func newIncidentID() string {
 
 // incidentLogPath is <root>/.kb/kb.log when the store's .kb exists, else the user cache dir's
 // kb/kb.log. It never creates a store directory.
-func incidentLogPath(d *deps) (string, error) {
-	kbDir := filepath.Join(Root(), ".kb")
-	if fi, err := os.Stat(kbDir); err == nil && fi.IsDir() {
-		return filepath.Join(kbDir, "kb.log"), nil
+//
+// The store is the one the command ran on (--root, --global or discovery from the working
+// directory). When none resolves, because discovery failed or the flags did not parse, the
+// incident goes to the user cache dir.
+func incidentLogPath(d *deps, cmd *cobra.Command) (string, error) {
+	var rootFlag string
+	var global bool
+	if cmd != nil { // Get* fails only for an undefined flag (a panic before flags exist): use discovery
+		rootFlag, _ = cmd.Flags().GetString("root")
+		global, _ = cmd.Flags().GetBool("global")
+	}
+	if ws, err := workspace.Resolve(rootFlag, global, d.workspaceEnv()); err == nil {
+		if fi, err := os.Stat(ws.KBDir); err == nil && fi.IsDir() {
+			return filepath.Join(ws.KBDir, "kb.log"), nil
+		}
 	}
 	base, err := d.userCacheDir()
 	if err != nil {
@@ -180,9 +194,9 @@ func incidentLogPath(d *deps) (string, error) {
 
 // writeIncident appends one JSON line and returns where it went. A log that cannot be written is
 // not fatal: the user still gets the id, and --debug still prints the detail.
-func writeIncident(d *deps, id string, args []string, inc incident) string {
+func writeIncident(d *deps, cmd *cobra.Command, id string, args []string, inc incident) string {
 	inc.ID, inc.Time, inc.Version, inc.Args = id, time.Now().UTC().Format(time.RFC3339), Version, args
-	path, err := incidentLogPath(d)
+	path, err := incidentLogPath(d, cmd)
 	if err != nil {
 		return "unavailable (" + err.Error() + ")"
 	}
@@ -197,10 +211,19 @@ func writeIncident(d *deps, id string, args []string, inc incident) string {
 }
 
 // appendTrimmed appends line to path, then, if the file is over max bytes, keeps only the last
-// max bytes, cut at a line boundary.
+// max bytes, cut at a line boundary. Every kb process funnels through here, so the whole
+// append-and-trim runs under an exclusive flock on <path>.lock: concurrent writers cannot lose a
+// line to another process's trim. The line itself is one O_APPEND write, and the trim writes a
+// temp file and renames it over the log, so a crash leaves either the old or the new log whole.
 func appendTrimmed(path string, line []byte, max int) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
+	}
+	// A lock that cannot be taken (unusual filesystem) is not fatal: the single-line O_APPEND
+	// write still holds, only the trim loses its protection.
+	if lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o644); err == nil {
+		defer lock.Close() // closing releases the flock
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -214,12 +237,32 @@ func appendTrimmed(path string, line []byte, max int) error {
 	if err != nil || len(data) <= max {
 		return err
 	}
-	data = data[len(data)-max:]
-	for i, b := range data {
-		if b == '\n' {
-			data = data[i+1:]
-			break
+	cut := len(data) - max
+	if data[cut-1] != '\n' { // the cut is mid-line: drop that partial line
+		if i := bytes.IndexByte(data[cut:], '\n'); i >= 0 {
+			cut += i + 1
+		} else {
+			cut = len(data)
 		}
 	}
-	return os.WriteFile(path, data, 0o644)
+	return replaceFile(path, data[cut:])
+}
+
+// replaceFile atomically replaces path with data: write a temp file in the same directory, then
+// rename it over path.
+func replaceFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	_, werr := tmp.Write(data)
+	if err := errors.Join(werr, tmp.Chmod(0o644), tmp.Close()); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return nil
 }

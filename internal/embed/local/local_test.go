@@ -256,18 +256,17 @@ func TestPullCancelledContext(t *testing.T) {
 // ctx error instead of waiting for the download (main's signal handler swallows SIGINT).
 func TestPullCancelMidDownload(t *testing.T) {
 	release := make(chan struct{})
-	orig := hubLoad
-	t.Cleanup(func() { close(release); hubLoad = orig })
+	t.Cleanup(func() { close(release) })
 	started := make(chan struct{})
-	hubLoad = func(string, ...rembed.Option) (pulledModel, error) {
+	p := puller{hubLoad: func(string, ...rembed.Option) (pulledModel, error) {
 		close(started)
 		<-release
 		return nil, errors.New("released")
-	}
+	}}
 	t.Setenv("REMBED_CACHE", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
-	go func() { errc <- Pull(ctx, models[DefaultModel], t.TempDir()) }()
+	go func() { errc <- p.Pull(ctx, models[DefaultModel], t.TempDir()) }()
 	<-started
 	cancel()
 	if err := <-errc; !errors.Is(err, context.Canceled) {
@@ -299,11 +298,9 @@ func TestPullDimCheck(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := &dimModel{dim: tc.dim}
-			orig := hubLoad
-			t.Cleanup(func() { hubLoad = orig })
-			hubLoad = func(string, ...rembed.Option) (pulledModel, error) { return m, nil }
+			p := puller{hubLoad: func(string, ...rembed.Option) (pulledModel, error) { return m, nil }}
 			t.Setenv("REMBED_CACHE", "")
-			err := Pull(context.Background(), spec, t.TempDir())
+			err := p.Pull(context.Background(), spec, t.TempDir())
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("Pull = %v, want nil", err)

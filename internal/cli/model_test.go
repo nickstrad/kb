@@ -102,7 +102,7 @@ func TestOnlyIndexingCommandsDownload(t *testing.T) {
 	})
 	t.Run("search does not pull", func(t *testing.T) {
 		_, calls := stubPull(t, nil)
-		t.Setenv("KB_ROOT", newSearchTestRepo(t, testModel768, 768))
+		useRoot(t, newSearchTestRepo(t, testModel768, 768))
 		_, errOut, code := run(t, "search", "widget", "--embed-model", testModel768)
 		if len(*calls) != 0 || code != ExitEmbedder || !strings.Contains(errOut, "kb model pull") {
 			t.Fatalf("pulls = %v, exit %d, stderr %q; want no pull, fts fallback (exit 2) and a hint", *calls, code, errOut)
@@ -110,7 +110,7 @@ func TestOnlyIndexingCommandsDownload(t *testing.T) {
 	})
 	t.Run("doctor does not pull", func(t *testing.T) {
 		_, calls := stubPull(t, nil)
-		t.Setenv("KB_ROOT", newSearchTestRepo(t, testModel768, 768))
+		useRoot(t, newSearchTestRepo(t, testModel768, 768))
 		out, _, _ := run(t, "doctor", "--embed-model", testModel768)
 		if len(*calls) != 0 || !strings.Contains(out, "FAIL embedder: model "+testModel768+" is not downloaded (run `kb model pull`)") {
 			t.Fatalf("pulls = %v, doctor output %q; want no pull and a not-downloaded FAIL", *calls, out)

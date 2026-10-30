@@ -90,7 +90,11 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	}
 	ctx := cmd.Context()
 
-	root := Root()
+	ws, err := d.workspace(cmd)
+	if err != nil {
+		return err
+	}
+	root := ws.Root
 	dbPath := DBPath(root)
 	if _, err := os.Stat(dbPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -147,7 +151,9 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	if err != nil && !logFailed {
 		return err
 	}
-	printResults(stdout, out.Result, opts.asJSON, !logFailed)
+	if err := printResults(stdout, out.Result, opts.asJSON, !logFailed); err != nil {
+		return err
+	}
 	if logFailed {
 		fmt.Fprintf(stderr, "warning: search not logged: %s\n", err)
 	}
@@ -172,8 +178,9 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 // the human form carries no hint; --json keeps the `kb feedback` commands.
 // A result that could not be logged has no usable search id, so its human header and footer say
 // so, and its JSON search_id and feedback are null rather than the zero value Go
-// leaves in Result.SearchID.
-func printResults(stdout io.Writer, result *search.Result, asJSON, logged bool) {
+// leaves in Result.SearchID. An encoding failure (a NaN or Inf score from a model) is returned
+// as an Internal error with nothing written.
+func printResults(stdout io.Writer, result *search.Result, asJSON, logged bool) error {
 	if asJSON {
 		var searchID *int64
 		var feedback *feedbackCommands
@@ -195,11 +202,11 @@ func printResults(stdout io.Writer, result *search.Result, asJSON, logged bool) 
 			Mode     string            `json:"mode"`
 			Hits     []search.Hit      `json:"hits"`
 		}{searchID, feedback, result.Query, result.Mode, result.Hits}); err != nil {
-			// Result is a plain struct of strings/ints/floats; encoding cannot fail on it.
-			panic(fmt.Sprintf("kb search: marshal result: %v", err))
+			// json rejects NaN and Inf floats, and a model can produce them.
+			return errs.Wrap(err, errs.Internal, "cli.search", "encode result: %v", err)
 		}
 		fmt.Fprint(stdout, buf.String())
-		return
+		return nil
 	}
 
 	hits := "hits"
@@ -227,9 +234,10 @@ func printResults(stdout io.Writer, result *search.Result, asJSON, logged bool) 
 	}
 	if !logged {
 		fmt.Fprintln(stdout, "search_id=none (not logged)")
-		return
+		return nil
 	}
 	fmt.Fprintf(stdout, "search_id=%d\n", result.SearchID)
+	return nil
 }
 
 // feedbackCommands is the --json "feedback" object: the exact commands that judge one search.

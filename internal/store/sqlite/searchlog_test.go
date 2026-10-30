@@ -330,3 +330,62 @@ func TestLogCascadeDelete(t *testing.T) {
 		}
 	}
 }
+
+// TestLogSearchRanksAndReturnedFlag: results are stored at rank 1..n in the order given;
+// candidates at fused_rank 1..n, with returned=1 exactly on the chunks that are also results.
+func TestLogSearchRanksAndReturnedFlag(t *testing.T) {
+	st, _ := logFixture(t)
+	ctx := context.Background()
+	ids := make([]int64, 0, 3)
+	rows, err := st.DB().Query(`SELECT id FROM chunks ORDER BY id LIMIT 3`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	hit := func(id int64) store.LoggedHit { return store.LoggedHit{ChunkID: id, EntryPath: "logalpha.md"} }
+	// shown: chunk 3 then chunk 1; fused: 1, 2, 3 (2 was dropped by the cap)
+	searchID, err := st.LogSearch(ctx, store.SearchRecord{Query: "q", Mode: "fts", K: 2, Caller: "t",
+		Results:    []store.LoggedHit{hit(ids[2]), hit(ids[0])},
+		Candidates: []store.LoggedHit{hit(ids[0]), hit(ids[1]), hit(ids[2])}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(q string) [][2]int64 {
+		rs, err := st.DB().Query(q, searchID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rs.Close()
+		var out [][2]int64
+		for rs.Next() {
+			var a, b int64
+			if err := rs.Scan(&a, &b); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, [2]int64{a, b})
+		}
+		return out
+	}
+	gotResults := read(`SELECT rank, chunk_id FROM search_results WHERE search_id = ? ORDER BY rank`)
+	wantResults := [][2]int64{{1, ids[2]}, {2, ids[0]}}
+	if fmt.Sprint(gotResults) != fmt.Sprint(wantResults) {
+		t.Errorf("results (rank, chunk) = %v, want %v", gotResults, wantResults)
+	}
+	gotCands := read(`SELECT fused_rank, chunk_id FROM search_candidates WHERE search_id = ? ORDER BY fused_rank`)
+	wantCands := [][2]int64{{1, ids[0]}, {2, ids[1]}, {3, ids[2]}}
+	if fmt.Sprint(gotCands) != fmt.Sprint(wantCands) {
+		t.Errorf("candidates (fused_rank, chunk) = %v, want %v", gotCands, wantCands)
+	}
+	gotFlags := read(`SELECT fused_rank, returned FROM search_candidates WHERE search_id = ? ORDER BY fused_rank`)
+	wantFlags := [][2]int64{{1, 1}, {2, 0}, {3, 1}}
+	if fmt.Sprint(gotFlags) != fmt.Sprint(wantFlags) {
+		t.Errorf("candidates (fused_rank, returned) = %v, want %v", gotFlags, wantFlags)
+	}
+}

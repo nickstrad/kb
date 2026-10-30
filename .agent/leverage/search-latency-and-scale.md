@@ -3,7 +3,7 @@
 
 - **Category:** resource/performance
 - **Status:** watch
-- **Where:** `internal/search/search.go` (`ListLimit` 20, `vecOverFetch` 60 for tag filters, RRF), sqlite-vec `vec0` (no ANN index), `internal/search/log.go`.
+- **Where:** `internal/search/search.go` (`ListLimit` 20, `vecOverFetch` 60 for tag filters, RRF), sqlite-vec `vec0` (no ANN index; `internal/store/sqlite/retrieve.go` `knn`/`filterByTag`), `internal/store/sqlite/log.go` (`LogSearch`).
 - **Why it matters:** agents search often; the latency adds up per task. Tag filters over-fetch and can miss results when a tag is rare. Cross-store search (Phase 3) multiplies the work.
 - **Evidence:** about 0.2 s per search on a small corpus, mostly the model load. KNN cost on 10k+ chunks is unmeasured. `TestVecOverFetchBoundary` pins the 60/61 edge. W2 pass: hybrid and vec searches first check `sqlite_master` for `chunks_vec` (one indexed lookup) and skip the query embedding when it is missing, so an upgraded-but-not-reindexed store pays no model load.
 - **Coverage today:** boundary tables for ListLimit, CandidateLimit, PerEntryCap and vecOverFetch; harness hostile queries.

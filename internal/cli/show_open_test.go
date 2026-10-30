@@ -15,7 +15,7 @@ func openRepo(t *testing.T) string {
 	root := setupRepo(t)
 	indexEntry(t, context.Background(), root, "foo.md")
 	indexEntry(t, context.Background(), root, "bar")
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 	return root
 }
 
@@ -102,14 +102,19 @@ func TestShowNoLog(t *testing.T) {
 	if got := openRows(t, root); len(got) != 0 {
 		t.Errorf("--no-log: search_opens = %v, want none", got)
 	}
-	if stderr != "" {
-		t.Errorf("--no-log --debug printed %q; nothing was attempted", stderr)
+	// --debug names the store (Q48); nothing else may appear.
+	rest := stderr
+	if strings.HasPrefix(rest, "kb show: store ") {
+		_, rest, _ = strings.Cut(rest, "\n")
+	}
+	if rest != "" {
+		t.Errorf("--no-log --debug printed %q; nothing was attempted", rest)
 	}
 }
 
 func TestShowWithoutDatabaseStaysQuiet(t *testing.T) {
 	root := setupRepo(t)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 	_, stderr := mustKB(t, "show", "foo.md")
 	if stderr != "" {
 		t.Errorf("stderr = %q, want empty", stderr)
@@ -127,7 +132,7 @@ func TestShowWithoutDatabaseStaysQuiet(t *testing.T) {
 // must not change the exit code; --debug is where the cause surfaces.
 func TestShowOpenFailureIsSilentButNotSwallowed(t *testing.T) {
 	root := setupRepo(t)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 	if err := os.MkdirAll(filepath.Dir(DBPath(root)), 0o755); err != nil {
 		t.Fatal(err)
 	}

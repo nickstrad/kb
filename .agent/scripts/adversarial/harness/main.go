@@ -231,7 +231,6 @@ func (h *H) env() []string {
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + h.home,
 		"TMPDIR=" + filepath.Join(h.dir, "tmp"),
-		"KB_ROOT=" + h.root,
 		"KB_CALLER=harness",
 		"REMBED_CACHE=" + filepath.Join(h.home, "rembed"),
 		"HF_HOME=" + filepath.Join(h.home, "hf"),
@@ -250,9 +249,16 @@ func (h *H) seedGarbageModel() {
 }
 
 func (h *H) cmd(args ...string) (*exec.Cmd, *bytes.Buffer, *bytes.Buffer) {
+	// --root names the scenario root explicitly: kb reads no root from the environment, and a fresh root has no .kb
+	// for discovery to find. The working directory is the root as well.
+	return h.cmdAt(h.root, append([]string{"--root", h.root}, args...)...)
+}
+
+// cmdAt runs kb in dir with args exactly as given: no --root, so kb discovers its store from dir.
+func (h *H) cmdAt(dir string, args ...string) (*exec.Cmd, *bytes.Buffer, *bytes.Buffer) {
 	h.seedGarbageModel()
 	c := exec.CommandContext(h.ctx, h.bin, args...)
-	c.Dir = h.root
+	c.Dir = dir
 	c.Env = h.env()
 	var o, e bytes.Buffer
 	c.Stdout, c.Stderr = &o, &e
@@ -263,9 +269,21 @@ func (h *H) cmd(args ...string) (*exec.Cmd, *bytes.Buffer, *bytes.Buffer) {
 
 // kb runs one command to completion (60 s cap) and checks the universal invariants on it.
 func (h *H) kb(args ...string) res {
+	c, o, e := h.cmd(args...)
+	return h.finish(c, o, e, args)
+}
+
+// kbAt is kb run from dir with no --root: the store comes from root discovery (or --global /
+// an explicit --root in args).
+func (h *H) kbAt(dir string, args ...string) res {
+	c, o, e := h.cmdAt(dir, args...)
+	return h.finish(c, o, e, args)
+}
+
+// finish runs c to completion (60 s cap) and checks the universal invariants on it.
+func (h *H) finish(c *exec.Cmd, o, e *bytes.Buffer, args []string) res {
 	ctx, cancel := context.WithTimeout(h.ctx, 60*time.Second)
 	defer cancel()
-	c, o, e := h.cmd(args...)
 	c.Cancel = func() error { return c.Process.Kill() }
 	t0 := time.Now()
 	err := c.Start()
@@ -301,18 +319,21 @@ func exitCode(err error) int {
 
 var panicRe = regexp.MustCompile(`(?m)^(panic: |fatal error: |goroutine \d+ \[)`)
 
-// invariants hold for every kb run: the CLI contract has exit codes 0, 1 and 2 only (a Go panic
-// also exits 2, so a panic trace is checked separately), and nothing prints a Go stack.
+// invariants hold for every kb run: the CLI contract has exit codes 0, 1, 2 and 3 (3 = internal
+// error, logged as an incident), and nothing prints a Go stack. Exit 3 is a contract code but
+// always a finding here: a hostile input must fail well-formed (1 or 2), never as a bug.
 func (h *H) invariants(r res) {
 	if panicRe.MatchString(r.Stderr) || panicRe.MatchString(r.Stdout) {
 		h.fail("Go panic or runtime crash:\n%s", r)
 	}
 	switch r.Code {
 	case 0, 1, 2:
+	case 3:
+		h.fail("internal error (exit 3, an incident): a hostile input reached kb as a bug:\n%s", r)
 	case 130:
 		// SIGINT, only from the scenario that sends one
 	default:
-		h.fail("exit code %d is outside the 0/1/2 contract:\n%s", r.Code, r)
+		h.fail("exit code %d is outside the 0/1/2/3 contract:\n%s", r.Code, r)
 	}
 }
 

@@ -49,7 +49,7 @@ func TestMutationCommandsLeaveOptionalIndexAlone(t *testing.T) {
 			src := filepath.Join(t.TempDir(), "index-hooks.md")
 			writeFile(t, src, validFrontMatter("Index hooks", "Original summary."))
 			invoke("add", src)
-			t.Setenv("EDITOR", fakeEditor(t, "Original summary", "Edited summary"))
+			useFakeEditor(t, "Original summary", "Edited summary")
 			invoke("edit", "index-hooks.md")
 			invoke("reindex", "index-hooks.md")
 			invoke("reindex", "--all")

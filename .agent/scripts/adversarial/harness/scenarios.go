@@ -20,9 +20,9 @@ func withNone(args ...string) []string { return append([]string{"--embedder", "n
 
 // scenarios is the table. To add one: append {Name, Desc, Run}; Run sets up files under h.root
 // (or h.outside), calls h.kb, and reports with h.fail / h.expect / h.note. The universal
-// invariants (no panic, exit code in 0/1/2, no model download) are checked for every run.
+// invariants (no panic, exit code in 0/1/2 (3 is a finding), no model download) are checked for every run.
 var scenarios = []scenario{
-	{"exit-codes", "the 0/1/2 exit-code contract on usage errors and lookups", scExitCodes},
+	{"exit-codes", "the 0/1/2/3 exit-code contract on usage errors and lookups", scExitCodes},
 	{"fts-roundtrip", "add with --embedder none, then search, show, list, doctor", scRoundTrip},
 	{"no-model-search", "with no model: --mode fts works, a none-indexed DB reports a mismatch, a fresh root is never created or downloaded to", scNoModelSearch},
 	{"no-model-index", "reindex/add with no model and no network exit 2 without downloading or half-writing", scNoModelIndex},
@@ -35,6 +35,81 @@ var scenarios = []scenario{
 	{"sigint-mid-reindex", "SIGINT during reindex --all leaves a usable DB; a rerun converges", scSigint},
 	{"corrupt-db", "truncated and garbage kb.sqlite give a well-formed error, never a crash", scCorruptDB},
 	{"newer-schema", "a DB from a newer kb is refused and left byte-for-byte unchanged", scNewerSchema},
+	{"workspace-discovery", "no --root: discovery from nested and symlinked dirs, not-found outside any store, --global under HOME, relative --root, --root with --global", scWorkspaceDiscovery},
+}
+
+// scWorkspaceDiscovery attacks "kb finds the right store, or none, and never creates one by
+// accident". Every other scenario passes --root; this one runs kb without it.
+func scWorkspaceDiscovery(h *H) {
+	h.write("data/w.md", entryText("W", "## A\n\ndiscoword here\n"))
+	h.must(h.kb(withNone("reindex", "--all")...).Code == 0, "index the scenario root")
+
+	nested := filepath.Join(h.root, "data", "deep", "er")
+	h.must(os.MkdirAll(nested, 0o755) == nil, "mkdir nested")
+	if r := h.kbAt(nested, withNone("list")...); h.expect(r, 0) && !strings.Contains(r.Stdout, "data/w.md") {
+		h.fail("list from a nested dir did not find the store:\n%s", r)
+	}
+	if r := h.kbAt(nested, withNone("search", "discoword")...); h.expect(r, 0) && !strings.Contains(r.Stdout, "data/w.md") {
+		h.fail("search from a nested dir did not find the entry:\n%s", r)
+	}
+
+	link := filepath.Join(h.outside, "link-into-store")
+	h.must(os.Symlink(nested, link) == nil, "symlink")
+	if r := h.kbAt(link, withNone("list")...); h.expect(r, 0) && !strings.Contains(r.Stdout, "data/w.md") {
+		h.fail("list from a symlinked cwd did not find the store:\n%s", r)
+	}
+
+	if r := h.kbAt(h.outside, withNone("--root", "../root", "list")...); h.expect(r, 0) && !strings.Contains(r.Stdout, "data/w.md") {
+		h.fail("relative --root did not resolve against the working directory:\n%s", r)
+	}
+	h.expect(h.kbAt(h.outside, withNone("--root", h.root, "--global", "list")...), 1)
+
+	// Not found: a temp dir outside the repo (the sandbox lives inside it, and the repo may hold
+	// a store). Skip if some ancestor is a store after all.
+	none, err := os.MkdirTemp("", "kb-adv-nostore-")
+	h.must(err == nil, "mkdtemp")
+	defer os.RemoveAll(none)
+	if anc := storeAbove(none); anc != "" {
+		h.note("not-found check skipped: %s holds a store", anc)
+	} else {
+		src := h.write(filepath.Join(h.outside, "nf.md"), entryText("NF", "## A\n\nx\n"))
+		for _, args := range [][]string{{"list"}, {"search", "x"}, {"add", src}, {"reindex", "--all"}, {"doctor"}} {
+			r := h.kbAt(none, withNone(args...)...)
+			if h.expect(r, 1) && !strings.Contains(r.Stderr, "no kb store found") {
+				h.fail("not-found message missing:\n%s", r)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(none, ".kb")); err == nil {
+			h.fail("a command run outside any store created %s/.kb", none)
+		}
+	}
+
+	// --global lives under HOME (XDG_DATA_HOME is unset in the scenario env), whatever the cwd.
+	src := h.write(filepath.Join(h.outside, "glob.md"), entryText("G", "## A\n\nglobalword\n"))
+	h.expect(h.kbAt(nested, withNone("--global", "add", src)...), 0)
+	if _, err := os.Stat(filepath.Join(h.home, ".local", "share", "kb", ".kb", "kb.sqlite")); err != nil {
+		h.fail("--global add did not create the store under $HOME/.local/share/kb: %v", err)
+	}
+	if r := h.kbAt(nested, withNone("list")...); h.expect(r, 0) && strings.Contains(r.Stdout, "glob.md") {
+		h.fail("--global add wrote into the discovered store:\n%s", r)
+	}
+}
+
+// storeAbove returns the first directory at or above dir holding .kb/, or "".
+func storeAbove(dir string) string {
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".kb")); err == nil {
+			return dir
+		}
+		p := filepath.Dir(dir)
+		if p == dir {
+			return ""
+		}
+		dir = p
+	}
 }
 
 func scExitCodes(h *H) {

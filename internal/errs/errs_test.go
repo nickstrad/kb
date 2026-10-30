@@ -39,8 +39,12 @@ func TestWrapCapturesStackForForeignError(t *testing.T) {
 }
 
 func TestWrapNilIsNeverNil(t *testing.T) {
-	var err error = Wrap(nil, Usage, "op", "bad")
-	if err == nil || err.Error() != "bad" || errors.Unwrap(err) != nil {
+	e := Wrap(nil, Usage, "op", "bad")
+	if e == nil {
+		t.Fatal("Wrap(nil) returned a nil *Error")
+	}
+	var err error = e
+	if err.Error() != "bad" || errors.Unwrap(err) != nil {
 		t.Fatalf("Wrap(nil) = %v", err)
 	}
 }
@@ -88,10 +92,38 @@ func TestFormatPlusV(t *testing.T) {
 
 func TestKindString(t *testing.T) {
 	want := map[Kind]string{Internal: "internal", Usage: "usage", NotFound: "not_found", Conflict: "conflict",
-		Unavailable: "unavailable", Interrupted: "interrupted", Kind(42): "kind(42)", Kind(-1): "kind(-1)"}
+		Unavailable: "unavailable", Interrupted: "interrupted", Kind(42): "kind(42)", Kind(6): "kind(6)", Kind(-1): "kind(-1)"}
 	for k, s := range want {
 		if k.String() != s {
 			t.Errorf("Kind(%d).String() = %q, want %q", int(k), k.String(), s)
 		}
+	}
+}
+
+// TestExactRendering pins Chain and %+v byte for byte: no ctx braces when there is no ctx, one key
+// rendered, "caused by" only between lines, and no stack section when there is no stack.
+func TestExactRendering(t *testing.T) {
+	inner := &Error{Kind: Usage, Op: "a", Msg: "inner"}
+	outer := &Error{Kind: NotFound, Op: "b", Msg: "outer", Err: inner}
+	outer.With("k", 1)
+	if got := Chain(outer); len(got) != 2 || got[0] != "b [not_found] outer {k=1}" || got[1] != "a [usage] inner" {
+		t.Errorf("Chain = %q", got)
+	}
+	if got := fmt.Sprintf("%+v", outer); got != "b [not_found] outer {k=1}\n  caused by: a [usage] inner" {
+		t.Errorf("%%+v = %q", got)
+	}
+	if got := Chain(nil); got != nil {
+		t.Errorf("Chain(nil) = %q", got)
+	}
+}
+
+func TestWithPairs(t *testing.T) {
+	e := (&Error{}).With("a", 1, "b", "x")
+	if e.Ctx["a"] != 1 || e.Ctx["b"] != "x" || len(e.Ctx) != 2 {
+		t.Errorf("Ctx = %v", e.Ctx)
+	}
+	e.With("c")
+	if v, ok := e.Ctx["c"]; !ok || v != nil {
+		t.Errorf("trailing key = %v, %v", v, ok)
 	}
 }

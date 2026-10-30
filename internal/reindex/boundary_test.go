@@ -11,6 +11,7 @@ import (
 
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/errs"
 )
 
 // writeEntryWithChunks writes data/e.md so that chunk.Split yields exactly n chunks: the summary
@@ -87,15 +88,18 @@ func (b brokenEmbedder) Embed(ctx context.Context, texts []string) ([][]float32,
 // reachable with errors.Is (the CLI's exit-2 decision), and writes nothing for the entry; a wrong
 // vector count is an error too, never a partial write.
 func TestEmbedFailureAbortsRun(t *testing.T) {
-	unavailable := fmt.Errorf("model missing: %w", embed.ErrUnavailable)
+	// local's model failures carry the Unavailable kind (the CLI's exit-2 decision) and keep the
+	// sentinel as the inner marker.
+	unavailable := errs.Wrap(embed.ErrUnavailable, errs.Unavailable, "test", "model missing")
 	for _, tc := range []struct {
-		name   string
-		err    error
-		wantIs error // nil: only require an error
+		name     string
+		err      error
+		wantIs   error     // nil: only require an error
+		wantKind errs.Kind // for an error with wantIs
 	}{
-		{"unavailable: wrapped, Is ErrUnavailable", unavailable, embed.ErrUnavailable},
-		{"other error: wrapped", errors.New("boom"), nil},
-		{"one vector short: error", nil, nil},
+		{"unavailable: kind Unavailable, Is ErrUnavailable", unavailable, embed.ErrUnavailable, errs.Unavailable},
+		{"other error: wrapped", errors.New("boom"), nil, 0},
+		{"one vector short: error", nil, nil, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -106,8 +110,8 @@ func TestEmbedFailureAbortsRun(t *testing.T) {
 			if err == nil {
 				t.Fatal("want an error")
 			}
-			if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
-				t.Fatalf("err = %v, want one wrapping %v", err, tc.wantIs)
+			if tc.wantIs != nil && (!errors.Is(err, tc.wantIs) || errs.KindOf(err) != tc.wantKind) {
+				t.Fatalf("err = %v (kind %v), want one wrapping %v of kind %v", err, errs.KindOf(err), tc.wantIs, tc.wantKind)
 			}
 			if tc.err != nil && !errors.Is(err, tc.err) {
 				t.Fatalf("err = %v, chain lost the embedder's error", err)

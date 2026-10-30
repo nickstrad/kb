@@ -2,8 +2,9 @@
 // (the root command, root and database paths, deps) and report.go for errors and exit codes.
 //
 // The tree is rebuilt on every Execute call, so no command state survives a run and tests can
-// invoke the CLI repeatedly. The only package-level variables are Version, stamped once at start,
-// and defaultRoot, stamped at build time. Everything a test may replace arrives through deps.
+// invoke the CLI repeatedly. The only package-level variable is Version, stamped once at start.
+// Everything a test may replace, including the working directory and home that root discovery
+// reads, arrives through deps.
 //
 // Exit codes (the CLI contract): 0 success, ExitUsage (1) for a well-formed failure, ExitEmbedder
 // (2) when the embedder is unavailable, ExitInternal (3) for a bug, which is logged as an
@@ -24,6 +25,7 @@ import (
 	"github.com/nickstrad/kb/internal/embed/local"
 	"github.com/nickstrad/kb/internal/store"
 	"github.com/nickstrad/kb/internal/store/sqlite"
+	"github.com/nickstrad/kb/internal/workspace"
 )
 
 // Exit codes. ExitOK is not returned through an error, it is the zero value of Execute.
@@ -44,6 +46,9 @@ type deps struct {
 	editor        func(ctx context.Context, path string) error
 	// userCacheDir is where the incident log goes when there is no <root>/.kb.
 	userCacheDir func() (string, error)
+	// workspaceEnv supplies the working directory, home, XDG_DATA_HOME and cache base that
+	// workspace.Resolve reads.
+	workspaceEnv func() workspace.Env
 }
 
 // productionDeps are the real implementations.
@@ -54,6 +59,7 @@ func productionDeps() *deps {
 		openStore:     openSQLite,
 		editor:        runEditor,
 		userCacheDir:  os.UserCacheDir,
+		workspaceEnv:  workspace.OSEnv,
 	}
 }
 
@@ -66,34 +72,31 @@ func openSQLite(ctx context.Context, path string, readOnly bool) (store.Store, e
 	return st, nil
 }
 
-// defaultRoot is the knowledge repository kb works on when KB_ROOT is unset. scripts/install.sh
-// stamps it from $KB_DEFAULT_ROOT with -ldflags "-X .../internal/cli.defaultRoot=<dir>"; an
-// unstamped build falls back to ~/knowledge.
-var defaultRoot = ""
-
-// DefaultRoot returns the stamped default repository, else ~/knowledge.
-func DefaultRoot() string {
-	if defaultRoot != "" {
-		return defaultRoot
+// workspace resolves the store this command runs on from the root persistent flags (--root,
+// --global), else by walking up from the working directory. The error is already well-formed.
+// Under --debug it says on stderr which store was chosen and how.
+func (d *deps) workspace(cmd *cobra.Command) (*workspace.Workspace, error) {
+	// Get* fails only for an undefined flag; both are root persistent flags, so "" / false is safe.
+	root, _ := cmd.Flags().GetString("root")
+	global, _ := cmd.Flags().GetBool("global")
+	env := d.workspaceEnv()
+	ws, err := workspace.Resolve(root, global, env)
+	if err == nil && debugFlag(cmd) {
+		how := "discovered from " + env.Cwd
+		switch {
+		case root != "":
+			how = "--root"
+		case global:
+			how = "--global"
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "%s: store %s (%s)\n", cmd.CommandPath(), ws.Root, how)
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, "knowledge")
-	}
-	return "knowledge"
+	return ws, err
 }
 
 // Version is printed by `kb version` and recorded with every logged search; main sets it from
 // ResolveVersion.
 var Version = "dev"
-
-// Root returns the knowledge repository root: $KB_ROOT when it is set and non-empty, else
-// DefaultRoot.
-func Root() string {
-	if r := os.Getenv("KB_ROOT"); r != "" {
-		return r
-	}
-	return DefaultRoot()
-}
 
 // DBPath is the database file for a repo root: <root>/.kb/kb.sqlite. It only computes the path;
 // a command that is about to create the database calls EnsureDBDir first.
@@ -185,8 +188,11 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		Short: "Search and maintain the knowledge repository",
 		Long: "kb is a knowledge store for agents and people: Markdown entries, indexed for hybrid\n" +
 			"full-text and vector search. kb help is the reference for using it.\n\n" +
-			"Store: the knowledge repository is $KB_ROOT, else " + DefaultRoot() + ". Entries live\n" +
-			"under data/ there; the index and search log live in .kb/kb.sqlite.\n\n" +
+			"Store: kb works on the nearest directory at or above the current one that has .kb/\n" +
+			"(.kb/config.toml, or the older .kb/kb.sqlite). --root DIR names a store explicitly\n" +
+			"and --global uses the machine-wide store ($XDG_DATA_HOME/kb, else ~/.local/share/kb);\n" +
+			"add and reindex create .kb/ there when it is missing. Entries live under data/; the\n" +
+			"index and search log live in .kb/kb.sqlite.\n\n" +
 			"Use it in two steps:\n" +
 			"  kb search \"<query>\" --caller claude   ranked hits, opening with \"search N · M hits\"\n" +
 			"  kb show <path>                        read a hit's entry\n" +
@@ -203,6 +209,9 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	}
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
+	cmd.PersistentFlags().String("root", "", "use the store in DIR instead of discovering one from the current directory")
+	cmd.PersistentFlags().Bool("global", false, "use the machine-wide store ($XDG_DATA_HOME/kb, else ~/.local/share/kb)")
+	cmd.MarkFlagsMutuallyExclusive("root", "global")
 	cmd.PersistentFlags().Bool("debug", false, "print extra detail on stderr: the full error chain, and best-effort steps that failed quietly")
 	cmd.PersistentFlags().String("embedder", embedderLocal, "local (in-process model) or none (full-text search only)")
 	cmd.PersistentFlags().String("embed-model", local.DefaultModel, "embedding model for --embedder local (see kb model list)")

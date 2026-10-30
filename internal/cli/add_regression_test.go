@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/errs"
 )
 
 type unavailableAddEmbedder struct{}
@@ -17,7 +18,8 @@ type unavailableAddEmbedder struct{}
 func (unavailableAddEmbedder) Model() string { return "fake-add-test" }
 func (unavailableAddEmbedder) Dim() int      { return testDim768 }
 func (unavailableAddEmbedder) Embed(context.Context, []string) ([][]float32, error) {
-	return nil, embed.ErrUnavailable
+	// As local does: the sentinel as the inner marker, with the Unavailable kind.
+	return nil, errs.Wrap(embed.ErrUnavailable, errs.Unavailable, "fake.Embed", "model missing")
 }
 
 func TestAddRejectsMissingFrontMatterBeforeCopy(t *testing.T) {
@@ -42,7 +44,7 @@ func TestAddRejectsMissingFrontMatterBeforeCopy(t *testing.T) {
 			if _, err := os.Stat(dest); !os.IsNotExist(err) {
 				t.Fatalf("destination exists: %v", err)
 			}
-			if _, err := os.Stat(filepath.Join(root, ".kb")); !os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Join(root, ".kb", "kb.sqlite")); !os.IsNotExist(err) {
 				t.Fatalf("validation created database: %v", err)
 			}
 		})

@@ -27,7 +27,11 @@ func newListCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runList(stdout, Root(), tag)
+			ws, err := d.workspace(cmd)
+			if err != nil {
+				return err
+			}
+			return runList(stdout, ws.Root, tag)
 		},
 	}
 	cmd.Flags().StringVar(&tag, "tag", "", "only entries carrying this tag")

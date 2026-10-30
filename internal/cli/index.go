@@ -19,7 +19,11 @@ func newIndexCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runIndex(stdout, stderr, Root())
+			ws, err := d.workspace(cmd)
+			if err != nil {
+				return err
+			}
+			return runIndex(stdout, stderr, ws.Root)
 		},
 	}
 }

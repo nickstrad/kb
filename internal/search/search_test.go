@@ -467,9 +467,8 @@ var (
 
 // TestSearchEmbedFailureDecision is the TESTING.md §4.3 table for the embedder-failure decision
 // in Search: one row per branch outcome (fallback vs error), per mode, per way an error can mean
-// "unavailable" (a nil Embedder, the embed.ErrUnavailable sentinel, an errs.Unavailable kind).
+// "unavailable" (a nil Embedder, or an errs.Unavailable kind; local wraps the sentinel with that kind).
 func TestSearchEmbedFailureDecision(t *testing.T) {
-	sentinel := fmt.Errorf("dial: %w", embed.ErrUnavailable)
 	kinded := errs.New(errs.Unavailable, "test", "service down")
 	for _, tc := range []struct {
 		name     string
@@ -482,8 +481,6 @@ func TestSearchEmbedFailureDecision(t *testing.T) {
 	}{
 		{"nil embedder, hybrid: fallback", true, nil, ModeHybrid, ModeFTSFallback, embed.ErrUnavailable, 0},
 		{"nil embedder, vec: error", true, nil, ModeVec, "", embed.ErrUnavailable, errs.Unavailable},
-		{"sentinel, hybrid: fallback", false, sentinel, ModeHybrid, ModeFTSFallback, embed.ErrUnavailable, 0},
-		{"sentinel, vec: error", false, sentinel, ModeVec, "", embed.ErrUnavailable, errs.Unavailable},
 		{"unavailable kind, hybrid: fallback", false, kinded, ModeHybrid, ModeFTSFallback, kinded, 0},
 		{"unavailable kind, vec: error", false, kinded, ModeVec, "", kinded, errs.Unavailable},
 		{"other error, hybrid: error", false, errBoom, ModeHybrid, "", errBoom, errs.Internal},

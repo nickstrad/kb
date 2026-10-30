@@ -47,7 +47,7 @@ const vecTableSQL = `CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
 // chunks_vec. One transaction: a failure records nothing.
 func (s *Store) EnsureEmbedMeta(ctx context.Context, m store.EmbedMeta) error {
 	if err := s.ensureEmbedMeta(ctx, m); err != nil {
-		return wrap(err, s.path, "sqlite.EnsureEmbedMeta", "could not record the embedding model %s", m.Model)
+		return wrap(ctx, err, s.path, "sqlite.EnsureEmbedMeta", "could not record the embedding model %s", m.Model)
 	}
 	return nil
 }
@@ -104,7 +104,7 @@ func (s *Store) ensureEmbedMeta(ctx context.Context, m store.EmbedMeta) error {
 func (s *Store) EmbedMeta(ctx context.Context) (store.EmbedMeta, bool, error) {
 	m, ok, err := embedMeta(ctx, s.db)
 	if err != nil {
-		return store.EmbedMeta{}, false, wrap(err, s.path, "sqlite.EmbedMeta", "could not read the embedding model record")
+		return store.EmbedMeta{}, false, wrap(ctx, err, s.path, "sqlite.EmbedMeta", "could not read the embedding model record")
 	}
 	return m, ok, nil
 }
@@ -126,7 +126,7 @@ func embedMeta(ctx context.Context, q queryRower) (store.EmbedMeta, bool, error)
 func (s *Store) HasVectors(ctx context.Context) (bool, error) {
 	ok, err := vecTableExists(ctx, s.db)
 	if err != nil {
-		return false, wrap(err, s.path, "sqlite.HasVectors", "could not check for the vector index")
+		return false, wrap(ctx, err, s.path, "sqlite.HasVectors", "could not check for the vector index")
 	}
 	return ok, nil
 }
@@ -152,7 +152,7 @@ func vecTableExists(ctx context.Context, q queryRower) (bool, error) {
 // search log tables are left alone: they are the only data here not rebuildable from Markdown.
 func (s *Store) ResetIndex(ctx context.Context) error {
 	if err := s.resetIndex(ctx); err != nil {
-		return wrap(err, s.path, "sqlite.ResetIndex", "could not reset the index")
+		return wrap(ctx, err, s.path, "sqlite.ResetIndex", "could not reset the index")
 	}
 	return nil
 }
@@ -187,7 +187,7 @@ const entryColumns = `id, path, kind, title, summary, tags, updated, verified, b
 func (s *Store) Entry(ctx context.Context, path string) (*store.EntryRow, error) {
 	e, err := getEntry(ctx, s.db, path)
 	if err != nil {
-		return nil, wrap(err, s.path, "sqlite.Entry", "could not read entry %s", path)
+		return nil, wrap(ctx, err, s.path, "sqlite.Entry", "could not read entry %s", path)
 	}
 	return e, nil
 }
@@ -196,7 +196,7 @@ func (s *Store) Entry(ctx context.Context, path string) (*store.EntryRow, error)
 func (s *Store) Entries(ctx context.Context) ([]store.EntryRow, error) {
 	out, err := s.entries(ctx)
 	if err != nil {
-		return nil, wrap(err, s.path, "sqlite.Entries", "could not list the indexed entries")
+		return nil, wrap(ctx, err, s.path, "sqlite.Entries", "could not list the indexed entries")
 	}
 	return out, nil
 }
@@ -222,7 +222,7 @@ func (s *Store) entries(ctx context.Context) ([]store.EntryRow, error) {
 func (s *Store) Chunks(ctx context.Context, entryID int64) ([]store.ChunkRow, error) {
 	out, err := s.chunks(ctx, entryID)
 	if err != nil {
-		return nil, wrap(err, s.path, "sqlite.Chunks", "could not read the chunks of entry %d", entryID)
+		return nil, wrap(ctx, err, s.path, "sqlite.Chunks", "could not read the chunks of entry %d", entryID)
 	}
 	return out, nil
 }
@@ -252,7 +252,7 @@ func (s *Store) chunks(ctx context.Context, entryID int64) ([]store.ChunkRow, er
 func (s *Store) Embeddings(ctx context.Context, entryID int64) (map[string][]float32, error) {
 	out, err := s.embeddings(ctx, entryID)
 	if err != nil {
-		return nil, wrap(err, s.path, "sqlite.Embeddings", "could not read the embeddings of entry %d", entryID)
+		return nil, wrap(ctx, err, s.path, "sqlite.Embeddings", "could not read the embeddings of entry %d", entryID)
 	}
 	return out, nil
 }
@@ -294,7 +294,7 @@ func (s *Store) embeddings(ctx context.Context, entryID int64) (map[string][]flo
 func (s *Store) ReplaceEntry(ctx context.Context, e store.EntryInput, chunks []store.ChunkInput) (int64, error) {
 	id, err := s.replaceEntry(ctx, e, chunks)
 	if err != nil {
-		return 0, wrap(err, s.path, "sqlite.ReplaceEntry", "could not index %s", e.Path)
+		return 0, wrap(ctx, err, s.path, "sqlite.ReplaceEntry", "could not index %s", e.Path)
 	}
 	return id, nil
 }
@@ -466,7 +466,7 @@ func assertRowSets(ctx context.Context, tx *sql.Tx, entryID int64, n, dim int) {
 // `kb rm` deletes the file first and must still succeed on a stale index.
 func (s *Store) DeleteEntry(ctx context.Context, path string) error {
 	if err := s.deleteEntry(ctx, path); err != nil {
-		return wrap(err, s.path, "sqlite.DeleteEntry", "could not remove %s from the index", path)
+		return wrap(ctx, err, s.path, "sqlite.DeleteEntry", "could not remove %s from the index", path)
 	}
 	return nil
 }

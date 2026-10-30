@@ -68,7 +68,7 @@ func TestScenarioNamesUnique(t *testing.T) {
 func TestEnvHasNoNetworkAndTempHome(t *testing.T) {
 	h := &H{dir: "/x", root: "/x/root", home: "/x/home"}
 	env := strings.Join(h.env(), "\n")
-	for _, want := range []string{"HOME=/x/home", "KB_ROOT=/x/root", "HTTPS_PROXY=" + deadProxy, "REMBED_CACHE=/x/home/"} {
+	for _, want := range []string{"HOME=/x/home", "HTTPS_PROXY=" + deadProxy, "REMBED_CACHE=/x/home/"} {
 		if !strings.Contains(env, want) {
 			t.Errorf("env lacks %q", want)
 		}

@@ -30,9 +30,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/entry"
-	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/reindex"
 	"github.com/nickstrad/kb/internal/store"
 )
@@ -91,7 +89,11 @@ func newAddCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 
 // runAddFile implements `kb add <file.md>`.
 func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg string) (retErr error) {
-	root := Root()
+	ws, err := d.workspace(cmd)
+	if err != nil {
+		return err
+	}
+	root := ws.Root
 	basename := filepath.Base(filepath.Clean(srcArg))
 
 	if !fileNameRe.MatchString(basename) {
@@ -148,7 +150,7 @@ func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg st
 	// to roll back (exit 2, same as the reindex path).
 	if p, ok := embedder.(pinger); ok {
 		if err := p.Ping(cmd.Context()); err != nil {
-			return errs.Wrap(err, unavailableOr(err), "cli.add", "embedder not usable, nothing copied: %v", err)
+			return embedderErr("embedder not usable, nothing copied: %v", err)
 		}
 	}
 
@@ -208,7 +210,11 @@ func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg st
 
 // runAddDir implements `kb add --dir <topic>/`.
 func runAddDir(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, argPath string) (retErr error) {
-	root := Root()
+	ws, err := d.workspace(cmd)
+	if err != nil {
+		return err
+	}
+	root := ws.Root
 	srcDir := filepath.Clean(argPath)
 	name := filepath.Base(srcDir)
 
@@ -296,7 +302,7 @@ func runAddDir(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, argPath st
 	// to roll back (exit 2, same as the reindex path).
 	if p, ok := embedder.(pinger); ok {
 		if err := p.Ping(cmd.Context()); err != nil {
-			return errs.Wrap(err, unavailableOr(err), "cli.add", "embedder not usable, nothing copied: %v", err)
+			return embedderErr("embedder not usable, nothing copied: %v", err)
 		}
 	}
 
@@ -559,7 +565,7 @@ func scanSecrets(content []byte) []secretHit {
 // name so the reason is actionable without opening the file in an editor first.
 func secretsErr(path string, hits []secretHit) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "kb add: %s must not contain text that looks like a secret:\n", path)
+	fmt.Fprintf(&b, "%s must not contain text that looks like a secret:\n", path) // report adds "kb add: "
 	for _, h := range hits {
 		fmt.Fprintf(&b, "  line %d: matches pattern %q\n", h.line, h.name)
 	}
@@ -606,13 +612,4 @@ func rollbackAdded(ctx context.Context, st store.Index, rel, dest string, stderr
 	if err := st.DeleteEntry(context.WithoutCancel(ctx), rel); err != nil {
 		fmt.Fprintf(stderr, "kb add: cleanup index failed: %s; run kb reindex --all\n", err)
 	}
-}
-
-// unavailableOr keeps an embedder failure's kind, treating the embed.ErrUnavailable sentinel as
-// Unavailable (exit 2).
-func unavailableOr(err error) errs.Kind {
-	if errors.Is(err, embed.ErrUnavailable) {
-		return errs.Unavailable
-	}
-	return errs.KindOf(err)
 }

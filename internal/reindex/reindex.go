@@ -82,10 +82,10 @@ func (s Summary) String() string {
 // demand, so a reindex on a fresh root (possibly racing that add) has simply nothing to scan.
 //
 // Pruning and concurrent writers: another kb process may add an entry after this run's Discover.
-// That entry's row is then in ListEntries but not in the first discovery, and pruning on the
+// That entry's row is then in Entries but not in the first discovery, and pruning on the
 // first discovery alone would delete it. Every writer (kb add, kb edit) puts the file on disk
-// before it commits the row, so a row that ListEntries returns had its file on disk before
-// ListEntries ran. All therefore discovers again after ListEntries and prunes only the rows that
+// before it commits the row, so a row that Entries returns had its file on disk before
+// Entries ran. All therefore discovers again after Entries and prunes only the rows that
 // neither discovery found: a row whose file exists at prune time is never removed.
 func All(ctx context.Context, o Options) (Summary, error) {
 	sum, err := all(ctx, o)
@@ -127,7 +127,7 @@ func all(ctx context.Context, o Options) (Summary, error) {
 	if len(gone) == 0 {
 		return sum, nil
 	}
-	// Re-check on disk now, after ListEntries: see the doc comment.
+	// Re-check on disk now, after Entries: see the doc comment.
 	now, err := discover(o.Root)
 	if err != nil {
 		return sum, err
@@ -296,11 +296,7 @@ func reindexOne(ctx context.Context, o Options, e entry.Entry, sum *Summary) err
 		}
 		vecs, err := o.Embedder.Embed(ctx, pendingText[start:end])
 		if err != nil {
-			k := errs.KindOf(err)
-			if errors.Is(err, embed.ErrUnavailable) {
-				k = errs.Unavailable
-			}
-			return errs.Wrap(err, k, "reindex.One", "reindex %s: embed: %v", e.Path, err).With("path", e.Path)
+			return errs.Wrap(err, errs.KindOf(err), "reindex.One", "reindex %s: embed: %v", e.Path, err).With("path", e.Path)
 		}
 		sum.EmbedCalls++
 		if len(vecs) != end-start {

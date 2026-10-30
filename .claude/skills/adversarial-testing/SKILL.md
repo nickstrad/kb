@@ -45,12 +45,12 @@ Then append each gap to `.agent/queue/harness-improvements.md` as `H<n>` (re-rea
 A survivor or failure is a **lead**. Read the code before you report it.
 
 - **Survivor:** decide which it is: a missing assertion on a result, an untested error path, a missing boundary row, a weak fuzz property or missing seed, an equivalent mutant, or a symbol-relative constant (ADVERSARIAL_TESTING.md §3.1 table). Equivalent mutants are listed in the report as such, not filed.
-- **Harness FAIL:** a product bug, or a stale expectation in the scenario? Reproduce by hand with `-keep` and the binary at `<sandbox>/_adv/kb` (use the same env: `HOME`, `KB_ROOT` in the run dir). Find the root-cause layer (TESTING.md §10). The suggested test goes there, not in the CLI.
+- **Harness FAIL:** a product bug, or a stale expectation in the scenario? Reproduce by hand with `-keep` and the binary at `<sandbox>/_adv/kb` (use the same env: `HOME` in the run dir, and `--root <run>/root`). Find the root-cause layer (TESTING.md §10). The suggested test goes there, not in the CLI.
 - **Harness note (`·`):** report it only if it needs an owner decision (a DEFAULTS.md candidate).
 
 ## 5. Severity
 
-- **High:** data loss or corruption; a write to a file outside the root; a panic or an exit code outside 0/1/2; a download or network use; concurrent kb processes failing; a survivor in a §4.2 decision-heavy function.
+- **High:** data loss or corruption; a write to a file outside the root; a panic, an internal error (exit 3) or an exit code outside 0/1/2/3; a download or network use; concurrent kb processes failing; a survivor in a §4.2 decision-heavy function.
 - **Medium:** a survivor on a §2.1 boundary or on an error path the user can trigger; a contract the harness shows broken (wrong exit code, an unfriendly error); a fuzz property that a mutant survives.
 - **Low:** a survivor on a message or rounding detail; an untested defensive branch; an unfriendly but correct message.
 

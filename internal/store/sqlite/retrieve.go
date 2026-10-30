@@ -45,19 +45,19 @@ func (s *Store) FTS(ctx context.Context, q store.FTSQuery) (store.FTSResult, err
 	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return store.FTSResult{}, wrap(fmt.Errorf("match %q: %w", match, err), s.path, "sqlite.FTS", "full-text search failed")
+		return store.FTSResult{}, wrap(ctx, fmt.Errorf("match %q: %w", match, err), s.path, "sqlite.FTS", "full-text search failed")
 	}
 	defer rows.Close()
 	res := store.FTSResult{Match: match}
 	for rows.Next() {
 		var r store.FTSRow
 		if err := rows.Scan(&r.ChunkID, &r.Score); err != nil {
-			return store.FTSResult{}, wrap(err, s.path, "sqlite.FTS", "full-text search failed")
+			return store.FTSResult{}, wrap(ctx, err, s.path, "sqlite.FTS", "full-text search failed")
 		}
 		res.Rows = append(res.Rows, r)
 	}
 	if err := rows.Err(); err != nil {
-		return store.FTSResult{}, wrap(err, s.path, "sqlite.FTS", "full-text search failed")
+		return store.FTSResult{}, wrap(ctx, err, s.path, "sqlite.FTS", "full-text search failed")
 	}
 	return res, nil
 }
@@ -72,7 +72,7 @@ func (s *Store) KNN(ctx context.Context, q store.KNNQuery) ([]store.VecRow, erro
 	}
 	out, err := s.knn(ctx, q)
 	if err != nil {
-		return nil, wrap(err, s.path, "sqlite.KNN", "vector search failed")
+		return nil, wrap(ctx, err, s.path, "sqlite.KNN", "vector search failed")
 	}
 	if assert.Enabled {
 		assert.Post(len(out) <= q.K, "KNN: %d rows > k=%d", len(out), q.K)
@@ -173,19 +173,19 @@ func (s *Store) ChunkMeta(ctx context.Context, ids []int64) (map[int64]store.Chu
 		FROM chunks c JOIN entries e ON e.id = c.entry_id
 		WHERE c.id IN (`+placeholders(len(args))+`)`, args...)
 	if err != nil {
-		return nil, wrap(err, s.path, "sqlite.ChunkMeta", "could not read the matching chunks")
+		return nil, wrap(ctx, err, s.path, "sqlite.ChunkMeta", "could not read the matching chunks")
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id int64
 		var m store.ChunkMeta
 		if err := rows.Scan(&id, &m.EntryPath, &m.Heading, &m.Text); err != nil {
-			return nil, wrap(err, s.path, "sqlite.ChunkMeta", "could not read the matching chunks")
+			return nil, wrap(ctx, err, s.path, "sqlite.ChunkMeta", "could not read the matching chunks")
 		}
 		out[id] = m
 	}
 	if err := rows.Err(); err != nil {
-		return nil, wrap(err, s.path, "sqlite.ChunkMeta", "could not read the matching chunks")
+		return nil, wrap(ctx, err, s.path, "sqlite.ChunkMeta", "could not read the matching chunks")
 	}
 	return out, nil
 }

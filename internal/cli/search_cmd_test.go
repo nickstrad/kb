@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/nickstrad/kb/internal/store/sqlite"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,7 +17,10 @@ import (
 
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/search"
 	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 )
 
 // newSearchTestRepo builds a temp repo root with a populated database: one entry, two chunks,
@@ -103,7 +106,7 @@ func runKB(t *testing.T, args []string) (stdout, stderr string, exit int) {
 
 func TestSearchFTSMode(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts"})
 	if exit != 0 {
@@ -129,7 +132,7 @@ func TestSearchFTSMode(t *testing.T) {
 
 func TestSearchJSONMode(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts", "--json"})
 	if exit != 0 {
@@ -189,7 +192,7 @@ func TestSearchHybridEmbedderUnavailable(t *testing.T) {
 	// embed_meta matches --embed-model, so the mismatch check passes and the failure comes from
 	// the model not being downloaded (TestMain's cache is empty).
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid", "--embed-model", testModel768})
 	if exit != 2 {
@@ -205,7 +208,7 @@ func TestSearchHybridEmbedderUnavailable(t *testing.T) {
 
 func TestSearchVecEmbedderUnavailable(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "vec", "--embed-model", testModel768})
 	if exit != 2 {
@@ -218,7 +221,7 @@ func TestSearchVecEmbedderUnavailable(t *testing.T) {
 
 func TestSearchNoDatabase(t *testing.T) {
 	root := t.TempDir() // no .kb/kb.sqlite
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	_, stderr, exit := runKB(t, []string{"search", "widget"})
 	if exit != 1 {
@@ -227,14 +230,14 @@ func TestSearchNoDatabase(t *testing.T) {
 	if !strings.Contains(stderr, "kb reindex --all") {
 		t.Errorf("stderr missing reindex hint: %s", stderr)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".kb")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, ".kb", "kb.sqlite")); !os.IsNotExist(err) {
 		t.Errorf("search without a database created .kb: stat error = %v", err)
 	}
 }
 
 func TestSearchTagFilterAndZeroHits(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts", "--tag", "test"})
 	if exit != 0 {
@@ -277,7 +280,7 @@ func TestSearchTagFilterAndZeroHits(t *testing.T) {
 
 func TestSearchEmbedMetaMismatch(t *testing.T) {
 	root := newSearchTestRepo(t, "a-different-model", testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	_, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid"})
 	if exit != 1 {
@@ -302,7 +305,7 @@ func TestSearchCallerPrecedence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := newSearchTestRepo(t, testModel768, testDim768)
-			t.Setenv("KB_ROOT", root)
+			useRoot(t, root)
 			t.Setenv("KB_CALLER", tt.env)
 
 			args := append([]string{"search", "widget", "--mode", "fts"}, tt.args...)
@@ -319,7 +322,7 @@ func TestSearchCallerPrecedence(t *testing.T) {
 
 func TestSearchLogFailure(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 	disableSearchLog(t, root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts"})
@@ -354,7 +357,7 @@ func TestSearchLogFailure(t *testing.T) {
 
 func TestSearchFallbackLogFailurePrintsBothWarnings(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 	disableSearchLog(t, root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid", "--embed-model", testModel768})
@@ -399,7 +402,7 @@ func disableSearchLog(t *testing.T, root string) {
 
 func TestSearchBadMode(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	_, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "bogus"})
 	if exit != 1 {
@@ -412,7 +415,7 @@ func TestSearchBadMode(t *testing.T) {
 
 func TestSearchErrorHasOneSearchPrefix(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	_, stderr, exit := runKB(t, []string{"search", " ", "--mode", "fts"})
 	if exit != 1 {
@@ -435,7 +438,7 @@ func TestSearchHelpRecommendsJSON(t *testing.T) {
 
 func TestSearchKClampsToOne(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts", "-k", "0"})
 	if exit != 0 {
@@ -452,7 +455,7 @@ func TestSearchKClampsToOne(t *testing.T) {
 
 func TestSearchMultiWordQueryJoinsArgs(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "subsystem", "--mode", "fts"})
 	if exit != 0 {
@@ -519,4 +522,29 @@ func TestTrimText(t *testing.T) {
 			t.Errorf("trimText(\"\", 600) = %q, want \"\"", got)
 		}
 	})
+}
+
+// TestPrintResultsJSONEncodeFailureIsInternal: a NaN score (a model can produce one) makes the
+// JSON encode fail. printResults returns it as an Internal error and writes nothing, rather than
+// panicking.
+func TestPrintResultsJSONEncodeFailureIsInternal(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		score float64
+	}{
+		{"NaN", math.NaN()},
+		{"+Inf", math.Inf(1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			res := &search.Result{Query: "q", Mode: search.ModeFTS, Hits: []search.Hit{{RRFScore: tc.score}}}
+			err := printResults(&buf, res, true, true)
+			if errs.KindOf(err) != errs.Internal {
+				t.Fatalf("printResults = %v, want an Internal error", err)
+			}
+			if buf.Len() != 0 {
+				t.Fatalf("stdout = %q, want nothing written", buf.String())
+			}
+		})
+	}
 }

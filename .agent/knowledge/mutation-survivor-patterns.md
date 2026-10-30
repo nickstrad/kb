@@ -17,7 +17,24 @@ symbol-relative. For a `boundary` survivor, check whether both branches give the
 that point. If they do, it is equivalent. Otherwise it is a missing row. Pair `boundaries` (are
 rows there?) with `mutate -ops const,boundary` (do they discriminate?).
 
-**Seen in:** internal/chunk/chunk.go:36,101,284; internal/chunk/boundary_test.go · 2026-10-29
+**More equivalent shapes (W3, 2026-10-30).** (1) A `>`→`>=` or `<`→`<=` inside a branch already
+guarded by `a != b` (`search.fusedBefore`): the two differ only on equality, which the guard
+excludes. (2) The sentinel values in an error return (`return 0, err`, `return false, err`) and the
+format arguments of an error message (`"rank %d", i+1`): about a third of the store/sqlite
+survivors on the 1.2 diff (H26). (3) An `err-check` whose skipped failure makes the very next
+call fail anyway (`MkdirAll` before `OpenFile`). (4) The `if assert.Enabled` negation: behaviour
+must not change with assertions off. Real gaps found the same run: tie-break levels of a total
+order reachable only by calling the comparator directly, and rank/flag columns written to the
+search log that no test read back.
+
+(5) Hand-written scanners (links.go, W4): a run counter that starts at 0 → 1 when the first
+character is already known to match; a `-1` "not found" sentinel → `-2` or `end < 0` → `<= 0`;
+a resume index `i += 2+j+2` → `+1` that only re-reads a `]`. All 30 links survivors after the W4
+pass are of these kinds. The real gaps there were adjacent constructs (`[a](a.md)[b](b.md)`,
+`[[a]][b](b.md)`, two code spans around a link) and edges of character ranges (`a:`, `z:`,
+`A:`, `Z:`, `x0:`, `x9:` as schemes): add rows with constructs packed side by side.
+
+**Seen in:** internal/chunk/chunk.go:36,101,284; internal/chunk/boundary_test.go · 2026-10-29; internal/search/search.go (fusedBefore), internal/store/sqlite/log.go · 2026-10-30; internal/links/links.go, internal/entry/entry.go (ParseFrontMatter) · 2026-10-30 W4 pass
 
 **Tool caveat (fixed 2026-10-29).** Before the W2 pass, `mutate -diff` applied a different mutant
 from the one it reported (the sandbox re-enumerated without the line filter), so `-diff` results

@@ -30,7 +30,11 @@ func newShowCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runShow(cmd.Context(), d, stdout, stderr, Root(), args[0], chunksFlag, !noLog, debugFlag(cmd))
+			ws, err := d.workspace(cmd)
+			if err != nil {
+				return err
+			}
+			return runShow(cmd.Context(), d, stdout, stderr, ws.Root, args[0], chunksFlag, !noLog, debugFlag(cmd))
 		},
 	}
 	cmd.Flags().BoolVar(&chunksFlag, "chunks", false, "print the stored chunks instead of the file")

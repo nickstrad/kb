@@ -2,18 +2,19 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nickstrad/kb/internal/entry"
 )
 
 func TestShowChunksReportsDatabaseStatFailure(t *testing.T) {
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "show-topic.md"), validFrontMatter("Show topic", "Stat errors must surface."))
-	if err := os.Mkdir(filepath.Join(root, ".kb"), 0755); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.Symlink("kb.sqlite", DBPath(root)); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +68,7 @@ func TestEditModelMismatchUsesEditPrefix(t *testing.T) {
 	if _, err := st.DB().Exec("UPDATE embed_meta SET model='other'"); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("EDITOR", fakeEditor(t, "Original summary", "Changed summary"))
+	useFakeEditor(t, "Original summary", "Changed summary")
 	_, errOut, code := run(t, "edit", "edit-topic.md")
 	if code != 1 || !strings.HasPrefix(errOut, "kb edit:") || strings.HasPrefix(errOut, "kb reindex:") {
 		t.Fatalf("%d %q", code, errOut)
@@ -78,5 +79,25 @@ func TestEditModelMismatchUsesEditPrefix(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(root, "data", "edit-topic.md"))
 	if err != nil || !strings.Contains(string(b), "Changed summary") {
 		t.Fatalf("editor did not change the file: %v %q", err, b)
+	}
+}
+
+// TestEditValidationErrorKeepsChain: an edit that leaves the front matter invalid returns the
+// entry's *ValidationError in the error chain (so --debug and errors.As see it), as a Usage error.
+func TestEditValidationErrorKeepsChain(t *testing.T) {
+	useFakeEmbedder(t)
+	root := newTempRoot(t)
+	writeFile(t, filepath.Join(root, "data", "edit-bad.md"), validFrontMatter("Edit bad", "Original summary."))
+	orig := testDeps.editor
+	t.Cleanup(func() { testDeps.editor = orig })
+	testDeps.editor = func(_ context.Context, path string) error {
+		// No summary: ParseFrontMatter reports a *ValidationError.
+		return os.WriteFile(path, []byte("---\ntitle: Edit bad\n---\n\nbody\n"), 0o644)
+	}
+	var out, errBuf bytes.Buffer
+	err := runEdit(context.Background(), nil, testDeps, &out, &errBuf, root, "edit-bad.md")
+	var ve *entry.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("runEdit = %v, want the *entry.ValidationError in its chain", err)
 	}
 }

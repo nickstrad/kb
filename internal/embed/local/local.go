@@ -19,6 +19,7 @@ import (
 	"github.com/rostamlabs/rembed"
 
 	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/errs"
 )
 
 // DefaultCacheDir is where models are kept when the caller does not choose: the user cache
@@ -94,7 +95,7 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 	defer release()
 	vecs, err := m.Embed(ctx, texts)
 	if err != nil {
-		return nil, fmt.Errorf("embed with %s: %w", e.spec.ID, err)
+		return nil, errs.Wrap(err, unavailableIfNotCanceled(err), "local.Embed", "embed with %s: %v", e.spec.ID, err).With("model", e.spec.ID)
 	}
 	if err := checkVectors(e.spec, vecs, len(texts)); err != nil {
 		return nil, err
@@ -106,11 +107,11 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 // comes from outside kb's control (the model files), so a mismatch is an error, not an assertion.
 func checkVectors(spec Spec, vecs [][]float32, n int) error {
 	if len(vecs) != n {
-		return fmt.Errorf("embed with %s: got %d vectors for %d texts", spec.ID, len(vecs), n)
+		return errs.New(errs.Conflict, "local.Embed", "embed with %s: got %d vectors for %d texts", spec.ID, len(vecs), n).With("model", spec.ID)
 	}
 	for i, v := range vecs {
 		if len(v) != spec.Dim {
-			return fmt.Errorf("embed with %s: vector %d has %d dimensions, the model table says %d", spec.ID, i, len(v), spec.Dim)
+			return errs.New(errs.Conflict, "local.Embed", "embed with %s: vector %d has %d dimensions, the model table says %d", spec.ID, i, len(v), spec.Dim).With("model", spec.ID)
 		}
 	}
 	return nil
@@ -172,11 +173,13 @@ func (e *Embedder) ensureLoaded() error {
 	}
 	dir := e.ModelDir()
 	if !cached(dir) {
-		return fmt.Errorf("model %s is not downloaded (run `kb model pull`): %w", e.spec.ID, embed.ErrUnavailable)
+		return errs.Wrap(embed.ErrUnavailable, errs.Unavailable, "local.Load", "model %s is not downloaded (run `kb model pull`)", e.spec.ID).
+			With("model", e.spec.ID, "dir", dir)
 	}
 	m, err := e.load(dir)
 	if err != nil {
-		return fmt.Errorf("load model %s from %s: %w: %w", e.spec.ID, dir, err, embed.ErrUnavailable)
+		return errs.Wrap(errors.Join(err, embed.ErrUnavailable), errs.Unavailable, "local.Load",
+			"model %s in %s does not load (%v); run `kb model pull` again", e.spec.ID, dir, err).With("model", e.spec.ID, "dir", dir)
 	}
 	// loaded is nil, so no embed holds the read lock (Close waited for them): this does not block.
 	e.mu.Lock()
@@ -193,6 +196,39 @@ func (e *Embedder) ensureLoaded() error {
 // process exits; that is safe because rembed writes each file to a temp name and renames it into
 // place, so the cache never holds a half-written file.
 func Pull(ctx context.Context, spec Spec, cacheDir string) error {
+	return defaultPuller.Pull(ctx, spec, cacheDir)
+}
+
+// puller holds the seam Pull uses. defaultPuller calls rembed; a test builds a puller whose
+// hubLoad is a fake, so the download's cancellation and the dimension check run without the
+// network.
+type puller struct {
+	hubLoad func(ref string, opts ...rembed.Option) (pulledModel, error)
+}
+
+var defaultPuller = puller{hubLoad: loadHub}
+
+// Pull is the package's Pull with p's hubLoad.
+func (p puller) Pull(ctx context.Context, spec Spec, cacheDir string) error {
+	if err := p.pull(ctx, spec, cacheDir); err != nil {
+		return errs.Wrap(err, unavailableIfNotCanceled(err), "local.Pull", "%v", err).With("model", spec.ID, "cache", cacheDir)
+	}
+	return nil
+}
+
+// unavailableIfNotCanceled is the kind of a model failure: Unavailable (exit 2, or an FTS
+// fallback) unless the caller cancelled, which is reported as itself.
+func unavailableIfNotCanceled(err error) errs.Kind {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return errs.KindOf(err)
+	}
+	if k := errs.KindOf(err); k != errs.Internal {
+		return k
+	}
+	return errs.Unavailable
+}
+
+func (p puller) pull(ctx context.Context, spec Spec, cacheDir string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("download model %s: %w", spec.ID, err)
 	}
@@ -210,7 +246,7 @@ func Pull(ctx context.Context, spec Spec, cacheDir string) error {
 	}
 	done := make(chan loaded, 1) // buffered: the goroutine never blocks if Pull has returned
 	go func() {
-		m, err := hubLoad("hf:" + spec.ID)
+		m, err := p.hubLoad("hf:" + spec.ID)
 		done <- loaded{m, err}
 	}()
 	var r loaded
@@ -237,9 +273,8 @@ type pulledModel interface {
 	Close() error
 }
 
-// hubLoad is rembed.Load for Pull, returning the pulledModel interface; a test seam so the
-// download's cancellation and the dimension check can be tested without the network.
-var hubLoad = func(ref string, opts ...rembed.Option) (pulledModel, error) {
+// loadHub is rembed.Load for Pull, returning the pulledModel interface.
+func loadHub(ref string, opts ...rembed.Option) (pulledModel, error) {
 	m, err := rembed.Load(ref, opts...)
 	if err != nil {
 		return nil, err // not `return rembed.Load(...)`: a nil *Embedder would become a non-nil interface

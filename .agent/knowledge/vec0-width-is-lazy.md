@@ -17,4 +17,4 @@ that writes vectors, fails with "no such table" on FTS-only and not-yet-reindexe
 unless the fixture records a real model whose width it must match; check for the table before
 reading it.
 
-**Seen in:** internal/store/entries.go, internal/store/store.go (migration 3), internal/search/search.go · 2026-10-29
+**Seen in:** internal/store/sqlite/index.go, internal/store/sqlite/sqlite.go (migration 3), internal/search/search.go · 2026-10-29

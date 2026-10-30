@@ -22,7 +22,7 @@ Nothing found here is fixed here. A survivor or a failed scenario becomes a test
 ## 2. Safety rules
 
 - **Sandbox only.** Every tool snapshots the working tree with `.agent/scripts/sandbox.sh new <name>` into `.agent/sandbox/<YYYYMMDD-HHMM>-<name>/`. It mutates, builds and runs only there, and removes the sandbox on exit (`-keep`/`-k` keeps it). The protocol is in `.agent/sandbox/README.md`. Other agents are editing the live tree, so never point a mutating tool at it.
-- **Temp roots.** Harness scenarios use `<sandbox>/_adv/runs/<scenario>/{root,home,outside,tmp}` with `HOME`, `KB_ROOT`, `TMPDIR` and `REMBED_CACHE` redirected. Never `~/knowledge`, never the repo.
+- **Temp roots.** Harness scenarios use `<sandbox>/_adv/runs/<scenario>/{root,home,outside,tmp}` with `HOME`, `TMPDIR` and `REMBED_CACHE` redirected. Never `~/knowledge`, never the repo.
 - **No network, no model downloads.** Go runs with `GOPROXY=off`. kb processes get a dead HTTP(S) proxy, plus a garbage cached `config.json` that makes `rembed` fail before fetching anything. Any `*.safetensors` appearing in a scenario's HOME fails that scenario.
 - **Report by default.** Fix only when asked. Small findings go to `.agent/queue/low-findings.md`. Ideas for the tools go to `.agent/queue/harness-improvements.md`.
 
@@ -60,7 +60,7 @@ go run ./.agent/scripts/adversarial/harness                 # all scenarios, ~5 
 go run ./.agent/scripts/adversarial/harness -run 'concurrent|corrupt' -keep
 ```
 
-Scenarios (in `harness/scenarios.go`): `exit-codes`, `fts-roundtrip`, `no-model-search`, `no-model-index`, `hostile-queries`, `markdown-edges`, `front-matter-hostile`, `path-traversal`, `feedback-hostile`, `concurrent-fresh-db`, `sigint-mid-reindex`, `corrupt-db`, `newer-schema`. Every kb run is checked for a Go panic trace, an exit code outside {0,1,2}, a hang over 60 s, and a model download.
+Scenarios (in `harness/scenarios.go`): `exit-codes`, `fts-roundtrip`, `no-model-search`, `no-model-index`, `hostile-queries`, `markdown-edges`, `front-matter-hostile`, `path-traversal`, `feedback-hostile`, `concurrent-fresh-db`, `sigint-mid-reindex`, `corrupt-db`, `newer-schema`, `workspace-discovery` (the only scenario that runs kb without `--root`). Every kb run is checked for a Go panic trace, an exit code outside {0,1,2} (exit 3, an internal error, is a contract code but always a finding under hostile input), a hang over 60 s, and a model download.
 
 **Reading the result.** `PASS`/`FAIL` per scenario. Each `✗` line carries the command, exit code, stderr and stdout as evidence. `·` lines are notes: observed behaviour that is not a contract violation but may need a decision (for example, that a symlink under `data/` is followed). A FAIL is either a product bug or a stale expectation in the scenario. Read the evidence and the code before filing it.
 
@@ -85,7 +85,7 @@ docs/PLAN.md §6.4 rule 4: every wave-end pass states, per item, whether the adv
    | a command, flag or exit code | `exit-codes` (plus a row for the new flag), the command's own scenario |
    | schema or migration | `newer-schema`, `corrupt-db`, `concurrent-fresh-db` |
    | locking or transactions | `concurrent-fresh-db`, `sigint-mid-reindex`, `flaky.sh` |
-   | paths and the root | `path-traversal` |
+   | paths and the root | `path-traversal`; root discovery, `--root`, `--global`: `workspace-discovery` |
    | embedder, model or network | `no-model-search`, `no-model-index` |
    | feedback or the search log | `feedback-hostile` |
 

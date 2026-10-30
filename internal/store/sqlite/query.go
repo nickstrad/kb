@@ -15,7 +15,7 @@ func (s *Store) QueryLog(ctx context.Context, query string, args ...any) (*store
 	t, err := s.queryLog(ctx, query, args...)
 	if err != nil {
 		if errs.KindOf(err) != errs.Internal || classify(err) != errs.Internal {
-			return nil, wrap(err, s.path, "sqlite.QueryLog", "query failed")
+			return nil, wrap(ctx, err, s.path, "sqlite.QueryLog", "query failed")
 		}
 		return nil, errs.Wrap(err, errs.Internal, "sqlite.QueryLog", "%s", err.Error()).With("db", s.path)
 	}

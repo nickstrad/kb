@@ -49,24 +49,44 @@ func newReindexCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 // runReindex opens the store, resolves the embedder, decides Force per the embed_meta check, runs
 // reindex.All or reindex.One, and prints the summary.
 func runReindex(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, all bool, args []string) error {
+	sum, err := reindexRun(cmd, d, stdout, stderr, all, args)
+	if err != nil {
+		// SIGINT/SIGTERM cancel ctx (main's NotifyContext), possibly before anything ran. Every
+		// entry commits on its own, so what finished is indexed and the rest is still stale.
+		if errors.Is(err, context.Canceled) || errs.KindOf(err) == errs.Interrupted {
+			return interruptedErr(err, sum)
+		}
+		return err
+	}
+	fmt.Fprintln(stdout, sum.String())
+	if sum.Failed > 0 {
+		return usageErr("%d of %d entries failed; see warnings above", sum.Failed, sum.Scanned)
+	}
+	return nil
+}
+
+func reindexRun(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, all bool, args []string) (reindex.Summary, error) {
 	ctx := cmd.Context()
-	root := Root()
+	ws, err := d.workspace(cmd)
+	if err != nil {
+		return reindex.Summary{}, err
+	}
+	root := ws.Root
 	st, err := d.openStoreForWrite(ctx, root)
 	if err != nil {
-		return err
+		return reindex.Summary{}, err
 	}
 	defer st.Close()
 
 	// The default per-call budget already gives a 16-text batch far more time than it takes.
 	embedder, err := d.newEmbedder(cmd)
 	if err != nil {
-		return err
+		return reindex.Summary{}, err
 	}
 	force, err := ensureEmbedMetaForReindex(ctx, st, embedder, all, stderr)
 	if err != nil {
-		return err
+		return reindex.Summary{}, err
 	}
-
 	opts := reindex.Options{
 		Root:      root,
 		Store:     st,
@@ -76,31 +96,14 @@ func runReindex(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, all bool,
 		Stderr:    stderr,
 		Force:     force,
 	}
-	var sum reindex.Summary
 	if all {
-		sum, err = reindex.All(ctx, opts)
-	} else {
-		var e entry.Entry
-		e, err = entry.Resolve(root, args[0])
-		if err != nil {
-			return usageErr("%v", err)
-		}
-		sum, err = reindex.One(ctx, opts, e)
+		return reindex.All(ctx, opts)
 	}
+	e, err := entry.Resolve(root, args[0])
 	if err != nil {
-		// SIGINT/SIGTERM cancel ctx (main's NotifyContext). Every entry commits on its own, so
-		// what finished is indexed and the rest is still stale: say that.
-		if errors.Is(err, context.Canceled) || errs.KindOf(err) == errs.Interrupted {
-			return interruptedErr(err, sum)
-		}
-		return err
+		return reindex.Summary{}, usageErr("%v", err)
 	}
-
-	fmt.Fprintln(stdout, sum.String())
-	if sum.Failed > 0 {
-		return usageErr("%d of %d entries failed; see warnings above", sum.Failed, sum.Scanned)
-	}
-	return nil
+	return reindex.One(ctx, opts, e)
 }
 
 // interruptedErr is the message for a reindex cut short by SIGINT or SIGTERM: a known edge case,
@@ -131,16 +134,15 @@ func ensureEmbedMetaForReindex(ctx context.Context, st store.Index, embedder emb
 
 	if p, ok := embedder.(pinger); ok {
 		if pingErr := p.Ping(ctx); pingErr != nil {
+			// A Ctrl-C during the ping is not an embedder failure: return the cancel as is, so it
+			// is not classified Unavailable. report's interrupted rule (exit 1) reaches it either way.
 			if errors.Is(pingErr, context.Canceled) {
-				return false, interruptedErr(pingErr, reindex.Summary{})
+				return false, pingErr
 			}
 			return false, embedderErr("refusing to reset the index, the embedder is not usable: %v", pingErr)
 		}
 	}
 	if err := st.ResetIndex(ctx); err != nil {
-		if errors.Is(err, context.Canceled) || errs.KindOf(err) == errs.Interrupted {
-			return false, interruptedErr(err, reindex.Summary{})
-		}
 		return false, err
 	}
 	if err := st.EnsureEmbedMeta(ctx, want); err != nil {

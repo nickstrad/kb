@@ -107,7 +107,7 @@ func pInt(v int) *int           { return &v }
 func pFloat(v float64) *float64 { return &v }
 
 func TestStatsListsQueries(t *testing.T) {
-	t.Setenv("KB_ROOT", t.TempDir()) // hermetic: never look at the real repository
+	useRoot(t, t.TempDir())
 	stdout, stderr, exit := runKB(t, []string{"stats"})
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%s", exit, stderr)
@@ -121,7 +121,7 @@ func TestStatsListsQueries(t *testing.T) {
 
 func TestStatsListNeedsNoDatabase(t *testing.T) {
 	root := t.TempDir() // no .kb at all
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	stdout, stderr, exit := runKB(t, []string{"stats"})
 	if exit != 0 {
@@ -134,7 +134,7 @@ func TestStatsListNeedsNoDatabase(t *testing.T) {
 
 func TestStatsNamedQueriesRun(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	for _, name := range []string{"overview", "sources", "trend", "entries", "gaps"} {
 		t.Run(name, func(t *testing.T) {
@@ -151,7 +151,7 @@ func TestStatsNamedQueriesRun(t *testing.T) {
 
 func TestStatsOverviewHasExpectedColumns(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	stdout, stderr, exit := runKB(t, []string{"stats", "overview"})
 	if exit != 0 {
@@ -175,7 +175,7 @@ func TestStatsOverviewHasExpectedColumns(t *testing.T) {
 // SQL already rounded must print as "100" or "1", never "100.000" or "1.000".
 func TestStatsFloatsShortestForm(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	stdout, stderr, exit := runKB(t, []string{"stats", "overview"})
 	if exit != 0 {
@@ -226,7 +226,7 @@ func equalFields(a, b []string) bool {
 
 func TestStatsJSONShape(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	stdout, stderr, exit := runKB(t, []string{"stats", "overview", "--json"})
 	if exit != 0 {
@@ -270,7 +270,7 @@ func TestStatsJSONShape(t *testing.T) {
 
 func TestStatsPrintSQLNeedsNoDatabase(t *testing.T) {
 	root := t.TempDir() // no .kb/kb.sqlite anywhere
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	stdout, stderr, exit := runKB(t, []string{"stats", "overview", "--print-sql"})
 	if exit != 0 {
@@ -280,14 +280,14 @@ func TestStatsPrintSQLNeedsNoDatabase(t *testing.T) {
 		t.Errorf("--print-sql output does not look like SQL:\n%s", stdout)
 	}
 	// The promise is stronger than "works without a database": it must not create one either.
-	if _, err := os.Stat(filepath.Join(root, ".kb")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, ".kb", "kb.sqlite")); !os.IsNotExist(err) {
 		t.Errorf("--print-sql created %s/.kb (stat err = %v); it must open no database", root, err)
 	}
 }
 
 func TestStatsAdHocSQL(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	stdout, stderr, exit := runKB(t, []string{"stats", "--sql", "select count(*) as n from searches"})
 	if exit != 0 {
@@ -314,7 +314,7 @@ func TestStatsAdHocSQL(t *testing.T) {
 // --sql refuses either filter, and a filter without --sql is fine.
 func TestStatsSQLFilterDecision(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	cases := []struct {
 		name string
@@ -341,7 +341,7 @@ func TestStatsSQLFilterDecision(t *testing.T) {
 
 func TestStatsSinceDuration(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	stdout, stderr, exit := runKB(t, []string{"stats", "overview", "--since", "7d"})
 	if exit != 0 {
@@ -354,7 +354,7 @@ func TestStatsSinceDuration(t *testing.T) {
 
 func TestStatsSinceDate(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	yesterday := time.Now().UTC().Add(-24 * time.Hour).Format("2006-01-02")
 	stdout, stderr, exit := runKB(t, []string{"stats", "overview", "--since", yesterday})
@@ -368,7 +368,7 @@ func TestStatsSinceDate(t *testing.T) {
 
 func TestStatsSinceBogus(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	_, stderr, exit := runKB(t, []string{"stats", "overview", "--since", "bogus"})
 	if exit != 1 {
@@ -381,7 +381,7 @@ func TestStatsSinceBogus(t *testing.T) {
 
 func TestStatsCallerFilter(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	stdout, stderr, exit := runKB(t, []string{"stats", "overview", "--caller", f.newCaller})
 	if exit != 0 {
@@ -394,7 +394,7 @@ func TestStatsCallerFilter(t *testing.T) {
 
 func TestStatsUnknownName(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	_, stderr, exit := runKB(t, []string{"stats", "bogus-query"})
 	if exit != 1 {
@@ -409,7 +409,7 @@ func TestStatsUnknownName(t *testing.T) {
 
 func TestStatsNameAndSQLConflict(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	_, stderr, exit := runKB(t, []string{"stats", "overview", "--sql", "select 1"})
 	if exit != 1 {
@@ -422,7 +422,7 @@ func TestStatsNameAndSQLConflict(t *testing.T) {
 
 func TestStatsPrintSQLAndSQLConflict(t *testing.T) {
 	f := buildStatsFixture(t)
-	t.Setenv("KB_ROOT", f.root)
+	useRoot(t, f.root)
 
 	_, stderr, exit := runKB(t, []string{"stats", "--sql", "select 1", "--print-sql"})
 	if exit != 1 {
@@ -435,7 +435,7 @@ func TestStatsPrintSQLAndSQLConflict(t *testing.T) {
 
 func TestStatsMissingDatabase(t *testing.T) {
 	root := t.TempDir() // no .kb/kb.sqlite
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	_, stderr, exit := runKB(t, []string{"stats", "overview"})
 	if exit != 1 {
@@ -447,7 +447,7 @@ func TestStatsMissingDatabase(t *testing.T) {
 }
 
 func TestStatsHelpShowsDefinitionsAndQueries(t *testing.T) {
-	t.Setenv("KB_ROOT", t.TempDir()) // hermetic: never look at the real repository
+	useRoot(t, t.TempDir())
 	stdout, stderr, exit := runKB(t, []string{"stats", "--help"})
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%s", exit, stderr)
@@ -469,7 +469,7 @@ func TestStatsHelpShowsDefinitionsAndQueries(t *testing.T) {
 // the stats package; the user sees one "kb stats:" prefix, not "kb stats: stats:".
 func TestStatsErrorHasOneStatsPrefix(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 	p := DBPath(root)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)

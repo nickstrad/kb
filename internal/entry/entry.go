@@ -85,6 +85,33 @@ type FrontMatter struct {
 	Tags     []string
 	Updated  string
 	Verified string
+
+	// Related, Supersedes and DependsOn list other entries by path (relative to this file) or as
+	// [[wikilinks]]; internal/links turns them into edges. Aliases are alternative names the entry
+	// answers to. All four take the same two list syntaxes as Tags. Unlike Tags, empty items are
+	// dropped. Aliases are validated (see MaxAliases, MaxAliasRunes); the link lists are not.
+	Related    []string
+	Supersedes []string
+	DependsOn  []string
+	Aliases    []string
+}
+
+// listField returns the FrontMatter slice that front-matter key names, or nil when key is not a
+// list key.
+func (fm *FrontMatter) listField(key string) *[]string {
+	switch key {
+	case "tags":
+		return &fm.Tags
+	case "related":
+		return &fm.Related
+	case "supersedes":
+		return &fm.Supersedes
+	case "depends_on":
+		return &fm.DependsOn
+	case "aliases":
+		return &fm.Aliases
+	}
+	return nil
 }
 
 // Entry is one knowledge entry. Files lists every indexed file, repo-relative, in index order
@@ -284,11 +311,11 @@ func BodyHash(files map[string][]byte, order []string) string {
 // source are returned, without an error — this is the common case for a file with nothing to
 // validate (a docs/*.md file need not carry front matter at all).
 //
-// When a "---" fenced block is present, ParseFrontMatter reads five keys — title, summary, tags,
-// updated, verified — tolerating: CRLF line endings and a leading BOM; a quoted or unquoted
-// scalar value; a value containing further colons or em/en dashes after the "key:" delimiter
-// (only the first colon on the line separates key from value); an inline tag list
-// ("tags: [a, b]") or a block tag list ("tags:" followed by "  - a" lines); and blank or comment
+// When a "---" fenced block is present, ParseFrontMatter reads the keys title, summary, updated,
+// verified and the lists tags, related, supersedes, depends_on, aliases, tolerating: CRLF line
+// endings and a leading BOM; a quoted or unquoted scalar value; a value containing further colons or em/en dashes after the "key:" delimiter
+// (only the first colon on the line separates key from value); an inline list
+// ("tags: [a, b]") or a block list ("tags:" followed by "  - a" lines); and blank or comment
 // ("#...") lines inside the block. Everything else in the block is ignored.
 //
 // If the fence never closes, that is a structural error (plain, not *ValidationError) and body is
@@ -329,8 +356,11 @@ func ParseFrontMatter(src []byte) (FrontMatter, []byte, error) {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "- ") { // continuation of a block list
-			if key == "tags" {
-				fm.Tags = append(fm.Tags, unquote(strings.TrimSpace(trimmed[2:])))
+			if p := fm.listField(key); p != nil {
+				item := unquote(strings.TrimSpace(trimmed[2:]))
+				if item != "" || key == "tags" { // tags keep empty items, as they always did
+					*p = append(*p, item)
+				}
 			}
 			continue
 		}
@@ -358,8 +388,10 @@ func ParseFrontMatter(src []byte) (FrontMatter, []byte, error) {
 			fm.Updated = unquote(value)
 		case "verified":
 			fm.Verified = unquote(value)
-		case "tags":
-			fm.Tags = parseTags(value)
+		default:
+			if p := fm.listField(key); p != nil {
+				*p = parseList(value)
+			}
 		}
 	}
 
@@ -373,7 +405,32 @@ func ParseFrontMatter(src []byte) (FrontMatter, []byte, error) {
 		return fm, body, &ValidationError{Reason: reason}
 	}
 
+	if reason := checkAliases(fm.Aliases); reason != "" {
+		return fm, body, &ValidationError{Reason: reason}
+	}
+
 	return fm, body, nil
+}
+
+// MaxAliases and MaxAliasRunes cap the aliases list. Aliases join the FTS title column, so like a
+// title they must stay short, one-line display text; MaxAliasRunes is half of MaxTitleRunes
+// because an alias is a name, not a headline.
+const (
+	MaxAliases    = 20
+	MaxAliasRunes = 100
+)
+
+// checkAliases returns why an aliases list is unacceptable, or "".
+func checkAliases(aliases []string) string {
+	if len(aliases) > MaxAliases {
+		return fmt.Sprintf("aliases has %d items; the limit is %d", len(aliases), MaxAliases)
+	}
+	for _, a := range aliases {
+		if reason := checkText("alias", a, MaxAliasRunes); reason != "" {
+			return reason
+		}
+	}
+	return ""
 }
 
 // MaxTitleRunes and MaxSummaryRunes cap the front-matter title and summary. Both are shown on one
@@ -403,21 +460,22 @@ func checkText(field, v string, max int) string {
 	return ""
 }
 
-// parseTags reads an inline list ("[a, b]") or returns nil for a block list, whose items arrive on
-// the following lines.
-func parseTags(value string) []string {
+// parseList reads an inline list ("[a, b]") or returns nil for a block list, whose items arrive on
+// the following lines. Items are split on every comma, so an inline item cannot contain one; use
+// the block form with a quoted item for that.
+func parseList(value string) []string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil
 	}
 	value = strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")
-	var tags []string
+	var items []string
 	for _, part := range strings.Split(value, ",") {
 		if t := unquote(strings.TrimSpace(part)); t != "" {
-			tags = append(tags, t)
+			items = append(items, t)
 		}
 	}
-	return tags
+	return items
 }
 
 // isBlockScalarIndicator reports whether value is a bare YAML block-scalar indicator: "|" or ">",

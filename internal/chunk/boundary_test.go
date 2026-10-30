@@ -63,15 +63,6 @@ func TestSplitOversizedMergeBoundary(t *testing.T) {
 	}
 }
 
-// TestSplitOversizedNoBlocks covers splitOversized's defensive branch: a body with no paragraph
-// is returned as one piece. Split never reaches it (it skips blank sections first); this is where
-// an assert.Pre(len(blocks) > 0) goes once internal/assert exists.
-func TestSplitOversizedNoBlocks(t *testing.T) {
-	if got := splitOversized("C", " \n\n "); len(got) != 1 || got[0] != "C\n \n\n " {
-		t.Fatalf("splitOversized(blank) = %q, want the one unchanged piece", got)
-	}
-}
-
 // TestFileTitle is the decision table for a docs/*.md file's title: front-matter title, leading
 // H1, both, neither, a hashes-only H1, a different H1, and an all-blank body.
 func TestFileTitle(t *testing.T) {

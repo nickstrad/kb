@@ -22,7 +22,7 @@ import (
 func (s *Store) LogSearch(ctx context.Context, r store.SearchRecord) (int64, error) {
 	id, err := s.logSearch(ctx, r)
 	if err != nil {
-		return 0, wrap(err, s.path, "sqlite.LogSearch", "could not write the search to the log")
+		return 0, wrap(ctx, err, s.path, "sqlite.LogSearch", "could not write the search to the log")
 	}
 	return id, nil
 }
@@ -122,7 +122,7 @@ func insertCandidates(ctx context.Context, tx *sql.Tx, searchID int64, candidate
 // withdraws an earlier whole-search --none, in the same transaction.
 func (s *Store) Feedback(ctx context.Context, searchID int64, rank int, useful bool, note string) error {
 	if err := s.feedback(ctx, searchID, rank, useful, note); err != nil {
-		return wrap(err, s.path, "sqlite.Feedback", "could not record feedback on search %d", searchID)
+		return wrap(ctx, err, s.path, "sqlite.Feedback", "could not record feedback on search %d", searchID)
 	}
 	return nil
 }
@@ -171,7 +171,7 @@ func (s *Store) feedback(ctx context.Context, searchID int64, rank int, useful b
 // rank; the check and the insert are one statement, so a concurrent --useful cannot slip between.
 func (s *Store) FeedbackNone(ctx context.Context, searchID int64, note string) error {
 	if err := s.feedbackNone(ctx, searchID, note); err != nil {
-		return wrap(err, s.path, "sqlite.FeedbackNone", "could not record --none on search %d", searchID)
+		return wrap(ctx, err, s.path, "sqlite.FeedbackNone", "could not record --none on search %d", searchID)
 	}
 	return nil
 }
@@ -223,11 +223,11 @@ func (s *Store) RecordOpen(ctx context.Context, entryPath string, now time.Time,
 		LIMIT 1`,
 		entryPath, now.Format(time.RFC3339), now.Add(-window).Format(time.RFC3339))
 	if err != nil {
-		return false, wrap(err, s.path, "sqlite.RecordOpen", "could not record the open of %s", entryPath)
+		return false, wrap(ctx, err, s.path, "sqlite.RecordOpen", "could not record the open of %s", entryPath)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, wrap(err, s.path, "sqlite.RecordOpen", "could not record the open of %s", entryPath)
+		return false, wrap(ctx, err, s.path, "sqlite.RecordOpen", "could not record the open of %s", entryPath)
 	}
 	return n > 0, nil
 }
@@ -245,7 +245,7 @@ func (s *Store) LastSearch(ctx context.Context, caller string) (store.LastSearch
 		return store.LastSearch{}, errs.New(errs.NotFound, "sqlite.LastSearch", "no search logged for caller %q", caller).With("caller", caller)
 	}
 	if err != nil {
-		return store.LastSearch{}, wrap(err, s.path, "sqlite.LastSearch", "could not read the newest search for caller %q", caller)
+		return store.LastSearch{}, wrap(ctx, err, s.path, "sqlite.LastSearch", "could not read the newest search for caller %q", caller)
 	}
 	return ls, nil
 }

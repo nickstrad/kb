@@ -19,11 +19,11 @@ regression test belongs in store: two `Store` handles on one file, concurrent `R
 Re-run `go run ./.agent/scripts/adversarial/harness -run concurrent` to confirm.
 
 **Status (2026-10-29, 0.5b):** fixed with `_txlock=immediate` in the store DSN; regression test
-`TestConcurrentWritersFromTwoHandles` (internal/store/concurrent_test.go) fails without it.
+`TestConcurrentWritersFromTwoHandles` (internal/store/sqlite/concurrent_test.go) fails without it.
 Any new handle that writes (e.g. the embed cache's own DSN) needs the same flag. The harness
 `concurrent-fresh-db` no longer sees "locked"; its remaining flake is the reindex prune race (Q22).
 
-**Seen in:** internal/store/entries.go:175,333,419; internal/store/store.go (DSN) · 2026-10-29
+**Seen in:** internal/store/sqlite/index.go:175,333,419; internal/store/sqlite/sqlite.go (DSN) · 2026-10-29
 
 **Related quirks (3.3a, 2026-10-29):**
 - A read-only SQLite file that's already in WAL mode still opens, and its schema transaction

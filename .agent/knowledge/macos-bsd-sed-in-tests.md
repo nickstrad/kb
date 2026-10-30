@@ -13,4 +13,4 @@ fix is an injected Go `editor` func in `deps` (CODING_STYLE §5, TESTING §7).
 GNU flags; prefer Go, or POSIX forms (`date -j -f` is the BSD parser). Mismatch tests must
 also check the file actually changed.
 
-**Seen in:** internal/cli/add_test.go `fakeEditor`; docs/TESTING.md §7; docs/DEFAULTS.md row 18 · 2026-10-29
+**Seen in:** internal/cli/add_test.go `useFakeEditor` (replaced the sh+sed `fakeEditor`, W3 pass); docs/TESTING.md §7; docs/DEFAULTS.md row 18 · 2026-10-29

@@ -52,7 +52,7 @@ func feedbackRows(t *testing.T, root, where string, args ...any) int {
 // that says how to fix it, and none of them writes a row.
 func TestFeedbackArgValidation(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 	t.Setenv("KB_CALLER", "")
 	id := searchID(t, "widget", "--caller", "claude")
 
@@ -95,7 +95,7 @@ func TestFeedbackArgValidation(t *testing.T) {
 // TestFeedbackByID records a hit verdict, and a whole-search verdict on a zero-result search.
 func TestFeedbackByID(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	id := searchID(t, "widget")
 	stdout, stderr, exit := runKB(t, []string{"feedback", id, "1", "--useful"})
@@ -133,7 +133,7 @@ func TestFeedbackByID(t *testing.T) {
 // picks that caller's newest search, and says which search it judged.
 func TestFeedbackLast(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 	t.Setenv("KB_CALLER", "")
 
 	claudeOld := searchID(t, "widget", "--caller", "claude")
@@ -186,7 +186,7 @@ func TestFeedbackLast(t *testing.T) {
 // hit rate NULL.
 func TestFeedbackNoneCountsInStats(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
-	t.Setenv("KB_ROOT", root)
+	useRoot(t, root)
 
 	zero := searchID(t, "not-in-the-fixture", "--caller", "claude")
 	overview := func() map[string]any {

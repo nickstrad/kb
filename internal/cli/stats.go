@@ -147,7 +147,11 @@ func runStats(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts statsO
 	}
 
 	// Checked here so a missing file gets this command's reindex hint.
-	dbPath := DBPath(Root())
+	ws, err := d.workspace(cmd)
+	if err != nil {
+		return err
+	}
+	dbPath := ws.DBPath
 	if _, err := os.Stat(dbPath); err != nil {
 		return errs.Wrap(err, errs.NotFound, "cli.stats", "no search database at %s; run `kb reindex --all` first", dbPath)
 	}

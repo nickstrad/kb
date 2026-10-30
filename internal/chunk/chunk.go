@@ -27,6 +27,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/nickstrad/kb/internal/assert"
 	"strings"
 
 	"github.com/nickstrad/kb/internal/entry"
@@ -110,7 +111,21 @@ func Split(e entry.Entry, files map[string][]byte) ([]Chunk, error) {
 		}
 	}
 
+	if assert.Enabled {
+		assertChunks(chunks)
+	}
 	return chunks, nil
+}
+
+// assertChunks checks Split's postconditions: Ord runs 0..n-1, every TextHash is Hash(Text), and
+// chunk 0 (the summary) has an empty heading.
+func assertChunks(chunks []Chunk) {
+	assert.Post(len(chunks) > 0, "Split: no chunks")
+	assert.Post(chunks[0].Heading == "", "Split: chunk 0 has heading %q", chunks[0].Heading)
+	for i, c := range chunks {
+		assert.Post(c.Ord == i, "Split: chunk %d has Ord %d", i, c.Ord)
+		assert.Post(c.TextHash == Hash(c.Text), "Split: chunk %d TextHash %s != Hash(Text)", i, c.TextHash)
+	}
 }
 
 // stripFrontMatter removes a leading YAML front-matter block from one file's raw bytes, for use
@@ -266,9 +281,7 @@ func fenceOpen(trimmed string) (string, bool) {
 // rather than being cut.
 func splitOversized(contextLine, body string) []string {
 	blocks := paragraphBlocks(body)
-	if len(blocks) == 0 {
-		return []string{contextLine + "\n" + body}
-	}
+	assert.Pre(len(blocks) > 0, "splitOversized: body %q has no paragraph; Split skips blank sections", body)
 	var pieces []string
 	var cur []string
 	for _, b := range blocks {

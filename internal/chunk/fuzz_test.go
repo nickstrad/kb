@@ -73,12 +73,6 @@ func FuzzSplit(f *testing.F) {
 			t.Fatalf("chunk 0 = %+v, want the summary chunk", c)
 		}
 		for i, c := range chunks {
-			if c.Ord != i {
-				t.Fatalf("chunk %d has Ord %d", i, c.Ord)
-			}
-			if c.TextHash != Hash(c.Text) {
-				t.Fatalf("chunk %d: TextHash does not match Text", i)
-			}
 			if i == 0 {
 				continue
 			}
@@ -176,12 +170,6 @@ func FuzzSplitDocs(f *testing.F) {
 		}
 		sawDocs := false
 		for i, c := range chunks {
-			if c.Ord != i {
-				t.Fatalf("chunk %d has Ord %d", i, c.Ord)
-			}
-			if c.TextHash != Hash(c.Text) {
-				t.Fatalf("chunk %d: TextHash does not match Text", i)
-			}
 			if i == 0 {
 				continue
 			}

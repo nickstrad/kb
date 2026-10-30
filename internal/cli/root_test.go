@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -22,4 +24,102 @@ func TestRootHelpMentionsShowAndOptionalFeedback(t *testing.T) {
 			t.Errorf("kb help still contains %q:\n%s", unwanted, out)
 		}
 	}
+}
+
+// TestWorkspaceDiscoveryCLI: from a subdirectory of a store kb list works; from a directory with
+// no store above it the not-found message is printed and the exit code is 1; --root overrides
+// discovery; --root with --global is a usage error.
+func TestWorkspaceDiscoveryCLI(t *testing.T) {
+	useFakeEmbedder(t)
+	root := newTempRoot(t)
+	writeFile(t, filepath.Join(root, "data", "one.md"), validFrontMatter("One", "First entry."))
+	sub := filepath.Join(root, "data", "deeper", "still")
+	writeFile(t, filepath.Join(sub, ".keep"), "")
+
+	t.Run("success from a nested subdirectory", func(t *testing.T) {
+		t.Chdir(sub)
+		out, errOut, code := run(t, "list")
+		if code != 0 || !strings.Contains(out, "one.md") {
+			t.Fatalf("exit %d stdout %q stderr %q", code, out, errOut)
+		}
+	})
+	t.Run("failure outside any store", func(t *testing.T) {
+		t.Chdir(realTempDir(t))
+		out, errOut, code := run(t, "list")
+		want := `kb list: no kb store found in`
+		if code != 1 || out != "" || !strings.Contains(errOut, want) ||
+			!strings.Contains(errOut, `run "kb init" here, or use --global / --root`) {
+			t.Fatalf("exit %d stdout %q stderr %q", code, out, errOut)
+		}
+	})
+	t.Run("root flag overrides the working directory", func(t *testing.T) {
+		t.Chdir(realTempDir(t))
+		out, errOut, code := run(t, "--root", root, "list")
+		if code != 0 || !strings.Contains(out, "one.md") {
+			t.Fatalf("exit %d stdout %q stderr %q", code, out, errOut)
+		}
+	})
+	t.Run("root and global conflict", func(t *testing.T) {
+		_, errOut, code := run(t, "--root", root, "--global", "list")
+		if code != 1 || !strings.Contains(errOut, "root") || !strings.Contains(errOut, "global") {
+			t.Fatalf("exit %d stderr %q", code, errOut)
+		}
+	})
+	t.Run("global reaches the store under home", func(t *testing.T) {
+		t.Chdir(sub) // inside another store: --global must still win
+		src := filepath.Join(realTempDir(t), "global-entry.md")
+		writeFile(t, src, validFrontMatter("Global", "Created through --global."))
+		_, errOut, code := run(t, "--global", "--debug", "--embedder", "none", "add", src)
+		home := testDeps.workspaceEnv().Home
+		if code != 0 || !strings.Contains(errOut, "store "+filepath.Join(home, ".local", "share", "kb")+" (--global)") {
+			t.Fatalf("exit %d stderr %q", code, errOut)
+		}
+		t.Cleanup(func() { os.RemoveAll(filepath.Join(home, ".local")) })
+		if _, err := os.Stat(filepath.Join(home, ".local", "share", "kb", "data", "global-entry.md")); err != nil {
+			t.Fatalf("--global add did not write under home: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "data", "global-entry.md")); err == nil {
+			t.Fatal("--global add wrote into the discovered store")
+		}
+	})
+	t.Run("debug names the chosen store and how", func(t *testing.T) {
+		t.Chdir(sub)
+		for _, tc := range []struct {
+			args []string
+			want string
+		}{
+			{[]string{"--debug", "list"}, "kb list: store " + root + " (discovered from " + sub + ")"},
+			{[]string{"--debug", "--root", root, "list"}, "kb list: store " + root + " (--root)"},
+		} {
+			_, errOut, code := run(t, tc.args...)
+			if code != 0 || !strings.Contains(errOut, tc.want) {
+				t.Errorf("%v: exit %d stderr %q, want %q", tc.args, code, errOut, tc.want)
+			}
+		}
+		if _, errOut, _ := run(t, "list"); strings.Contains(errOut, "store ") {
+			t.Errorf("without --debug the store line leaked: %q", errOut)
+		}
+	})
+	t.Run("root flag creates the store on a fresh directory", func(t *testing.T) {
+		fresh := filepath.Join(realTempDir(t), "new-store")
+		src := filepath.Join(realTempDir(t), "fresh-entry.md")
+		writeFile(t, src, validFrontMatter("Fresh", "Created through --root."))
+		_, errOut, code := run(t, "--root", fresh, "add", src)
+		if code != 0 {
+			t.Fatalf("exit %d stderr %q", code, errOut)
+		}
+		if _, err := os.Stat(filepath.Join(fresh, ".kb", "kb.sqlite")); err != nil {
+			t.Fatalf("add --root did not create the database: %v", err)
+		}
+	})
+}
+
+// realTempDir is a fresh temp directory with symlinks resolved and no .kb above it.
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }

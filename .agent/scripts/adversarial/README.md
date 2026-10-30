@@ -45,11 +45,11 @@ score. `-json` gives every mutant with `status` and `killed_by` (the first faili
 
 **harness flags:** `-run` regexp, `-bin` (test a prebuilt binary), `-keep`, `-json`, `-list`.
 Exit 0 all passed, 1 some failed, 2 it could not run. Each scenario gets
-`<sandbox>/_adv/runs/<name>/{root,home,outside,tmp}`. `HOME`, `KB_ROOT`, `TMPDIR` and
+`<sandbox>/_adv/runs/<name>/{root,home,outside,tmp}`. `HOME`, `TMPDIR` and
 `REMBED_CACHE` point there. Every HTTP(S) proxy variable points at a dead port, and the default
 model's cache dir holds a garbage `config.json` that rembed parses before fetching anything. That
 is two independent barriers against a download, and a downloaded `*.safetensors` fails the
-scenario. Universal checks on every run: no Go panic or runtime trace, exit code in {0,1,2}, no
+scenario. Universal checks on every run: no Go panic or runtime trace, exit code in {0,1,2} (3 = internal error: a finding), no
 hang over 60 s.
 
 **Adding things:** a mutation operator is a case in `mutate/ops.go`. Add its name to `allOps`,

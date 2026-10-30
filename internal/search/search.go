@@ -469,11 +469,7 @@ func (s *Searcher) embedQuery(ctx context.Context, query string) ([]float32, int
 	vecs, err := s.Embedder.Embed(ctx, []string{embed.QueryText(s.Embedder, query)})
 	ms := time.Since(start).Milliseconds()
 	if err != nil {
-		k := errs.KindOf(err)
-		if errors.Is(err, embed.ErrUnavailable) {
-			k = errs.Unavailable
-		}
-		return nil, ms, errs.Wrap(err, k, op, "embed query: %v", err)
+		return nil, ms, errs.Wrap(err, errs.KindOf(err), op, "embed query: %v", err)
 	}
 	if len(vecs) != 1 || len(vecs[0]) == 0 {
 		return nil, ms, errs.New(errs.Internal, op, "embed query: embedder returned %d vectors, want 1", len(vecs))
@@ -484,7 +480,7 @@ func (s *Searcher) embedQuery(ctx context.Context, query string) ([]float32, int
 // unavailable reports whether an embedder error means "cannot be used right now", which a hybrid
 // search answers by falling back to FTS.
 func unavailable(err error) bool {
-	return errs.KindOf(err) == errs.Unavailable || errors.Is(err, embed.ErrUnavailable)
+	return errs.KindOf(err) == errs.Unavailable
 }
 
 // ClampK forces k into the documented 1..20 range. DefaultK is the flag's default, not a fallback

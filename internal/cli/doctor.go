@@ -33,7 +33,11 @@ func newDoctorCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(cmd.Context(), cmd, d, stdout, Root())
+			ws, err := d.workspace(cmd)
+			if err != nil {
+				return err
+			}
+			return runDoctor(cmd.Context(), cmd, d, stdout, ws.Root)
 		},
 	}
 }

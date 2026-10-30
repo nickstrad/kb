@@ -5,8 +5,9 @@ FTS5 and sqlite-vec, searches them with hybrid full-text + vector ranking, logs 
 records feedback on what helped so `kb stats` can show where the store falls short.
 
 This repository holds the Go CLI. Knowledge entries
-live in a separate knowledge repository (`$KB_ROOT`): entries in `$KB_ROOT/data/`, the index and
-search log in `$KB_ROOT/.kb/kb.sqlite`.
+live in a separate knowledge repository (the store): entries in `<store>/data/`, the index and
+search log in `<store>/.kb/kb.sqlite`. kb uses the nearest directory at or above the current one
+that has a `.kb/`; `--root DIR` and `--global` name a store explicitly.
 
 ## Install
 
@@ -51,11 +52,20 @@ search (exit 2) and says to run `kb model pull`.
 ## Use in a project
 
 ```bash
-export KB_ROOT=<project>/knowledge   # until root discovery and `kb init` land
+cd <project>/knowledge   # kb finds the store by walking up to .kb/; or pass --root DIR / --global
 kb model pull
 kb add <draft.md>
 kb search "<question>" --caller claude
 ```
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 1 | a well-formed failure: bad flag or argument, no such entry or search, an embedding-model mismatch, a damaged or locked database, or an interrupt (Ctrl-C) |
+| 2 | the embedder is unavailable: a hybrid search fell back to full-text search, or indexing could not load the model |
+| 3 | internal error (a kb bug). The details go to `<root>/.kb/kb.log` (or `~/Library/Caches/kb/kb.log` when there is no store) under the id printed on stderr; `--debug` prints them too. Please report it. |
 
 ## Using kb from an agent
 
