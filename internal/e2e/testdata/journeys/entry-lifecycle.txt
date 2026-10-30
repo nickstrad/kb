@@ -1,0 +1,120 @@
+entry-lifecycle: add, edit, find by tag, remove, and rebuild an index.
+
+The editor is the test binary in its helper mode: it appends the text of E2E_EDITOR_APPEND to
+the file kb hands it, so kb edit needs no host editor.
+
+  $ kb init --model fake:8
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ kb add $WORK/notes/deploy.md
+  added data/deploy.md (2 chunks)
+
+  $ kb add --dir $WORK/notes/runbook
+  added data/runbook/README.md (3 chunks)
+
+  $ kb list --tag ops
+  PATH                    SUMMARY                                            UPDATED     VERIFIED
+  data/deploy.md          Steps to deploy and the checks to run afterwards.  2026-02-01  -
+  data/runbook/README.md  What to do when the pager goes off.                2026-02-02  -
+
+  2 entries
+
+  $ env 'E2E_EDITOR_APPEND=Rollback takes about ten minutes.'
+
+  $ kb edit data/deploy.md
+  reindexed data/deploy.md (2 chunks, 1 embedded)
+  entries: 1 scanned, 1 reindexed, 0 skipped; chunks: 2; embed calls: 1
+
+The edit is reindexed, so search finds the new sentence at once.
+
+  $ kb search "rollback takes ten minutes" --mode fts --caller claude
+  search 1 · 1 hit
+  [1] data/deploy.md › (intro) · updated 2026-02-01
+  Deploying the service › (intro)
+  # Deploying the service
+
+  Tag the release, run the pipeline, and watch the dashboards for ten minutes.
+  Rollback takes about ten minutes.
+  search_id=1
+
+  $ grep Rollback data/deploy.md
+  Rollback takes about ten minutes.
+
+  $ kb show data/deploy.md
+  ---
+  title: Deploying the service
+  summary: Steps to deploy and the checks to run afterwards.
+  tags: [ops, release]
+  updated: 2026-02-01
+  ---
+  # Deploying the service
+
+  Tag the release, run the pipeline, and watch the dashboards for ten minutes.
+  Rollback takes about ten minutes.
+
+Removing a single file is immediate. A directory entry holds several files, so it needs --yes.
+
+  $ kb rm data/deploy.md
+  removed data/deploy.md
+
+  $ ! exists data/deploy.md
+
+  $ kb rm data/runbook
+  [stderr] kb rm: data/runbook/ is a directory entry; pass --yes to remove data/runbook/ and everything in it
+  [exit 1]
+
+  $ exists data/runbook/README.md
+
+  $ kb rm data/runbook --yes
+  removed data/runbook/ and 2 files
+
+  $ ! exists data/runbook
+
+  $ kb list
+  no entries
+
+Rebuild from the files on disk and write the optional index.md snapshot.
+
+  $ kb add $WORK/notes/deploy.md
+  added data/deploy.md (2 chunks)
+
+  $ kb reindex --all
+  entries: 1 scanned, 0 reindexed, 1 skipped; chunks: 0; embed calls: 0
+
+  $ kb index
+  index.md regenerated (1 entries)
+
+  $ grep deploy.md index.md
+  | [data/deploy.md](data/deploy.md) | Steps to deploy and the checks to run afterwards. |
+
+-- notes/deploy.md --
+---
+title: Deploying the service
+summary: Steps to deploy and the checks to run afterwards.
+tags: [ops, release]
+updated: 2026-02-01
+---
+# Deploying the service
+
+Tag the release, run the pipeline, and watch the dashboards for ten minutes.
+-- notes/runbook/README.md --
+---
+title: On-call runbook
+summary: What to do when the pager goes off.
+tags: [ops]
+updated: 2026-02-02
+---
+# On-call runbook
+
+Acknowledge the page, check the dashboards, and follow the linked procedure.
+-- notes/runbook/docs/restart.md --
+---
+title: Restart procedure
+summary: Restart the service in the right order.
+tags: [ops]
+updated: 2026-02-03
+---
+# Restart procedure
+
+Restart the database first, then the workers.

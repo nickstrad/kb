@@ -69,6 +69,9 @@ func (d *deps) clock() time.Time {
 	return d.now()
 }
 
+// harnessNow is the pinned clock of a harnessfake build (KB_HARNESS_NOW); nil in release builds.
+var harnessNow func() time.Time
+
 // productionDeps are the real implementations.
 func productionDeps() *deps {
 	d := &deps{
@@ -78,6 +81,7 @@ func productionDeps() *deps {
 		editor:       runEditor,
 		userCacheDir: os.UserCacheDir,
 		workspaceEnv: workspace.OSEnv,
+		now:          harnessNow,
 	}
 	// The model cache is the workspace's ModelsDir rule, so there is one place that decides it.
 	d.modelCacheDir = func() (string, error) {
@@ -285,6 +289,7 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		newShowCmd(d, stdout, stderr),
 		newListCmd(d, stdout, stderr),
 		newSearchCmd(d, stdout, stderr),
+		newContextCmd(d, stdout, stderr),
 		newExplainCmd(d, stdout, stderr),
 		newEvalCmd(d, stdout, stderr),
 		newReindexCmd(d, stdout, stderr),
@@ -298,6 +303,7 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		newStoresCmd(d, stdout, stderr),
 		newInitCmd(d, stdout, stderr),
 		newMigrateCmd(d, stdout, stderr),
+		newSynonymsCmd(d, stdout, stderr),
 	)
 	markRunErrors(cmd)
 	return cmd

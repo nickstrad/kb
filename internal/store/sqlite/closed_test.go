@@ -2,8 +2,10 @@ package sqlite
 
 import (
 	"context"
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/store"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +37,8 @@ func TestClosedStoreReturnsErrors(t *testing.T) {
 		"ExistingEmbeddings": func() error { _, err := s.Embeddings(ctx, 1); return err },
 		"ReplaceEntryChunks": func() error { _, err := s.ReplaceEntry(ctx, sampleEntry(), nil); return err },
 		"DeleteEntry":        func() error { return s.DeleteEntry(ctx, "a.md") },
+		"ResolveEdges":       func() error { return s.ResolveEdges(ctx) },
+		"Edges":              func() error { _, err := s.Edges(ctx); return err },
 	} {
 		if err := call(); err == nil {
 			t.Errorf("%s on a closed store returned nil", name)
@@ -46,11 +50,11 @@ func TestClosedStoreReturnsErrors(t *testing.T) {
 	}
 }
 
-// TestDecodeHelpersRejectCorruptRows: a tags column that is not a JSON array and a vector blob
-// that is not whole float32s are reported, not misread.
+// TestDecodeHelpersRejectCorruptRows: a tags or aliases column that is not a JSON array and a
+// vector blob that is not whole float32s are reported, not misread.
 func TestDecodeHelpersRejectCorruptRows(t *testing.T) {
-	if _, err := decodeTags("not json"); err == nil {
-		t.Error("decodeTags accepted corrupt JSON")
+	if _, err := decodeList("tags", "not json"); err == nil {
+		t.Error("decodeList accepted corrupt JSON")
 	}
 	if _, err := deserializeFloat32([]byte{1, 2, 3}); err == nil {
 		t.Error("deserializeFloat32 accepted a 3-byte blob")
@@ -70,5 +74,14 @@ func TestDecodeHelpersRejectCorruptRows(t *testing.T) {
 	}
 	if err := s.DeleteEntry(context.Background(), "sample.md"); err == nil {
 		t.Error("DeleteEntry read a corrupt tags column without error")
+	}
+	if _, err := s.DB().Exec("UPDATE entries SET tags = '[]', aliases = '{\"a\":1}'"); err != nil {
+		t.Fatalf("corrupt aliases: %v", err)
+	}
+	if _, err := s.Entry(context.Background(), "sample.md"); err == nil || !strings.Contains(strings.Join(errs.Chain(err), " "), "aliases") {
+		t.Errorf("Entry with a corrupt aliases column = %v, want an error naming aliases", err)
+	}
+	if err := s.ResolveEdges(context.Background()); err == nil || !strings.Contains(strings.Join(errs.Chain(err), " "), "aliases") {
+		t.Errorf("ResolveEdges with a corrupt aliases column = %v, want an error naming aliases", err)
 	}
 }

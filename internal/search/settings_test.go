@@ -31,7 +31,7 @@ func TestDefaultParamsMatchConstants(t *testing.T) {
 	want := Params{
 		ListLimit: ListLimit, CandidateLimit: CandidateLimit, PerEntryCap: PerEntryCap, RRFK: RRFConstant,
 		VecOverFetch: vecOverFetch, BM25: store.DefaultBM25(), FTSWeight: 1, VecWeight: 1,
-		ExactWeight: 1, ExactList: true,
+		ExactWeight: 1, ExactList: true, Spell: true,
 	}
 	if got := DefaultParams(); got != want {
 		t.Errorf("DefaultParams = %+v, want %+v", got, want)

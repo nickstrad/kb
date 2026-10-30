@@ -21,9 +21,13 @@ import (
 // key also takes a bare word (embed.model=none), and a list key takes a bare comma-separated
 // list (search.stores=global,notes). The result is validated like a file. Every failure is a
 // Usage error naming the assignment.
-func Apply(c Config, assignment string) (Config, error) {
+func Apply(c Config, assignment string) (Config, error) { return ApplyAs(c, "--set", assignment) }
+
+// ApplyAs is Apply for an assignment that came from another flag (kb eval --sweep): its errors
+// name that flag instead of --set.
+func ApplyAs(c Config, flag, assignment string) (Config, error) {
 	fail := func(format string, args ...any) (Config, error) {
-		return Config{}, errs.New(errs.Usage, "config.Apply", "--set %s: %s", assignment, fmt.Sprintf(format, args...))
+		return Config{}, errs.New(errs.Usage, "config.Apply", "%s %s: %s", flag, assignment, fmt.Sprintf(format, args...))
 	}
 	path, value, ok := strings.Cut(assignment, "=")
 	path = strings.TrimSpace(path)
@@ -60,7 +64,7 @@ func Apply(c Config, assignment string) (Config, error) {
 		return fail("unknown key %q", path)
 	}
 	normalize(&next)
-	if err := next.Validate("--set " + assignment); err != nil {
+	if err := next.Validate(flag + " " + assignment); err != nil {
 		return Config{}, err
 	}
 	return next, nil

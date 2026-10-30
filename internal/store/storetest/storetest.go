@@ -43,6 +43,9 @@ func Run(t *testing.T, newStore Factory) {
 			t.Run("FTS: AND/OR ops, tag filter, unmatched terms", func(t *testing.T) { fts(t, newStore(t, dim), dim) })
 			t.Run("FTS Exact: identifiers are whole tokens", func(t *testing.T) { exactFTS(t, newStore(t, dim), dim) })
 			t.Run("KNN: top-k ordered by distance, tag filter", func(t *testing.T) { knn(t, newStore(t, dim), dim) })
+			t.Run("tags: kept as written, filtered case-insensitively", func(t *testing.T) { tags(t, newStore(t, dim), dim) })
+			t.Run("aliases: round-trip, found as the title", func(t *testing.T) { aliases(t, newStore(t, dim), dim) })
+			t.Run("edges: written, resolved, kept, dangling", func(t *testing.T) { edgesContract(t, newStore(t, dim), dim) })
 			t.Run("ResetIndex empties the index, keeps the log", func(t *testing.T) { reset(t, newStore(t, dim), dim) })
 			t.Run("SearchLog: log, feedback, LastSearch, RecordOpen", func(t *testing.T) { searchLog(t, newStore(t, dim), dim) })
 			t.Run("SearchLog: settings, ts and hit stores round-trip", func(t *testing.T) { searchLogRoundTrip(t, newStore(t, dim)) })
@@ -460,7 +463,9 @@ func knn(t *testing.T, st store.Store, dim int) {
 }
 
 func reset(t *testing.T, st store.Store, dim int) {
-	mustReplace(t, st, entryIn("a.md"), chunks(dim, "resetword"))
+	withLinks := entryIn("a.md", "resettag")
+	withLinks.Edges = []store.EdgeInput{edge("a.md", "links", store.EdgePath)}
+	mustReplace(t, st, withLinks, chunks(dim, "resetword"))
 	sid, err := st.LogSearch(ctx, store.SearchRecord{Query: "q", Mode: "fts", K: 5, Caller: "c"})
 	if err != nil {
 		t.Fatal(err)
@@ -488,6 +493,13 @@ func reset(t *testing.T, st store.Store, dim int) {
 	}
 	if got := exactIDs(t, st, "resetword"); len(got) != 0 {
 		t.Errorf("exact rows survived reset: %v", got)
+	}
+	if got := edgeStrings(t, st); len(got) != 0 {
+		t.Errorf("edges survived reset: %q", got)
+	}
+	mustReplace(t, st, entryIn("b.md"), chunks(dim, "afterreset"))
+	if got := ftsIDs(t, st, store.OpAnd, "resettag", "afterreset"); len(got) != 0 {
+		t.Errorf("tag rows survived reset: %v", got)
 	}
 }
 

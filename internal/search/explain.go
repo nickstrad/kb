@@ -57,6 +57,10 @@ type ExplainMatch struct {
 	Match      string `json:"match"`
 	Op         string `json:"op"` // "AND" or "OR"
 	OrFallback bool   `json:"or_fallback"`
+	// Synonyms maps each query term the expression expanded to its alternatives (PLAN 5.5).
+	Synonyms map[string][]string `json:"synonyms,omitempty"`
+	// Spell lists the words spell correction searched an alternative for (PLAN 5.6).
+	Spell []SpellFix `json:"spell,omitempty"`
 }
 
 // ExplainHit is one fused candidate. Rank is its place in the fused list (1-based);
@@ -144,7 +148,7 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 		if out.FTSFallbackToOr {
 			op, name = store.OpOr, "OR"
 		}
-		ex.FTS = &ExplainMatch{Match: out.FTSMatch, Op: name, OrFallback: out.FTSFallbackToOr}
+		ex.FTS = &ExplainMatch{Match: out.FTSMatch, Op: name, OrFallback: out.FTSFallbackToOr, Synonyms: out.FTSSynonyms, Spell: out.Spell}
 	}
 	if out.ExactMatch != "" {
 		name := "AND"
@@ -160,7 +164,7 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 		for i, c := range out.Candidates {
 			ids[i] = c.ChunkID
 		}
-		if cols, err = s.columnScores(ctx, strings.Fields(req.Query), op, req.Tag, ids, p.BM25); err != nil {
+		if cols, err = s.columnScores(ctx, strings.Fields(req.Query), out.FTSAlts, op, req.Tag, ids, p.BM25); err != nil {
 			return nil, err
 		}
 	}
@@ -201,7 +205,7 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 
 // columnScores re-scores ids three times, each with one column's weight alone. A column whose
 // weight is 0 scores every matched chunk 0.
-func (s *Searcher) columnScores(ctx context.Context, terms []string, op store.FTSOp, tag string, ids []int64, w store.BM25Weights) (map[int64]*ExplainColumn, error) {
+func (s *Searcher) columnScores(ctx context.Context, terms []string, alts map[string][]string, op store.FTSOp, tag string, ids []int64, w store.BM25Weights) (map[int64]*ExplainColumn, error) {
 	cols := make(map[int64]*ExplainColumn, len(ids))
 	single := []struct {
 		w    store.BM25Weights
@@ -213,7 +217,7 @@ func (s *Searcher) columnScores(ctx context.Context, terms []string, op store.FT
 	}
 	for i := range single {
 		weights := single[i].w
-		res, err := s.Store.FTS(ctx, store.FTSQuery{Terms: terms, Op: op, Tag: tag, Limit: len(ids), Weights: &weights, ChunkIDs: ids})
+		res, err := s.Store.FTS(ctx, store.FTSQuery{Terms: terms, Op: op, Tag: tag, Limit: len(ids), Weights: &weights, ChunkIDs: ids, Alts: alts})
 		if err != nil {
 			return nil, errs.Wrap(err, errs.KindOf(err), "search.Explain", "%v", err)
 		}

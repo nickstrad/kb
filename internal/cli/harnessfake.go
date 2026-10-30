@@ -7,14 +7,41 @@
 package cli
 
 import (
+	"fmt"
+	"io"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/fake"
 )
 
-func init() { harnessModel = fakeModel }
+func init() {
+	harnessModel = fakeModel
+	harnessNow = harnessClock(os.LookupEnv, os.Stderr)
+}
+
+// harnessNowEnv pins the clock of a harnessfake build (RFC3339), so a black-box run can drive
+// time-window behaviour: the open window, --since, kb stale. Release builds never read it (D4).
+const harnessNowEnv = "KB_HARNESS_NOW"
+
+// harnessClock is the clock KB_HARNESS_NOW names: every call returns that instant. When the
+// variable is unset it returns nil (the wall clock); when it is not RFC3339 it warns on warn and
+// returns nil.
+func harnessClock(lookup func(string) (string, bool), warn io.Writer) func() time.Time {
+	v, ok := lookup(harnessNowEnv)
+	if !ok || v == "" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		fmt.Fprintf(warn, "kb: warning: %s=%q is not RFC3339; using the wall clock\n", harnessNowEnv, v)
+		return nil
+	}
+	return func() time.Time { return t }
+}
 
 // fakeModel builds the fake embedder for "fake:<dim>"; ok is false for any other id.
 func fakeModel(id string) (embed.Embedder, bool) {

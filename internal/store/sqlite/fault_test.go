@@ -246,7 +246,10 @@ func faultChunks(dim int, word string) []store.ChunkInput {
 // an Internal error that keeps the cause, and leaves the previous state intact (one transaction).
 func TestDriverFaultsAreInternalAndRollBack(t *testing.T) {
 	ctx := context.Background()
-	entry := store.EntryInput{Path: "a.md", Kind: "file", Title: "T", Summary: "S"}
+	entry := store.EntryInput{Path: "a.md", Kind: "file", Title: "T", Summary: "S", Tags: []string{"x"},
+		Edges: []store.EdgeInput{{DstPath: "a.md", Rel: "links", Kind: store.EdgePath}}}
+	resolve := func(st *Store) error { return st.ResolveEdges(ctx) }
+	del := func(st *Store) error { return st.DeleteEntry(ctx, "a.md") }
 	for _, tc := range []struct {
 		name  string
 		dim   int
@@ -271,10 +274,26 @@ func TestDriverFaultsAreInternalAndRollBack(t *testing.T) {
 		{"replace: insert fts", 4, "INSERT INTO chunks_fts (rowid", 2, nil},
 		{"replace: insert exact", 4, "INSERT INTO chunks_exact (rowid", 2, nil},
 		{"replace: insert vec", 4, "INSERT INTO chunks_vec (chunk_id", 2, nil},
+		{"replace: read old edges", 4, "SELECT dst_path, rel, kind, dst_entry_id FROM edges", 1, nil},
+		{"replace: delete tags", 4, "DELETE FROM entry_tags", 1, nil},
+		{"replace: delete edges", 4, "DELETE FROM edges WHERE src_entry_id", 1, nil},
+		{"replace: insert tag", 4, "INSERT INTO entry_tags", 1, nil},
+		{"replace: insert edge", 4, "INSERT INTO edges", 1, nil},
 		{"replace: commit", 4, "COMMIT", 1, nil},
 		{"replace fts-only: commit", 0, "COMMIT", 1, nil},
 		{"delete: begin", 4, "BEGIN", 1, func(st *Store) error { return st.DeleteEntry(ctx, "a.md") }},
 		{"delete: delete entry", 4, "DELETE FROM entries", 1, func(st *Store) error { return st.DeleteEntry(ctx, "a.md") }},
+		{"delete: delete tags", 4, "DELETE FROM entry_tags", 1, del},
+		{"delete: delete edges", 4, "DELETE FROM edges WHERE src_entry_id", 1, del},
+		{"delete: detach inbound edges", 4, "UPDATE edges SET dst_entry_id = NULL", 1, del},
+		{"reset: edges", 4, "DELETE FROM edges", 1, func(st *Store) error { return st.ResetIndex(ctx) }},
+		{"reset: tags", 4, "DELETE FROM entry_tags", 1, func(st *Store) error { return st.ResetIndex(ctx) }},
+		{"resolve: begin", 4, "BEGIN", 1, resolve},
+		{"resolve: read entries", 4, "SELECT id, path, aliases FROM entries", 1, resolve},
+		{"resolve: read files", 4, "SELECT DISTINCT entry_id, source_file", 1, resolve},
+		{"resolve: read edges", 4, "SELECT rowid, dst_path, kind", 1, resolve},
+		{"resolve: update", 4, "UPDATE edges SET dst_entry_id = ? WHERE rowid", 1, resolve},
+		{"resolve: commit", 4, "COMMIT", 1, resolve},
 		{"delete: commit", 4, "COMMIT", 1, func(st *Store) error { return st.DeleteEntry(ctx, "a.md") }},
 		{"reset: fts delete-all", 4, "delete-all", 1, func(st *Store) error { return st.ResetIndex(ctx) }},
 		{"reset: exact delete-all", 4, "delete-all", 2, func(st *Store) error { return st.ResetIndex(ctx) }},
@@ -314,6 +333,12 @@ func TestDriverFaultsAreInternalAndRollBack(t *testing.T) {
 			}
 			if _, ok, _ := st.EmbedMeta(ctx); !ok {
 				t.Error("embed_meta lost after a failed op")
+			}
+			if es, err := st.Edges(ctx); err != nil || len(es) != 1 || es[0].DstEntryID != 0 {
+				t.Errorf("edges after a failed op = %+v, %v; want the previous version's one unresolved edge", es, err)
+			}
+			if res, err := st.FTS(ctx, store.FTSQuery{Terms: []string{"before"}, Tag: "X", Limit: 5}); err != nil || len(res.Rows) != 2 {
+				t.Errorf("tag filter after a failed op = %+v, %v; want the previous version's tag", res.Rows, err)
 			}
 		})
 	}
@@ -382,7 +407,7 @@ func TestDriverFaultsOnReadsAndLog(t *testing.T) {
 			_, err := st.KNN(ctx, store.KNNQuery{Vec: []float32{1, 0, 0, 0}, K: 2})
 			return err
 		}},
-		{"KNN tag filter", "e.tags LIKE", 1, func(st *Store, _ int64) error {
+		{"KNN tag filter", "t.tag = ? AND c.id IN", 1, func(st *Store, _ int64) error {
 			_, err := st.KNN(ctx, store.KNNQuery{Vec: []float32{1, 0, 0, 0}, K: 2, Tag: "x", OverFetch: 4})
 			return err
 		}},
@@ -391,6 +416,7 @@ func TestDriverFaultsOnReadsAndLog(t *testing.T) {
 			return err
 		}},
 		{"ChunkMeta", "SELECT c.id, e.path", 1, func(st *Store, _ int64) error { _, err := st.ChunkMeta(ctx, []int64{1}); return err }},
+		{"Edges", "LEFT JOIN entries AS dst", 1, func(st *Store, _ int64) error { _, err := st.Edges(ctx); return err }},
 		{"LogSearch begin", "BEGIN", 1, func(st *Store, _ int64) error { _, err := st.LogSearch(ctx, rec); return err }},
 		{"LogSearch searches", "INSERT INTO searches", 1, func(st *Store, _ int64) error { _, err := st.LogSearch(ctx, rec); return err }},
 		{"LogSearch prepare results", "PREPARE \n\t\tINSERT INTO search_results", 1, func(st *Store, _ int64) error { _, err := st.LogSearch(ctx, rec); return err }},
@@ -549,6 +575,31 @@ func TestCancelMidWriteIsInterrupted(t *testing.T) {
 				t.Errorf("chunks after an interrupted write = %+v, want the previous version", cs)
 			}
 		})
+	}
+}
+
+// TestCancelMidResolveIsInterrupted: SIGINT during ResolveEdges (after its last UPDATE ran) is
+// Interrupted, and no edge target is committed.
+func TestCancelMidResolveIsInterrupted(t *testing.T) {
+	st := openFaulty(t, 4)
+	entry := store.EntryInput{Path: "a.md", Kind: "file", Title: "T", Summary: "S",
+		Edges: []store.EdgeInput{{DstPath: "a.md", Rel: "links", Kind: store.EdgePath}}}
+	if _, err := st.ReplaceEntry(context.Background(), entry, faultChunks(4, "before")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fail(t, "UPDATE edges SET dst_entry_id = ? WHERE rowid", 1)
+	faultMu.Lock()
+	faultHook = func() error { cancel(); return nil }
+	faultMu.Unlock()
+	err := st.ResolveEdges(ctx)
+	if errs.KindOf(err) != errs.Interrupted {
+		t.Fatalf("err = %v (kind %v), want Interrupted", err, errs.KindOf(err))
+	}
+	arm("", 0)
+	if es, err := st.Edges(context.Background()); err != nil || len(es) != 1 || es[0].DstEntryID != 0 {
+		t.Errorf("edges after an interrupted resolve = %+v, %v; want the one edge still unresolved", es, err)
 	}
 }
 

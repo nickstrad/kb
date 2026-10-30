@@ -2,7 +2,12 @@
 
 package cli
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestFakeModel(t *testing.T) {
 	for _, tc := range []struct {
@@ -16,5 +21,46 @@ func TestFakeModel(t *testing.T) {
 	}
 	if knownModel("fake:8") != nil {
 		t.Error("knownModel refuses fake:8 in a harnessfake build")
+	}
+}
+
+func TestHarnessClock(t *testing.T) {
+	pinned := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, val string
+		set       bool
+		pinned    bool
+		warn      bool
+	}{
+		{"set", "2026-03-01T09:00:00Z", true, true, false},
+		{"set with offset", "2026-03-01T10:00:00+01:00", true, true, false},
+		{"unset", "", false, false, false},
+		{"empty", "", true, false, false},
+		{"garbage", "yesterday", true, false, true},
+		{"date only", "2026-03-01", true, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var warn bytes.Buffer
+			clock := harnessClock(func(k string) (string, bool) {
+				if k != "KB_HARNESS_NOW" {
+					t.Errorf("read %q", k)
+				}
+				return tc.val, tc.set
+			}, &warn)
+			if (clock != nil) != tc.pinned {
+				t.Fatalf("clock set = %v, want %v", clock != nil, tc.pinned)
+			}
+			if tc.pinned && !clock().Equal(pinned) {
+				t.Errorf("clock() = %v, want %v", clock(), pinned)
+			}
+			if got := strings.Contains(warn.String(), "not RFC3339"); got != tc.warn {
+				t.Errorf("warning = %q, want warning %v", warn.String(), tc.warn)
+			}
+		})
+	}
+	d := productionDeps()
+	d.now = harnessClock(func(string) (string, bool) { return "2026-03-01T09:00:00Z", true }, nil)
+	if !d.clock().Equal(pinned) {
+		t.Errorf("deps.clock() = %v, want the pinned time", d.clock())
 	}
 }

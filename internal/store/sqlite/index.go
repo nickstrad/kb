@@ -1,10 +1,12 @@
-// The store.Index implementation. Everything here keeps five tables consistent:
+// The store.Index implementation. Everything here keeps seven tables consistent:
 //
 //	entries      one row per knowledge entry
 //	chunks       the indexed pieces of that entry
 //	chunks_fts   the FTS5 index over chunks (rowid = chunks.id)
 //	chunks_exact the identifier FTS5 index over chunks (rowid = chunks.id; schema v6)
 //	chunks_vec   the sqlite-vec index over chunks (chunk_id = chunks.id)
+//	entry_tags   the entry's normalised tags, for the tag filter (schema v7; edges.go)
+//	edges        the entry's outgoing links (schema v7; edges.go)
 //
 // chunks_fts and chunks_exact are CONTENTLESS (content='', contentless_delete=1): they keep only
 // the inverted index, so their columns are write-only and readers join chunks on rowid. title is in
@@ -152,8 +154,8 @@ func vecTableExists(ctx context.Context, q queryRower) (bool, error) {
 	return n > 0, nil
 }
 
-// ResetIndex empties the derived index for `kb reindex --all`: entries (chunks cascade), both FTS
-// indexes, embed_meta and the chunks_vec table, dropped because the next model may have another
+// ResetIndex empties the derived index for `kb reindex --all`: entries, chunks, tags, edges, both
+// FTS indexes, embed_meta and the chunks_vec table, dropped because the next model may have another
 // width. The search log tables are left alone: they are the only data here not rebuildable from
 // Markdown.
 func (s *Store) ResetIndex(ctx context.Context) error {
@@ -174,6 +176,8 @@ func (s *Store) resetIndex(ctx context.Context) error {
 		"INSERT INTO chunks_fts(chunks_fts) VALUES ('delete-all')",
 		"INSERT INTO chunks_exact(chunks_exact) VALUES ('delete-all')",
 		"DROP TABLE IF EXISTS chunks_vec",
+		"DELETE FROM edges",
+		"DELETE FROM entry_tags",
 		"DELETE FROM chunks",
 		"DELETE FROM entries",
 		"DELETE FROM embed_meta",
@@ -188,7 +192,7 @@ func (s *Store) resetIndex(ctx context.Context) error {
 	return nil
 }
 
-const entryColumns = `id, path, kind, title, summary, tags, updated, verified, body_hash, indexed_at`
+const entryColumns = `id, path, kind, title, summary, tags, aliases, updated, verified, body_hash, indexed_at`
 
 // Entry returns the entry at path, or (nil, nil) when there is none.
 func (s *Store) Entry(ctx context.Context, path string) (*store.EntryRow, error) {
@@ -329,7 +333,8 @@ func (s *Store) embeddings(ctx context.Context, entryID int64) (map[string][]flo
 
 // ReplaceEntry writes an entry and its complete chunk set in one transaction: the entry row is
 // upserted by path, its old chunks and their FTS and vector rows are removed, and the new chunks go
-// into chunks, chunks_fts, chunks_exact and chunks_vec together. Every chunk must carry an
+// into chunks, chunks_fts (title plus aliases in the title column), chunks_exact and chunks_vec
+// together, with the entry's tags (entry_tags) and edges (writeLinks). Every chunk must carry an
 // embedding of exactly the recorded dim (none on an FTS-only index); a wrong one is a Conflict and
 // nothing is written.
 // embed_meta must be recorded first (EnsureEmbedMeta).
@@ -355,6 +360,9 @@ func (s *Store) replaceEntry(ctx context.Context, e store.EntryInput, chunks []s
 		return 0, errs.New(errs.Conflict, op, "replace entry %s: no embedding model is recorded for this index; run kb reindex --all", e.Path)
 	}
 	dim := meta.Dim
+	if err := checkEdges(op, e.Path, e.Edges); err != nil {
+		return 0, err
+	}
 	for i, c := range chunks {
 		var bad string
 		switch {
@@ -386,23 +394,30 @@ func (s *Store) replaceEntry(ctx context.Context, e store.EntryInput, chunks []s
 		}
 	}
 
-	tagsJSON, err := encodeTags(e.Tags)
+	tagsJSON, err := encodeList(e.Tags)
 	if err != nil {
-		return 0, fmt.Errorf("replace entry %s: %w", e.Path, err)
+		return 0, fmt.Errorf("replace entry %s: tags: %w", e.Path, err)
+	}
+	aliasesJSON, err := encodeList(e.Aliases)
+	if err != nil {
+		return 0, fmt.Errorf("replace entry %s: aliases: %w", e.Path, err)
 	}
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO entries (path, kind, title, summary, tags, updated, verified, body_hash, indexed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO entries (path, kind, title, summary, tags, aliases, updated, verified, body_hash, indexed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(path) DO UPDATE SET
 			kind = excluded.kind, title = excluded.title, summary = excluded.summary,
-			tags = excluded.tags, updated = excluded.updated, verified = excluded.verified,
-			body_hash = excluded.body_hash, indexed_at = excluded.indexed_at
+			tags = excluded.tags, aliases = excluded.aliases, updated = excluded.updated,
+			verified = excluded.verified, body_hash = excluded.body_hash, indexed_at = excluded.indexed_at
 		RETURNING id`,
-		e.Path, e.Kind, e.Title, e.Summary, tagsJSON,
+		e.Path, e.Kind, e.Title, e.Summary, tagsJSON, aliasesJSON,
 		nullString(e.Updated), nullString(e.Verified), e.BodyHash, nowUTC(),
 	).Scan(&entryID)
 	if err != nil {
 		return 0, fmt.Errorf("write entry %s: %w", e.Path, err)
+	}
+	if err := writeLinks(ctx, tx, entryID, e); err != nil {
+		return 0, err
 	}
 
 	insertChunk, err := tx.PrepareContext(ctx, `
@@ -438,12 +453,13 @@ func (s *Store) replaceEntry(ctx context.Context, e store.EntryInput, chunks []s
 		defer insertVec.Close()
 	}
 
+	title := ftsTitle(e.Title, e.Aliases)
 	for _, c := range chunks {
 		var chunkID int64
 		if err := insertChunk.QueryRowContext(ctx, entryID, c.Ord, c.SourceFile, c.Heading, c.Text, c.TextHash).Scan(&chunkID); err != nil {
 			return 0, fmt.Errorf("insert chunk %d of %s: %w", c.Ord, e.Path, err)
 		}
-		if _, err := insertFTS.ExecContext(ctx, chunkID, c.Text, c.Heading, e.Title); err != nil {
+		if _, err := insertFTS.ExecContext(ctx, chunkID, c.Text, c.Heading, title); err != nil {
 			return 0, fmt.Errorf("index chunk %d of %s for FTS: %w", c.Ord, e.Path, err)
 		}
 		if _, err := insertExact.ExecContext(ctx, chunkID, c.Text, c.Heading); err != nil {
@@ -463,6 +479,7 @@ func (s *Store) replaceEntry(ctx context.Context, e store.EntryInput, chunks []s
 
 	if assert.Enabled {
 		assertRowSets(ctx, tx, entryID, len(chunks), dim)
+		assertLinkSets(ctx, tx, entryID, e)
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit replace of %s: %w", e.Path, err)
@@ -514,7 +531,8 @@ func assertRowSets(ctx context.Context, tx *sql.Tx, entryID int64, n, dim int) {
 	}
 }
 
-// DeleteEntry removes an entry, its chunks and every index of them. A missing entry is not an error:
+// DeleteEntry removes an entry, its chunks and every index of them, its tags and outgoing edges,
+// and leaves the edges that pointed at it dangling. A missing entry is not an error:
 // `kb rm` deletes the file first and must still succeed on a stale index.
 func (s *Store) DeleteEntry(ctx context.Context, path string) error {
 	if err := s.deleteEntry(ctx, path); err != nil {
@@ -536,6 +554,12 @@ func (s *Store) deleteEntry(ctx context.Context, path string) error {
 	}
 	if err := clearChunks(ctx, tx, old); err != nil {
 		return err
+	}
+	if err := clearLinks(ctx, tx, old.ID, path); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE edges SET dst_entry_id = NULL WHERE dst_entry_id = ?", old.ID); err != nil {
+		return fmt.Errorf("detach links to %s: %w", path, err)
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM entries WHERE id = ?", old.ID); err != nil {
 		return fmt.Errorf("delete entry %s: %w", path, err)
@@ -615,48 +639,50 @@ func getEntry(ctx context.Context, q queryRower, path string) (*store.EntryRow, 
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface{ Scan(dest ...any) error }
 
-// scanEntry reads one entries row: NULL columns become "" and the tags JSON a slice.
+// scanEntry reads one entries row: NULL columns become "" and the tags and aliases JSON slices.
 func scanEntry(row scanner) (*store.EntryRow, error) {
 	var e store.EntryRow
-	var tagsJSON string
+	var tagsJSON, aliasesJSON string
 	var updated, verified sql.NullString
-	if err := row.Scan(&e.ID, &e.Path, &e.Kind, &e.Title, &e.Summary, &tagsJSON, &updated, &verified, &e.BodyHash, &e.IndexedAt); err != nil {
+	if err := row.Scan(&e.ID, &e.Path, &e.Kind, &e.Title, &e.Summary, &tagsJSON, &aliasesJSON, &updated, &verified, &e.BodyHash, &e.IndexedAt); err != nil {
 		return nil, err
 	}
 	e.Updated = updated.String
 	e.Verified = verified.String
-	tags, err := decodeTags(tagsJSON)
-	if err != nil {
+	var err error
+	if e.Tags, err = decodeList("tags", tagsJSON); err != nil {
 		return nil, fmt.Errorf("entry %s: %w", e.Path, err)
 	}
-	e.Tags = tags
+	if e.Aliases, err = decodeList("aliases", aliasesJSON); err != nil {
+		return nil, fmt.Errorf("entry %s: %w", e.Path, err)
+	}
 	return &e, nil
 }
 
-// encodeTags renders tags as the JSON array in entries.tags, which the tag filter matches with
-// LIKE. An empty slice is "[]", never "null".
-func encodeTags(tags []string) (string, error) {
-	if len(tags) == 0 {
+// encodeList renders a list as the JSON array in entries.tags or entries.aliases, as written (the
+// tag filter reads entry_tags, not this). An empty slice is "[]", never "null".
+func encodeList(items []string) (string, error) {
+	if len(items) == 0 {
 		return "[]", nil
 	}
-	b, err := json.Marshal(tags)
+	b, err := json.Marshal(items)
 	if err != nil {
-		return "", fmt.Errorf("encode tags: %w", err)
+		return "", fmt.Errorf("encode list: %w", err)
 	}
 	return string(b), nil
 }
 
-// decodeTags reads entries.tags back. "" and "[]" mean no tags; anything else that is not a JSON
-// array is a corrupt row.
-func decodeTags(s string) ([]string, error) {
+// decodeList reads entries.tags or entries.aliases (named by column) back. "" and "[]" mean an
+// empty list; anything else that is not a JSON array of strings is a corrupt row.
+func decodeList(column, s string) ([]string, error) {
 	if s == "" || s == "[]" {
 		return nil, nil
 	}
-	var tags []string
-	if err := json.Unmarshal([]byte(s), &tags); err != nil {
-		return nil, fmt.Errorf("decode tags %q: %w", s, err)
+	var items []string
+	if err := json.Unmarshal([]byte(s), &items); err != nil {
+		return nil, fmt.Errorf("decode %s %q: %w", column, s, err)
 	}
-	return tags, nil
+	return items, nil
 }
 
 // deserializeFloat32 decodes a sqlite-vec blob (little-endian float32s).

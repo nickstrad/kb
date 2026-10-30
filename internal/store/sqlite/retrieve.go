@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -20,7 +21,8 @@ import (
 // (text, heading, title; nil is store.DefaultBM25; chunks_exact has no title column) and returns
 // at most q.Limit rows, best first (bm25 is negative, lower is better). Each term is quoted as one
 // phrase (MatchExpr), which the table's own tokenizer splits; a query whose terms all sanitise
-// away runs nothing. A tag filter joins out to entries inside the query, so the LIMIT stays full;
+// away runs nothing. A tag filter joins out to entry_tags (the normalised tag, store.NormTag)
+// inside the query, so the LIMIT stays full;
 // q.ChunkIDs, when non-nil, restricts the rows to those chunk ids.
 func (s *Store) FTS(ctx context.Context, q store.FTSQuery) (store.FTSResult, error) {
 	assert.Pre(q.Limit > 0, "FTS: limit=%d must be positive", q.Limit)
@@ -29,7 +31,7 @@ func (s *Store) FTS(ctx context.Context, q store.FTSQuery) (store.FTSResult, err
 		w = *q.Weights
 	}
 	assert.Pre(validWeight(w.Text) && validWeight(w.Heading) && validWeight(w.Title), "FTS: bm25 weights %+v must be finite and 0 or more", w)
-	match := MatchExpr(q.Terms, q.Op)
+	match := MatchExprAlts(q.Terms, q.Op, q.Alts)
 	if match == "" || (q.ChunkIDs != nil && len(q.ChunkIDs) == 0) {
 		return store.FTSResult{Match: match}, nil
 	}
@@ -65,14 +67,11 @@ func ftsSQL(match string, w store.BM25Weights, q store.FTSQuery) (string, []any)
 	}
 	b.WriteString(`SELECT f.rowid, bm25(` + table + `, ` + placeholders(len(args)) + `) AS s FROM ` + table + ` f`)
 	if q.Tag != "" {
-		b.WriteString(` JOIN chunks c ON c.id = f.rowid JOIN entries e ON e.id = c.entry_id`)
+		b.WriteString(` JOIN chunks c ON c.id = f.rowid JOIN entry_tags t ON t.entry_id = c.entry_id AND t.tag = ?`)
+		args = append(args, store.NormTag(q.Tag))
 	}
 	b.WriteString(` WHERE ` + table + ` MATCH ?`)
 	args = append(args, match)
-	if q.Tag != "" {
-		b.WriteString(` AND e.tags LIKE ? ESCAPE '\'`)
-		args = append(args, tagPattern(q.Tag))
-	}
 	if q.ChunkIDs != nil {
 		b.WriteString(` AND f.rowid IN (` + placeholders(len(q.ChunkIDs)) + `)`)
 		for _, id := range q.ChunkIDs {
@@ -146,18 +145,19 @@ func (s *Store) knn(ctx context.Context, q store.KNNQuery) ([]store.VecRow, erro
 	return out, nil
 }
 
-// filterByTag keeps the rows whose entry carries the tag, in the order they came back.
+// filterByTag keeps the rows whose entry carries the tag (normalised, as FTS matches it), in the
+// order they came back.
 func (s *Store) filterByTag(ctx context.Context, rows []store.VecRow, tag string) ([]store.VecRow, error) {
 	if len(rows) == 0 {
 		return rows, nil
 	}
 	args := make([]any, 0, len(rows)+1)
-	args = append(args, tagPattern(tag))
+	args = append(args, store.NormTag(tag))
 	for _, r := range rows {
 		args = append(args, r.ChunkID)
 	}
-	res, err := s.db.QueryContext(ctx, `SELECT c.id FROM chunks c JOIN entries e ON e.id = c.entry_id
-		WHERE e.tags LIKE ? ESCAPE '\' AND c.id IN (`+placeholders(len(rows))+`)`, args...)
+	res, err := s.db.QueryContext(ctx, `SELECT c.id FROM chunks c JOIN entry_tags t ON t.entry_id = c.entry_id
+		WHERE t.tag = ? AND c.id IN (`+placeholders(len(rows))+`)`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("vector search tag filter: %w", err)
 	}
@@ -219,14 +219,6 @@ func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
-// tagEscaper neutralises LIKE syntax: without it a tag of "%" matches every entry and "docke_"
-// matches "docker". The escape character is backslash, declared with ESCAPE '\'.
-var tagEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
-
-// tagPattern finds a tag inside the JSON array in entries.tags. The quotes keep "docker" from
-// matching "docker-compose"; pair it with ESCAPE '\'.
-func tagPattern(tag string) string { return `%"` + tagEscaper.Replace(tag) + `"%` }
-
 // ftsBaseRune reports whether r can carry a token on its own: a letter, number, private-use or
 // unassigned code point (unicode61 keeps unassigned ones inside tokens). A field with none of
 // these tokenizes to nothing; quoted it would be an empty phrase that empties the AND query.
@@ -279,11 +271,21 @@ func quoteTerm(field string) string {
 
 // MatchExpr is the FTS5 MATCH expression for terms joined by op: every surviving term quoted as one
 // phrase. "" when no term survives, which means "run no FTS list".
-func MatchExpr(terms []string, op store.FTSOp) string {
+func MatchExpr(terms []string, op store.FTSOp) string { return MatchExprAlts(terms, op, nil) }
+
+// MatchExprAlts is MatchExpr where a field that is a key of alts also matches each alternative
+// (itself first, alternatives that sanitise away or repeat a phrase dropped): ("a" OR "b"). A field
+// that sanitises away stays dropped whatever its alternatives, so an expansion can only widen a
+// query. A field with no surviving alternative renders as before; a nil alts gives MatchExpr.
+func MatchExprAlts(terms []string, op store.FTSOp, alts map[string][]string) string {
 	var phrases []string
 	for _, t := range terms {
 		for _, field := range strings.Fields(t) {
-			if q := quoteTerm(field); q != "" {
+			q := quoteTerm(field)
+			if q != "" {
+				q = orGroup(q, alts[field])
+			}
+			if q != "" {
 				phrases = append(phrases, q)
 			}
 		}
@@ -293,6 +295,21 @@ func MatchExpr(terms []string, op store.FTSOp) string {
 		sep = " OR "
 	}
 	return strings.Join(phrases, sep)
+}
+
+// orGroup joins the quoted phrase first and the quoted alternatives into one parenthesised OR, or
+// first alone when no alternative survives.
+func orGroup(first string, alts []string) string {
+	parts := []string{first}
+	for _, a := range alts {
+		if q := quoteTerm(a); q != "" && !slices.Contains(parts, q) {
+			parts = append(parts, q)
+		}
+	}
+	if len(parts) == 1 {
+		return first
+	}
+	return "(" + strings.Join(parts, " OR ") + ")"
 }
 
 // SanitizeFTS turns a raw user query into the AND and OR MATCH expressions search tries in turn.

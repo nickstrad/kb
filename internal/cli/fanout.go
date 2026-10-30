@@ -175,7 +175,11 @@ func (d *deps) extraPart(cmd *cobra.Command, label string, o *openedStore, mode 
 	if err != nil {
 		return search.Part{}, err
 	}
-	s := &search.Searcher{Store: o.Store, Embedder: emb, KBVersion: Version, Settings: settings, Queries: memo}
+	syn, err := d.loadSynonyms(cmd, o.Workspace, cfg)
+	if err != nil {
+		return search.Part{}, err
+	}
+	s := &search.Searcher{Store: o.Store, Embedder: emb, KBVersion: Version, Settings: settings, Queries: memo, Synonyms: syn}
 	return search.Part{Ref: o.Canonical, Label: label, Root: o.Workspace.Root, Mode: pmode, Searcher: s}, nil
 }
 

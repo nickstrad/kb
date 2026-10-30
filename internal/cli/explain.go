@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -111,8 +113,13 @@ func runExplain(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts expl
 	if err != nil {
 		return err
 	}
+	syn, err := d.loadSynonyms(cmd, ws, cfg)
+	if err != nil {
+		return err
+	}
+	settings = settings.WithSynonyms(syn.Hash())
 	// No Log: explain must not write the search log.
-	searcher := &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: settings}
+	searcher := &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: settings, Synonyms: syn}
 	ex, err := searcher.Explain(ctx, search.Request{
 		Query:  opts.query,
 		Mode:   mode,
@@ -134,6 +141,9 @@ func runExplain(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts expl
 		fmt.Fprint(stdout, buf.String())
 	} else {
 		fmt.Fprint(stdout, renderExplanation(ex))
+	}
+	if ex.FTS != nil {
+		noteSpell(stderr, ex.FTS.Spell)
 	}
 	if ex.Mode == search.ModeFTSFallback {
 		fmt.Fprintf(stderr, "warning: %s; explained --mode fts instead\n", ex.FallbackReason)
@@ -159,6 +169,21 @@ func renderExplanation(ex *search.Explanation) string {
 		fmt.Fprintf(&b, "fts: match %s · OR retry fired (the AND query matched nothing)\n", ex.FTS.Match)
 	default:
 		fmt.Fprintf(&b, "fts: match %s · AND\n", ex.FTS.Match)
+	}
+	if ex.FTS != nil && len(ex.FTS.Synonyms) > 0 {
+		terms := slices.Sorted(maps.Keys(ex.FTS.Synonyms))
+		parts := make([]string, len(terms))
+		for i, t := range terms {
+			parts[i] = t + " = " + strings.Join(ex.FTS.Synonyms[t], " | ")
+		}
+		fmt.Fprintf(&b, "synonyms: %s\n", strings.Join(parts, "; "))
+	}
+	if ex.FTS != nil && len(ex.FTS.Spell) > 0 {
+		parts := make([]string, len(ex.FTS.Spell))
+		for i, f := range ex.FTS.Spell {
+			parts[i] = fmt.Sprintf("%s -> %s (%d %s, %d chunks)", f.Term, f.Correction, f.Distance, plural(f.Distance, "edit", "edits"), f.Doc)
+		}
+		fmt.Fprintf(&b, "spell: %s (the FTS list had fewer than %d rows)\n", strings.Join(parts, "; "), search.SpellBelow)
 	}
 	switch {
 	case ex.Exact != nil && ex.Exact.OrFallback:

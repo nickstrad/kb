@@ -105,7 +105,7 @@ func TestFTSListRetryDecision(t *testing.T) {
 			t.Run(fmt.Sprintf("%s exact=%v", tc.name, exact), func(t *testing.T) {
 				f := &faultyRetriever{ftsRows: tc.rows, match: tc.match}
 				s := &Searcher{Store: f}
-				_, retried, err := s.lexicalList(context.Background(), tc.terms, "", DefaultParams(), exact)
+				_, retried, err := s.lexicalList(context.Background(), tc.terms, nil, "", DefaultParams(), exact)
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -69,7 +69,7 @@ var scenarios = []scenario{
 	{"stores-alias", "store refs: alias, NAME@LOC, path, global, shadowing warns once, an alias with --root is refused, unknown words suggest names, hostile alias targets and refs exit 1 and never 3, kb stores lists a broken alias", scStoresAlias},
 	{"cache-two-stores", "the shared embedding cache (H19): processes on two stores open one cache file at once without locking errors; a garbage or newer cache file warns and falls back, is left alone, and kb model cache --clear removes it; --stats and --clear on a missing cache exit 0", scCacheTwoStores},
 	{"explain-hostile", "kb explain on hostile queries is valid JSON, --set overrides apply and bad ones exit 1, and it never writes the search log", scExplain},
-	{"eval-basic", "kb eval on an empty log, a judged search, baselines (save, compare, --set, hostile baseline files) and an index with deleted gold: exit 0/1 only, valid JSON, and it never writes the search log", scEval},
+	{"eval-basic", "kb eval on an empty log, a judged search, baselines (save, compare, --set, hostile baseline files), sweeps (the min_judged gate, --force, hostile grids) and an index with deleted gold: exit 0/1 only, valid JSON, and it never writes the search log", scEval},
 }
 
 // scWorkspaceDiscovery attacks "kb finds the right store, or none, and never creates one by
@@ -1059,6 +1059,37 @@ func scEval(h *H) {
 		if r := h.kb("eval", "--compare", name); h.expect(r, 1) && !strings.Contains(r.Stderr, "kb eval --save-baseline "+name) {
 			h.fail("hostile baseline %q gives no way out:\n%s", name, r)
 		}
+	}
+
+	// Sweeps: one judged query is below min_judged (refused), --force runs it; hostile grids exit 1.
+	if r := h.kb("eval", "--sweep", "search.rrf_k=10,60"); h.expect(r, 1) && !strings.Contains(r.Stderr, "need ≥30 judged queries (have 1); use --force") {
+		h.fail("sweep below min_judged without the gate message:\n%s", r)
+	}
+	if r := h.kb("eval", "--sweep", "search.rrf_k=10,60", "--sweep", "search.exact_list=true,false", "--force", "--json"); h.expect(r, 0) {
+		var rep struct {
+			Settings int      `json:"settings"`
+			Judged   int      `json:"judged"`
+			Train    []string `json:"train"`
+			Warnings []string `json:"warnings"`
+		}
+		if err := json.Unmarshal([]byte(r.Stdout), &rep); err != nil || rep.Settings != 4 || rep.Judged != 1 || len(rep.Train) != 1 || len(rep.Warnings) == 0 {
+			h.fail("forced sweep --json: %v %+v\n%s", err, rep, r)
+		}
+	}
+	if r := h.kb("eval", "--sweep", "search.rrf_k=10", "--force"); h.expect(r, 0) && (!strings.HasPrefix(r.Stdout, "sweep ·") || !strings.Contains(r.Stderr, "warning: nothing is held out")) {
+		h.fail("forced human sweep:\n%s", r)
+	}
+	many := make([]string, 201)
+	for i := range many {
+		many[i] = fmt.Sprint(i + 1)
+	}
+	for _, bad := range [][]string{{"--sweep", "search.k=4,8", "--force"}, {"--sweep", "embed.model=none", "--force"}, {"--sweep", "search.stores=a", "--force"},
+		{"--sweep", "search.rrf_k=", "--force"}, {"--sweep", "search.rrf_k=abc", "--force"}, {"--sweep", "search.rrf_k=-1", "--force"},
+		{"--sweep", "search.bm25.title=nan", "--force"}, {"--sweep", "search.bm25.title=inf", "--force"}, {"--sweep", "search.rrf_k=1,1", "--force"},
+		{"--sweep", "search.rrf_k=" + strings.Join(many, ","), "--force"}, {"--sweep", "search.rrf_k=1", "--sweep", "search.rrf_k=2", "--force"},
+		{"--sweep", "search.rrf_k=1", "--compare"}, {"--sweep", "search.rrf_k=1", "--per-query"}, {"--force"}, {"--sweep", "=1"},
+		{"--sweep", "search.rrf_k=1", "--set", "search.rrf_k=2", "--force"}} {
+		h.expect(h.kb(append([]string{"eval"}, bad...)...), 1)
 	}
 
 	// Delete the gold entry: eval drops it and says so.

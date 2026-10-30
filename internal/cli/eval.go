@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -19,11 +20,14 @@ import (
 	"github.com/nickstrad/kb/internal/eval"
 	"github.com/nickstrad/kb/internal/search"
 	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/workspace"
 )
 
 // newEvalCmd builds
 // `kb eval [--mode hybrid|fts|vec] [-k 8] [--since 30d] [--caller c] [--per-query] [--json]
-// [--set key=value]... [--save-baseline|--compare [NAME]]`.
+// [--set key=value]... [--save-baseline|--compare [NAME]]`, and
+// `kb eval --sweep key=v1,v2[,…]... [--force]` (with the same --mode, -k, --since, --caller, --set
+// and --json).
 func newEvalCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	var opts evalOpts
 	cmd := &cobra.Command{
@@ -51,11 +55,21 @@ func newEvalCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"(repeatable) tries a setting for this run without writing it, so\n" +
 			"kb eval --set search.rrf_k=20 --compare shows what that setting would change. A baseline\n" +
 			"of another file-format version, or at another k, is refused.\n" +
+			"Sweeps: --sweep key=v1,v2,... (repeatable, [search] keys only, at most 200 settings in\n" +
+			"all) replays the log once per setting of the grid. The judged queries are split by a\n" +
+			"seeded hash of their text: [eval] holdout of them (0.3) are held out, the rest choose\n" +
+			"the setting with the best MRR (then nDCG, then hit rate; ties keep the current setting).\n" +
+			"The top 5 are shown on both sides against the current settings (delta, paired 95%\n" +
+			"interval, w/l/t, sign test), with a config snippet for the best. A best setting that wins\n" +
+			"on the chosen queries but not on the held-out ones is reported as likely overfitting.\n" +
+			"Below [eval] min_judged judged queries (30) a sweep is refused unless --force. Each query\n" +
+			"is embedded once for the whole sweep. kb eval never writes the config.\n" +
 			"Only the log is read; baselines are the only files kb eval writes.",
 		Example: "  kb eval\n" +
 			"  kb eval --mode fts --since 30d --per-query\n" +
 			"  kb eval --caller claude --json\n" +
-			"  kb eval --save-baseline && kb eval --set search.rrf_k=20 --compare",
+			"  kb eval --save-baseline && kb eval --set search.rrf_k=20 --compare\n" +
+			"  kb eval --sweep search.rrf_k=20,40,60 --sweep search.bm25.title=1,3,5",
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -67,6 +81,15 @@ func newEvalCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 				if !opts.save && !opts.compare {
 					return usageErr("a baseline NAME needs --save-baseline or --compare")
 				}
+			}
+			if len(opts.sweeps) > 0 {
+				if err := checkSweepFlags(opts); err != nil {
+					return err
+				}
+				return runSweep(cmd, d, stdout, stderr, opts)
+			}
+			if opts.force {
+				return usageErr("--force applies only to --sweep")
 			}
 			return runEval(cmd, d, stdout, stderr, opts)
 		},
@@ -80,6 +103,8 @@ func newEvalCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringArrayVar(&opts.sets, "set", nil, "try a setting for this run: section.key=value (repeatable)")
 	cmd.Flags().BoolVar(&opts.save, "save-baseline", false, "save this run as baseline NAME (default \"default\"), replacing it")
 	cmd.Flags().BoolVar(&opts.compare, "compare", false, "compare this run with baseline NAME (default \"default\")")
+	cmd.Flags().StringArrayVar(&opts.sweeps, "sweep", nil, "try every value of a [search] key: section.key=v1,v2,... (repeatable: a grid)")
+	cmd.Flags().BoolVar(&opts.force, "force", false, "sweep even with fewer than [eval] min_judged judged queries")
 	return cmd
 }
 
@@ -95,6 +120,69 @@ type evalOpts struct {
 	save     bool
 	compare  bool
 	name     string // the baseline NAME argument
+	sweeps   []string
+	force    bool
+}
+
+// evalSetup validates the flags kb eval and kb eval --sweep share and loads the config with --set
+// applied.
+func evalSetup(cmd *cobra.Command, d *deps, opts evalOpts) (*workspace.Workspace, config.Config, time.Time, error) {
+	switch opts.mode {
+	case search.ModeHybrid, search.ModeFTS, search.ModeVec:
+	default:
+		return nil, config.Config{}, time.Time{}, usageErr("invalid --mode %q (want hybrid, fts or vec)", opts.mode)
+	}
+	since, err := parseSince(opts.since, d.clock())
+	if err != nil {
+		return nil, config.Config{}, time.Time{}, usageErr("%s", err)
+	}
+	ws, cfg, err := d.workspaceConfig(cmd)
+	if err != nil {
+		return nil, config.Config{}, time.Time{}, err
+	}
+	// --set before NewSettings (as explain does): the replays, the hash and the baseline all
+	// carry the variant.
+	for _, s := range opts.sets {
+		if cfg, err = config.Apply(cfg, s); err != nil {
+			return nil, config.Config{}, time.Time{}, err
+		}
+	}
+	if len(opts.sets) > 0 {
+		if err := cfg.CheckModel("--set", knownModel); err != nil {
+			return nil, config.Config{}, time.Time{}, err
+		}
+	}
+	return ws, cfg, since, nil
+}
+
+// openJudged opens the index read-only and reads the judged searches in the window. The caller
+// closes the store.
+func openJudged(cmd *cobra.Command, d *deps, ws *workspace.Workspace, since time.Time, caller string) (store.Store, []store.JudgedSearch, error) {
+	const op = "cli.eval"
+	ctx := cmd.Context()
+	if _, err := os.Stat(ws.DBPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, errs.Wrap(err, errs.NotFound, op, "no index at %s; run kb reindex --all", ws.DBPath)
+		}
+		// Driver-only: an unreadable database file whose directory (and config.toml) is still
+		// readable; a test cannot take one without the other (Q86).
+		return nil, nil, errs.Wrap(err, errs.Usage, op, "cannot read the index %s: check the file and its permissions", ws.DBPath).With("path", ws.DBPath)
+	}
+	st, err := d.openStore(ctx, ws.DBPath, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	jl, ok := st.(store.JudgedLog)
+	if !ok {
+		st.Close()
+		return nil, nil, errs.New(errs.Internal, op, "the store %T cannot read back the search log", st)
+	}
+	searches, err := jl.Judged(ctx, store.JudgedFilter{Since: since, Caller: caller})
+	if err != nil {
+		st.Close()
+		return nil, nil, err
+	}
+	return st, searches, nil
 }
 
 // runEval reads the log read-only, loads the embedder only when there is something to replay,
@@ -102,37 +190,16 @@ type evalOpts struct {
 // replayed in fts-fallback (the report is still printed first).
 func runEval(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOpts) error {
 	const op = "cli.eval"
-	switch opts.mode {
-	case search.ModeHybrid, search.ModeFTS, search.ModeVec:
-	default:
-		return usageErr("invalid --mode %q (want hybrid, fts or vec)", opts.mode)
-	}
 	if opts.save && opts.compare {
 		return usageErr("--save-baseline and --compare are exclusive: compare first, then save")
 	}
 	if (opts.save || opts.compare) && !eval.ValidBaselineName(opts.name) {
 		return usageErr("invalid baseline name %q (lowercase letters, digits, '.', '_' or '-', at most 64)", opts.name)
 	}
-	since, err := parseSince(opts.since, d.clock())
-	if err != nil {
-		return usageErr("%s", err)
-	}
 	ctx := cmd.Context()
-	ws, cfg, err := d.workspaceConfig(cmd)
+	ws, cfg, since, err := evalSetup(cmd, d, opts)
 	if err != nil {
 		return err
-	}
-	// --set before NewSettings (as explain does): the replays, the hash and the baseline all
-	// carry the variant.
-	for _, s := range opts.sets {
-		if cfg, err = config.Apply(cfg, s); err != nil {
-			return err
-		}
-	}
-	if len(opts.sets) > 0 {
-		if err := cfg.CheckModel("--set", knownModel); err != nil {
-			return err
-		}
 	}
 	evalDir := filepath.Join(ws.StoreDir, "eval")
 	var base *eval.Baseline
@@ -142,27 +209,11 @@ func runEval(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOpt
 			return err
 		}
 	}
-	if _, err := os.Stat(ws.DBPath); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return errs.Wrap(err, errs.NotFound, op, "no index at %s; run kb reindex --all", ws.DBPath)
-		}
-		// Driver-only: an unreadable database file whose directory (and config.toml) is still
-		// readable; a test cannot take one without the other (Q86).
-		return errs.Wrap(err, errs.Usage, op, "cannot read the index %s: check the file and its permissions", ws.DBPath).With("path", ws.DBPath)
-	}
-	st, err := d.openStore(ctx, ws.DBPath, true)
+	st, searches, err := openJudged(cmd, d, ws, since, opts.caller)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
-	jl, ok := st.(store.JudgedLog)
-	if !ok {
-		return errs.New(errs.Internal, op, "the store %T cannot read back the search log", st)
-	}
-	searches, err := jl.Judged(ctx, store.JudgedFilter{Since: since, Caller: opts.caller})
-	if err != nil {
-		return err
-	}
 
 	mode := opts.mode
 	var embedder embed.Embedder
@@ -355,4 +406,130 @@ func firstRank(s *eval.Score) string {
 	default:
 		return fmt.Sprint(s.FirstRank)
 	}
+}
+
+// checkSweepFlags refuses the flags --sweep does not combine with.
+func checkSweepFlags(opts evalOpts) error {
+	switch {
+	case opts.save || opts.compare:
+		return usageErr("--sweep compares with the current settings itself; it does not take --save-baseline or --compare")
+	case opts.perQuery:
+		return usageErr("--per-query does not apply to --sweep; use --json for every setting's scores")
+	}
+	return nil
+}
+
+// runSweep is kb eval --sweep: expand the grid (bad keys and values fail first), read the log,
+// refuse below [eval] min_judged unless --force, then replay once per distinct setting with one
+// shared query-vector memo, so each query is embedded once. It never writes the config or the
+// log. Exit 2 when some replay fell back to fts (the report is still printed first).
+func runSweep(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOpts) error {
+	axes := make([]eval.Axis, len(opts.sweeps))
+	for i, s := range opts.sweeps {
+		var err error
+		if axes[i], err = eval.ParseAxis(s); err != nil {
+			return err
+		}
+	}
+	ctx := cmd.Context()
+	ws, cfg, since, err := evalSetup(cmd, d, opts)
+	if err != nil {
+		return err
+	}
+	for _, a := range axes {
+		for _, s := range opts.sets {
+			if k, _, _ := strings.Cut(s, "="); strings.TrimSpace(k) == a.Key {
+				return usageErr("%s is both --set and --sweep; drop one", a.Key)
+			}
+		}
+	}
+	grid, err := eval.ExpandGrid(cfg, axes, eval.MaxGrid)
+	if err != nil {
+		return err
+	}
+	st, searches, err := openJudged(cmd, d, ws, since, opts.caller)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	p, err := eval.Prepare(ctx, searches, st)
+	if err != nil {
+		return err
+	}
+	if err := eval.Gate(len(p.Judged()), cfg.Eval.MinJudged, opts.force); err != nil {
+		return err
+	}
+	embedder, mode, err := d.searchEmbedder(cmd, st, cfg, opts.mode, "cli.eval")
+	if err != nil {
+		return err
+	}
+	memo := &search.QueryMemo{} // one per sweep: the vector of a query does not depend on [search]
+	newSearcher := func(s search.Settings) eval.Searcher {
+		// No Log: replays must not write the log they are scored against.
+		return &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: s, Queries: memo}
+	}
+	rep, err := eval.Sweep(ctx, p, cfg, axes, grid, newSearcher, eval.SweepOptions{
+		Mode: mode, K: search.ClampK(searchK(opts.kChanged, opts.k, cfg.Search.K)),
+		MinJudged: cfg.Eval.MinJudged, Holdout: cfg.Eval.Holdout,
+	})
+	if err != nil {
+		return err
+	}
+	if opts.asJSON {
+		if err := writeJSON(stdout, rep); err != nil { // unreachable: plain values always encode (Q86)
+			return err
+		}
+	} else {
+		fmt.Fprint(stdout, renderSweep(rep, ws.ConfigPath))
+	}
+	for _, w := range rep.Warnings { // warnings go to stderr (CODING_STYLE §9); --json also carries them
+		fmt.Fprintf(stderr, "warning: %s\n", w)
+	}
+	if rep.FallbackQueries > 0 {
+		fmt.Fprintf(stderr, "warning: %s; %d of the replays ran --mode fts instead\n", rep.FallbackReason, rep.FallbackQueries)
+		return exitSilently(ExitEmbedder)
+	}
+	return nil
+}
+
+// renderSweep is the human form of a sweep: the split, the current settings, the top settings on
+// the training queries with their held-out scores and deltas, and the best one as a snippet.
+func renderSweep(r *eval.SweepReport, configPath string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "sweep · mode %s · k %d · %d settings (%d replays) · %d judged queries: %d to choose, %d held out (eval.holdout %g, seed %d)\n",
+		r.Mode, r.K, r.Settings, r.Replays, r.Judged, len(r.Train), len(r.Test), r.Holdout, r.Seed)
+	ci := func(e eval.Estimate) string { return fmt.Sprintf("%.3f [%.3f, %.3f]", e.Mean, e.Lo, e.Hi) }
+	test := func(s *eval.SplitScore) string {
+		if s == nil {
+			return "-"
+		}
+		return ci(s.MRR)
+	}
+	fmt.Fprintf(&b, "current settings %s: mrr %s chosen · %s held out\n\n", shortHash(r.Current.SettingsHash), ci(r.Current.Train.MRR), test(r.Current.Test))
+	fmt.Fprintf(&b, "%-4s %-22s %-22s %-24s %-9s %s\n", "rank", "mrr (choose)", "mrr (held out)", "held-out Δ vs current", "w/l/t", "p")
+	for _, row := range r.Top {
+		delta, wlt, p := "-", "-", "-"
+		if row.TestVsCurrent != nil {
+			m, _ := row.TestVsCurrent.Metric("mrr") // paired: the held-out side is never empty here
+			delta = fmt.Sprintf("%+.3f [%+.3f, %+.3f]", m.Delta, m.Lo, m.Hi)
+			wlt, p = fmt.Sprintf("%d/%d/%d", m.Wins, m.Losses, m.Ties), fmt.Sprintf("%.3f", m.P)
+		}
+		fmt.Fprintf(&b, "%-4d %-22s %-22s %-24s %-9s %s\n", row.Rank, ci(row.Train.MRR), test(row.Test), delta, wlt, p)
+		label := strings.Join(row.Set, " ")
+		if row.Current {
+			label += "  (= current)"
+		}
+		fmt.Fprintf(&b, "     %s\n", label)
+	}
+	b.WriteString("\n")
+	switch {
+	case r.BestIsCurrent:
+		b.WriteString("best on the chosen queries: the current settings; nothing to change\n")
+	case r.Overfit:
+		b.WriteString("best on the chosen queries does not win on the held-out ones: keep the current settings\n")
+	default:
+		fmt.Fprintf(&b, "best on the chosen queries: %s\nto adopt it, add to %s:\n%s", strings.Join(r.Top[0].Set, " "), configPath, r.TOML)
+	}
+	b.WriteString("A held-out delta whose interval spans 0 is noise; p is a two-sided exact sign test. kb eval never writes the config.\n")
+	return b.String()
 }

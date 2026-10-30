@@ -1,0 +1,220 @@
+agent-workflow: the flow the README tells an agent to follow, exactly as written there.
+
+A project with a few notes in its store. The agent searches, reads the hit, records a verdict,
+then uses the output controls from the README block: --expand, --budget, a query that starts
+with a dash, an identifier query, and kb context.
+
+  $ kb init --model fake:8
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ kb add $WORK/notes/worker.md
+  added data/worker.md (3 chunks)
+
+  $ kb add $WORK/notes/reindex.md
+  added data/reindex.md (2 chunks)
+
+  $ kb add $WORK/notes/flags.md
+  added data/flags.md (2 chunks)
+
+Step 1: search in plain words, as the paste block says, with --json for structured output.
+
+  $ kb search "how do I restart the worker" --caller claude --json
+  {
+    "search_id": 1,
+    "feedback": {
+      "useful": "kb feedback 1 RANK --useful",
+      "not_useful": "kb feedback 1 RANK --not-useful --note \"why\"",
+      "none": "kb feedback 1 --none --note \"why\""
+    },
+    "query": "how do I restart the worker",
+    "mode": "hybrid",
+    "hits": [
+  ...
+  ~ \s+"path": "data/worker.md",
+  ...
+    ]
+  }
+
+Step 2: read the hit with kb show (never the store's files).
+
+  $ kb show data/worker.md
+  ---
+  title: Restarting the worker
+  summary: How to restart the background worker safely.
+  tags: [ops]
+  updated: 2026-02-01
+  ---
+  # Restarting the worker
+
+  Drain the queue first, then restart the worker with `systemctl restart kb-worker`.
+
+  ## Rollback
+
+  If the worker does not come back, start the previous release with `systemctl start kb-worker@prev`.
+
+Step 3: say whether it helped, using the command the search printed.
+
+  $ kb feedback --last 1 --useful --caller claude
+  recorded: search 1 rank 1 useful=1 (newest search for claude, (time): "how do I restart the worker")
+
+Whole sections instead of chunks, and a size cap.
+
+  $ kb search "restart the worker" --caller claude --mode fts --expand section
+  search 2 · 3 hits
+  [1] data/worker.md · updated 2026-02-01
+  Restarting the worker: How to restart the background worker safely.
+
+  [2] data/worker.md › (intro) · updated 2026-02-01
+  # Restarting the worker
+
+  Drain the queue first, then restart the worker with `systemctl restart kb-worker`.
+
+  [3] data/worker.md › Rollback · updated 2026-02-01
+  If the worker does not come back, start the previous release with `systemctl start kb-worker@prev`.
+  search_id=2
+
+  $ kb search "restart the worker" --caller claude --mode fts --budget 60
+  search 3 · 3 hits
+  [1] data/worker.md · updated 2026-02-01
+  How to restart the background worker safely.
+
+  [2] data/worker.md › (intro) · updated 2026-02-01
+
+  [3] data/worker.md › Rollback · updated 2026-02-01
+
+  (+3 condensed; raise --budget)
+  search_id=3
+
+A query that starts with a dash goes after the flags and --.
+
+  $ kb search --caller claude --json -- --embed-model
+  {
+    "search_id": 4,
+    "feedback": {
+      "useful": "kb feedback 4 RANK --useful",
+      "not_useful": "kb feedback 4 RANK --not-useful --note \"why\"",
+      "none": "kb feedback 4 --none --note \"why\""
+    },
+    "query": "--embed-model",
+    "mode": "hybrid",
+    "hits": [
+  ...
+        "exact_rank": 1,
+        "path": "data/flags.md",
+  ...
+    ]
+  }
+
+An identifier matches exactly: the exact list ranks the chunk that says reindex_test.
+
+  $ kb search reindex_test --caller claude --json
+  {
+    "search_id": 5,
+    "feedback": {
+      "useful": "kb feedback 5 RANK --useful",
+      "not_useful": "kb feedback 5 RANK --not-useful --note \"why\"",
+      "none": "kb feedback 5 --none --note \"why\""
+    },
+    "query": "reindex_test",
+    "mode": "hybrid",
+    "hits": [
+  ...
+        "exact_rank": 1,
+        "path": "data/reindex.md",
+  ...
+    ]
+  }
+
+kb context prints the hits as Markdown, ready to paste into a prompt.
+
+  $ kb context "restart the worker"
+  ## kb context (search 6)
+
+  ### [1] data/worker.md · updated 2026-02-01
+
+  How to restart the background worker safely.
+
+  Restarting the worker: How to restart the background worker safely.
+
+  ### [2] data/worker.md › Rollback · updated 2026-02-01
+
+  How to restart the background worker safely.
+
+  If the worker does not come back, start the previous release with `systemctl start kb-worker@prev`.
+
+  ### [3] data/worker.md › (intro) · updated 2026-02-01
+
+  How to restart the background worker safely.
+
+  # Restarting the worker
+
+  Drain the queue first, then restart the worker with `systemctl restart kb-worker`.
+
+  ### [4] data/reindex.md › (intro) · updated 2026-02-02
+
+  How the reindex_test script checks the index.
+
+  # Reindex test
+
+  Run reindex_test after changing the chunker. A plain reindex test run without the script does
+  not compare embeddings.
+
+  ### [5] data/flags.md · updated 2026-02-03
+
+  Command-line flags that choose the embedding model.
+
+  Embedding flags: Command-line flags that choose the embedding model.
+
+  ### [6] data/reindex.md · updated 2026-02-02
+
+  How the reindex_test script checks the index.
+
+  Reindex test: How the reindex_test script checks the index.
+
+  ### [7] data/flags.md › (intro) · updated 2026-02-03
+
+  Command-line flags that choose the embedding model.
+
+  # Embedding flags
+
+  Pass --embed-model to choose the model for one run. The default comes from the store config.
+
+  More: kb show data/worker.md
+  search 6 · kb feedback 6 RANK --useful or --not-useful
+
+-- notes/worker.md --
+---
+title: Restarting the worker
+summary: How to restart the background worker safely.
+tags: [ops]
+updated: 2026-02-01
+---
+# Restarting the worker
+
+Drain the queue first, then restart the worker with `systemctl restart kb-worker`.
+
+## Rollback
+
+If the worker does not come back, start the previous release with `systemctl start kb-worker@prev`.
+-- notes/reindex.md --
+---
+title: Reindex test
+summary: How the reindex_test script checks the index.
+tags: [dev]
+updated: 2026-02-02
+---
+# Reindex test
+
+Run reindex_test after changing the chunker. A plain reindex test run without the script does
+not compare embeddings.
+-- notes/flags.md --
+---
+title: Embedding flags
+summary: Command-line flags that choose the embedding model.
+tags: [dev]
+updated: 2026-02-03
+---
+# Embedding flags
+
+Pass --embed-model to choose the model for one run. The default comes from the store config.

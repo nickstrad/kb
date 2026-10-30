@@ -729,6 +729,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **2.6 `kb eval --sweep`**
 - Carried from W9 pass: build each variant as an in-memory `eval.Baseline` and reuse `eval.Compare` (paired by normalised query, k must match) and `SignTest`; the variant's `--set` applies before `search.NewSettings`, as `runEval` does. Compare's `Warnings` are data: the CLI prints them on stderr (CODING_STYLE §9), never in the stdout table. `search.exact_list` and `search.list_weights.exact` are sweepable keys (`kb eval --set search.exact_list=false --compare` is the tested two-point case, `TestEvalCompareExactListOff`).
 - Model: Opus (holdout split, overfitting guards, vector reuse); review: Sonnet via testing-standards-pass
+- Status: done (W10). E3 journey J16: gate exit 1, then `--force --json`.
 - Files: `internal/eval/sweep.go`.
 - Steps:
   1. `--sweep 'search.rrf_k=20,40,60' --sweep 'search.bm25.title=1,3,5'` builds a cartesian grid (cap 200 combos).
@@ -842,6 +843,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **4.3 `kb context "<task>"`**
 - Carried from W9 pass: reuse `expandHits` (cli/expand.go: per-hit store lookup, `Index.Chunks` cached per entry, dedupe keys) and `render.Section`/`Entry`/`Dedupe`; expansion happens before the budget cut, so `context_budget` (reserved, `output.context_budget`) is the only limit on expanded text. Wire `output.context_budget` by the doc.go rule (move it to the wired list, a boundary row).
 - Model: Haiku (thin command composing 4.1/4.2, golden test); review: Sonnet via testing-standards-pass
+- Status: done (W10)
 - Files: `cli/context.go`.
 - Steps:
   1. Run a hybrid search with k=8 and `--expand section --budget output.context_budget`, logged with `--caller`.
@@ -910,6 +912,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Carried from W4 pass: `links.Extract` does not extract reference-style links (`[t][ref]` + `[ref]: path`) or `[[]](x.md)` (CommonMark makes the latter a link); decide whether edges need them before backfilling. `links.resolve` now asserts its target is a clean relative path (L1); FuzzExtract adds two metamorphic properties (leading blank line shifts lines; a fenced body yields nothing).
 - Carried from 5.1: inline front-matter lists split on every comma, so paths or aliases containing commas need the block form. Front-matter paths resolve against the entry file's own directory (`related: [x.md]` in `data/droplet/README.md` means `data/droplet/x.md`); document this. Use `links.Dedupe` before writing edges. A body link may resolve to a directory (`data/other`); decide whether that matches a directory entry.
 - Model: Opus (backfilled migration, reindex reset, tag semantics change); review: Opus via testing-standards-pass
+- Status: done (W10). 5.3/5.4 read `Index.Edges`. E3: switch the J7 fixture to v6→v7 and add a `--tag` case step to a search journey; J14 covers related and stale.
 - Files: migration 6→7; `sqlite/entries.go:ReplaceEntry` (write edges/tags/aliases; FTS `title` column = `title + " " + aliases`); `Index.ResolveEdges` (`UPDATE edges SET dst_entry_id = (SELECT id FROM entries WHERE path = dst_path OR <wikilink match>)`), called at the end of `reindex.All` and after `One`; the tag filter in `sqlite/retrieve.go` becomes `JOIN entry_tags` (replacing `tagPattern`/`LIKE`).
 - Tests: tag filter is case-insensitive (behaviour change from the case-sensitive LIKE); aliases findable via FTS; migration backfills tags; edges resolved after reindex.
 - Accept: `kb reindex` then `kb search q --tag Docker` behaves the same as `--tag docker`.
@@ -936,6 +939,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **5.5 Synonyms**
 - Carried from W9 pass: expanded synonyms should go to the main FTS list only, not the exact-identifier list (`ExactTerms` takes the raw query; an identifier like `foo_bar` matches only itself by design). If a synonym is itself an identifier, decide whether it joins the exact terms (a DEFAULTS row).
 - Model: Sonnet (query expansion from clear spec)
+- Status: done (W10). 5.6 spell rewrites should expand through `Searcher.Synonyms` and `FTSQuery.Alts`.
 - Files: `search/synonyms.go`, `cli/search.go`.
 - Steps:
   1. `synonyms.txt` holds one comma-separated group per line, with `#` comments. Path: `search.synonyms`, else `.kb/synonyms.txt`, else the global store's.
@@ -949,6 +953,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **5.6 `kb synonyms suggest` + spell correction**
 - Carried from W9 pass: `chunks_exact_vocab` (fts5vocab `row` over `chunks_exact`) already exists since v6 (moved from v7, §6.5), so 5.6 needs no migration for it: read it through a new `sqlite/vocab.go`. Its terms are unstemmed and case-folded but keep `_-.:/` inside a token (`kb.toml.` at a sentence end is its own term), so spell candidates should strip trailing `.`/`:` as `search.trimIdentifier` does.
 - Model: Opus (spell heuristics and log mining, threshold logic); review: Sonnet via testing-standards-pass
+- Status: done (W10). Spell ranks fewest edits first, then doc frequency; an OR retry reruns as OR; the stderr note is `note: also searched "X" for "Y"`. Suggest pairs need a one-word-each-way diff. See .agent/knowledge/spell-and-synonym-suggest.md.
 - Files: `cli/synonyms.go`, `search/spell.go`, `sqlite/vocab.go` (reads `chunks_exact_vocab`, created by migration v6).
 - Steps:
   1. Suggest: pairs of searches by the same caller within 5 min where the first had no useful/open and the second did. Diff their token sets and count the pairs. Also list `gaps` query terms absent from the vocab. Print paste-ready lines; never write.
@@ -1074,6 +1079,7 @@ title: Tmux logout
 
 **E1 E2E runner, clock seam, first journeys**
 - Model: Sonnet (spec above; bounded); review: Opus via testing-standards-pass
+- Status: done (W10). Journeys J1, J2, J9, J10; the suite runs in about 2 s. `binary-clock-not-pinnable` remedy 2 (clock into sqlite and migrate) is still open.
 - Files: `internal/e2e/` (new): `doc.go`, `transcript.go` (parse/format), `normalise.go`, `runner.go` (env, exec, builtins, diff), `transcript_test.go`, `normalise_test.go`, `fuzz_test.go`, `journeys_test.go` (`//go:build e2e`), `testdata/journeys/*.txt`; `internal/cli/harnessfake.go` (clock env); `internal/cli/root.go` (one line: `productionDeps` takes `harnessNow` when set; the orchestrator applies it, rule 1); `Makefile` (`e2e`, `e2e-update`); `.github/workflows/ci.yml` (one step).
 - Steps:
   1. Transcript parser and formatter, plus normalisers. Only the journeys file carries the `e2e` tag, so the runner's own tests run in every `go test`.

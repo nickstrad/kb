@@ -13,7 +13,7 @@ entry, opens. `ScoreRanking(matches, nGold, k)` works on gold indexes, so the ma
 the metric are separate; a gold item earns gain once (several chunks of one gold path cannot push
 nDCG over 1). `Bootstrap` = percentile method over PCG(seed, seed^const), 1000 resamples, seed 1.
 `kb eval` loads the embedder only when some query has gold. `eval.min_judged` is the small-sample
-threshold (holdout stays reserved for the 2.6 sweep).
+threshold and the sweep gate; `eval.holdout` the sweep's held-out share.
 
 **Cross-store gold (W8 pass, Q77).** The primary's log also holds other stores' hits of a
 cross-store search. `Verdict.Store` is that hit's canonical ref ("" = this store), and opens of
@@ -35,6 +35,19 @@ embed model, entry count, other-store, fallback differences are warnings. The CL
 optional positional (`--save-baseline|--compare [NAME]`); `--set` goes through `config.Apply` before
 `NewSettings`. A fallback run is never saved. 2.6's sweep can build `Baseline`s in memory and reuse Compare.
 
+**Sweeps (2.6, W10).** `eval.Prepare` reads gold against the index once; `Prepared.run` replays it
+per Searcher (Evaluate = Prepare + run). `kb eval --sweep` = `ParseAxis` ([search] keys only, not
+k/stores) → `ExpandGrid` (cartesian, first axis slowest, `MaxGrid` 200 checked before applying,
+every combo through `config.ApplyAs(c, "--sweep", …)`) → `Gate` on `Prepared.Judged()` (chunk gold
+in the index; before the model loads) → `Sweep`. `Split` orders judged keys by SHA-256(seed LE ‖
+key) and holds out round(holdout·n) clamped to [1, n−1] (none for n<2 or holdout 0); the seed-1
+split of `q00…q39` is pinned in `TestSplitDeterministic`. Ranking: train chunk MRR, nDCG, hit
+(tieEps), then the current settings, then grid order. Equal settings hashes share one replay;
+the CLI hands every variant one `search.QueryMemo`, so a query is embedded once per sweep
+(`TestEvalSweepWiring` counts Embed calls). Rows reuse `Compare` on per-side `subset` reports.
+`Overfit` = best ≠ current, wins train MRR, not test. Mutation survivors left in sweep.go are
+equivalent (capacity hints, the `[2]float64` literal, unreachable NewSettings error, asserts).
+
 **Why it matters.** 2.4 (baselines) needs `Result.Chunk.FirstRank` per query; 2.6 (sweep) needs a
 deterministic query order (`Query.Key`, sorted) to hash for the holdout and a Searcher to swap.
 
@@ -48,4 +61,4 @@ table (W9 pass, CODING_STYLE §9). A per-query difference of exactly ±tieEps (1
 (`TestMetricDiffTieBoundary`). `kb eval --set search.exact_list=false --compare` is the tested way to
 measure the exact list (`TestEvalCompareExactListOff`).
 
-**Seen in:** internal/eval, internal/store/judged.go, internal/store/sqlite/judged.go, internal/cli/eval.go · 2026-10-30
+**Seen in:** internal/eval (sweep.go), internal/store/judged.go, internal/store/sqlite/judged.go, internal/cli/eval.go · 2026-10-30

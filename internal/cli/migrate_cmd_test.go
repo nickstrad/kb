@@ -191,7 +191,7 @@ func TestMigrateUpUpgrades(t *testing.T) {
 		"migrated store default index: v2 -> v" + fmt.Sprint(sqlite.SchemaVersion()),
 		"backup: " + baks[0],
 		"applied index/0003-vec-width",
-		"needs: kb reindex (store default: index/0003-vec-width)",
+		"needs: kb reindex (store default: index/0003-vec-width; store default: index/0007-edges-tags-aliases)",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("migrate up output lacks %q:\n%s", want, stdout)
@@ -315,14 +315,18 @@ func TestMigrateStatusOutput(t *testing.T) {
 		t.Fatalf("status of the fixture: %+v, %v", st, err)
 	}
 	step := st.Pending[0]
+	note := "" // a step that clears derived data says what it needs (v7: reindex)
+	if step.Effect != migrate.EffectNone {
+		note = "  [needs kb reindex; effect " + step.Effect.String() + "]"
+	}
 	want := fmt.Sprintf(`SCOPE          FILE      VERSION   STATE                         PATH
 location       location  v1        current                       <root>/.kb/kb.toml
 store default  config    v1        current                       <root>/.kb/stores/default/config.toml
 store default  index     v%d -> v%d  1 pending: run kb migrate up  <root>/.kb/stores/default/kb.sqlite
 
 store default index:
-  %s  %s
-`, cur-1, cur, step.ID, step.Desc)
+  %s  %s%s
+`, cur-1, cur, step.ID, step.Desc, note)
 	if got := norm(stdout); got != want {
 		t.Errorf("status output:\n%s\nwant:\n%s", got, want)
 	}

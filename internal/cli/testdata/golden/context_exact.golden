@@ -1,0 +1,34 @@
+## kb context (search 1)
+
+### [1] tmux.md · updated 2026-09-13
+
+sessions survive a logout and detach
+
+Tmux Notes: sessions survive a logout when the server keeps running
+
+### [2] tmux.md › Detach · updated 2026-09-13
+
+sessions survive a logout and detach
+
+press the prefix then d to detach, and the session stays alive after logout
+
+### [3] tmux.md › Logs · updated 2026-09-13
+
+sessions survive a logout and detach
+
+rotate tmux logs weekly with logrotate so the pane buffer stays small
+
+### [4] ssh.md · updated 2026-08-02
+
+keepalive settings
+
+SSH Config: keepalive settings stop a logout from dropping the link
+
+### [5] git.md · updated 2026-07-19
+
+rebase before a pull request
+
+Git Tips: rebase onto main before opening a pull request
+
+More: kb show tmux.md
+search 1 · kb feedback 1 RANK --useful or --not-useful

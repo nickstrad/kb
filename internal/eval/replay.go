@@ -118,25 +118,74 @@ func Evaluate(ctx context.Context, searches []store.JudgedSearch, corpus Corpus,
 }
 
 func evaluate(ctx context.Context, searches []store.JudgedSearch, corpus Corpus, s Searcher, opt Options) (*Report, error) {
+	p, err := prepare(ctx, searches, corpus)
+	if err != nil {
+		return nil, err
+	}
+	return p.run(ctx, s, opt, true)
+}
+
+// Prepared is a log whose gold has been checked against the index once, ready to be replayed with
+// any number of Searchers (kb eval --sweep replays it once per setting).
+type Prepared struct {
+	queries []Query
+	golds   []gold
+	counts  SearchCounts
+}
+
+// Prepare extracts the gold of searches and checks it against corpus. It reads the index, never
+// writes, and does not replay.
+func Prepare(ctx context.Context, searches []store.JudgedSearch, corpus Corpus) (*Prepared, error) {
+	p, err := prepare(ctx, searches, corpus)
+	if err != nil {
+		return nil, errs.Wrap(err, errs.KindOf(err), "eval.Prepare", "%v", err)
+	}
+	return p, nil
+}
+
+func prepare(ctx context.Context, searches []store.JudgedSearch, corpus Corpus) (*Prepared, error) {
+	queries, counts := Extract(searches)
+	p := &Prepared{queries: queries, golds: make([]gold, len(queries)), counts: counts}
+	pres := newPresence(corpus)
+	for i, q := range queries {
+		g, err := resolveGold(ctx, pres, q)
+		if err != nil {
+			return nil, err
+		}
+		p.golds[i] = g
+	}
+	return p, nil
+}
+
+// Judged is the keys of the queries with chunk-level gold in the index: the queries the headline
+// metrics score, in key order.
+func (p *Prepared) Judged() []string {
+	keys := []string{}
+	for i, q := range p.queries {
+		if len(p.golds[i].chunks) > 0 {
+			keys = append(keys, q.Key)
+		}
+	}
+	return keys
+}
+
+// run replays and scores; without intervals the variants carry only their query counts (a sweep
+// scores each setting from PerQuery and bootstraps only the rows it prints).
+func (p *Prepared) run(ctx context.Context, s Searcher, opt Options, intervals bool) (*Report, error) {
 	if opt.Resamples == 0 {
 		opt.Resamples = DefaultResamples
 	}
 	if opt.Seed == 0 {
 		opt.Seed = DefaultSeed
 	}
-	queries, counts := Extract(searches)
 	rep := &Report{
-		Mode: opt.Mode, K: opt.K, SettingsHash: opt.SettingsHash, Searches: counts, Queries: len(queries),
+		Mode: opt.Mode, K: opt.K, SettingsHash: opt.SettingsHash, Searches: p.counts, Queries: len(p.queries),
 		MinJudged: opt.MinJudged, Resamples: opt.Resamples, Seed: opt.Seed, Confidence: 1 - Alpha,
 		PerQuery: []Result{},
 	}
-	pres := newPresence(corpus)
 	var chunkS, entryS, openS []Score
-	for _, q := range queries {
-		g, err := resolveGold(ctx, pres, q)
-		if err != nil {
-			return nil, err
-		}
+	for i, q := range p.queries {
+		g := p.golds[i]
 		g.count(rep)
 		rep.OtherStore.Chunks += q.OtherUseful
 		rep.OtherStore.Opens += q.OtherOpens
@@ -172,9 +221,13 @@ func evaluate(ctx context.Context, searches []store.JudgedSearch, corpus Corpus,
 		}
 		rep.PerQuery = append(rep.PerQuery, res)
 	}
-	summarise(&rep.Chunk, chunkS, opt)
-	summarise(&rep.Entry, entryS, opt)
-	summarise(&rep.Opens, openS, opt)
+	if intervals {
+		summarise(&rep.Chunk, chunkS, opt)
+		summarise(&rep.Entry, entryS, opt)
+		summarise(&rep.Opens, openS, opt)
+	} else {
+		rep.Chunk.Queries, rep.Entry.Queries, rep.Opens.Queries = len(chunkS), len(entryS), len(openS)
+	}
 	rep.SmallSample = rep.Chunk.Queries < opt.MinJudged
 	return rep, nil
 }

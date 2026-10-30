@@ -58,16 +58,16 @@ func TestKNNOverFetchDecision(t *testing.T) {
 	}
 }
 
-// TestDecodeTagsEmpty: both encodings of "no tags" decode to nil; anything else must be a JSON
-// array.
-func TestDecodeTagsEmpty(t *testing.T) {
+// TestDecodeListEmpty: both encodings of an empty list decode to nil; anything else must be a
+// JSON array.
+func TestDecodeListEmpty(t *testing.T) {
 	for _, s := range []string{"", "[]"} {
-		if tags, err := decodeTags(s); tags != nil || err != nil {
-			t.Errorf("decodeTags(%q) = %v, %v; want nil, nil", s, tags, err)
+		if tags, err := decodeList("tags", s); tags != nil || err != nil {
+			t.Errorf("decodeList(%q) = %v, %v; want nil, nil", s, tags, err)
 		}
 	}
-	if _, err := decodeTags("go"); err == nil {
-		t.Error(`decodeTags("go") = nil error, want a decode error`)
+	if _, err := decodeList("tags", "go"); err == nil {
+		t.Error(`decodeList("go") = nil error, want a decode error`)
 	}
 }
 

@@ -13,6 +13,7 @@ again is moved back and re-reviewed.
 ## Archived entries
 
 - [package-level-test-seams](package-level-test-seams.md) — resolved (2026-10-29) · `var newEmbedder`, `hubLoad` and a sh+sed `$EDITOR` were swapped by tests; now fields of `deps` and `local.puller`
+- [reindex-phases-hooked-through-embedder](reindex-phases-hooked-through-embedder.md) — resolved (2026-10-30) · the Q22 race test hooked a second process into a fake `Embed`; now `Options.Discover` and a pure `pruneSet` (5.2)
 - [search-explain-duplicated-setup](search-explain-duplicated-setup.md) — resolved (2026-10-30) · search and explain each carried their own mode/embedder/meta setup; now one `deps.openSearch`/`searchEmbedder` (Q63). `renderHits` still takes `store.Store` (PLAN 3.2)
 - [sqlite-migrations-package-vars](sqlite-migrations-package-vars.md) — resolved (2026-10-30) · tests reassigned package-level `migrations`/`schemaVersion`, banning `t.Parallel`; now `Options.steps`/`Artefact.steps`
 - [store-ref-resolution-copied](store-ref-resolution-copied.md) — resolved (2026-10-30) · `--store` grammar copied three times plus doctor's own kb.toml read; now one `resolveRefWith` taking the reader (3.2, Q80)

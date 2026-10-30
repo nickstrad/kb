@@ -1,15 +1,18 @@
 # E2E journeys: in-repo cram-style runner, not testscript
-> kb's E2E layer (L7, planned in PLAN Phase 7) uses a small stdlib runner over cram-style transcripts, a harnessfake binary, and a harnessfake-only clock env. testscript was rejected.
+> kb's E2E layer (L7, built in PLAN E1) uses a small stdlib runner over cram-style transcripts, a harnessfake binary, and a harnessfake-only clock env. testscript was rejected.
 
 **Fact:**
 - Journeys live in `internal/e2e/testdata/journeys/<slug>.txt`. Unindented lines are prose, `  $ kb …` is a command, and the indented lines after it are the output: stdout, then `[stderr] `-prefixed lines, then `[exit N]` when N ≠ 0. `...` and `~ RE` are elisions. `-- path --` sections are files placed in `$WORK`.
 - The binary is built once per run with `-tags fts5,harnessfake` and uses the `fake:<dim>` model or `none`. The env is hermetic: HOME under `$WORK`, empty PATH, dead proxy, a no-weights guard.
-- Time: `deps.now` is pinned via `KB_HARNESS_NOW` (harnessfake builds only). Other stamps (`sqlite.nowUTC`, migrate backup names, incident time) are normalised to `(time)`.
+- Time: `deps.now` is pinned via `KB_HARNESS_NOW` (read in `harnessfake.go` only; `productionDeps` takes `harnessNow`). Journeys start at 2026-03-01T09:00:00Z, and `env KB_HARNESS_NOW=+2h|+200d|+5m` moves it on. Unset or empty means the wall clock; garbage warns on stderr and means the wall clock. Other stamps (`sqlite.nowUTC`, migrate backup names, incident time) are normalised to `(time)`.
 - `rogpeppe/go-internal/testscript` v1.14.1 (BSD-3, maintained) was evaluated and rejected. Its `UpdateScripts` works only for `cmp`, not `cmpenv`, so every path-bearing output needs a custom normalise-to-file step. Expected output sits apart from the command, so a script reads less like a transcript. It is also a new go.mod dependency. It is the fallback if the runner grows past about 800 lines.
 - Observed with a harnessfake build (2026-10-30): `kb model pull` refuses `fake:8` ("unknown embedding model"), and `kb model list` does not show it. Real pulls therefore stay in the nightly `model` job. `kb init` with the default model offline exits 2 with "the store is created, but the model could not be loaded", and the warning includes the proxy error text, so journeys elide it with `...`.
+
+- Runner (`internal/e2e/`): `Parse`/`Format` (round-trip fuzzed), `Match`/`Merge`/`Diff`, `Normalise`, `Runner.Run`. `journeys_test.go` is the only `e2e`-tagged file; it builds kb once (`-kb PATH` skips the build) and hands it to the runner. `~ RE` is an anchored whole-line regexp, and `[stderr] ~ RE` matches a stderr line's text. There is no inline `...` suffix. `write DEST [SECTION]` copies an archive section; names starting with `@` are not extracted up front. PATH is `$WORK/bin` holding only a symlink to `sh`, because `kb edit` runs the editor through `sh -c`. The editor helper mode is `TestMain` in `main_test.go` (`E2E_EDITOR_APPEND`). The initial cwd is `$WORK/proj`.
+- Observed behaviours that shaped the journeys: `kb add` offline with the default model exits 2 and copies nothing (it needs the embedder), and a store switched to `model = "none"` needs `kb reindex --all` before `kb add` (a model mismatch otherwise). `kb add --dir` takes a directory with a README.md. `kb feedback --last` needs the rank (`--last 1 --useful`).
 
 **Why it matters:** E2E owns cross-command user flows only. The harness owns hostile, concurrent and interrupt cases, and lower layers own the logic. Copying the harness or unit claims into journeys makes them churn on every ranking change.
 
 **How to apply:** Before writing E1, read docs/PLAN.md Phase 7 and docs/TESTING.md §11. Keep the normaliser list fixed. Assert volatile tables through `--json`. Update one journey at a time with `-update` and review the diff.
 
-**Seen in:** docs/PLAN.md Phase 7, docs/TESTING.md §11, internal/cli/harnessfake.go, internal/cli/root.go (`deps.now`) · 2026-10-30
+**Seen in:** internal/e2e/, docs/PLAN.md Phase 7, docs/TESTING.md §11, internal/cli/harnessfake.go, internal/cli/root.go (`deps.now`) · 2026-10-30

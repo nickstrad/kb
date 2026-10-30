@@ -35,7 +35,8 @@ func (e *EmbedMetaMismatchError) Error() string {
 // Unwrap makes errors.Is(err, ErrEmbedMetaMismatch) true.
 func (e *EmbedMetaMismatchError) Unwrap() error { return ErrEmbedMetaMismatch }
 
-// EntryRow is a stored entry. Updated and Verified are "" when unset; Tags is decoded.
+// EntryRow is a stored entry. Updated and Verified are "" when unset; Tags and Aliases are
+// decoded, as written (Tags keeps its case; the tag filter uses the normalised form, NormTag).
 type EntryRow struct {
 	ID        int64
 	Path      string
@@ -43,6 +44,7 @@ type EntryRow struct {
 	Title     string
 	Summary   string
 	Tags      []string
+	Aliases   []string
 	Updated   string
 	Verified  string
 	BodyHash  string
@@ -61,16 +63,51 @@ type ChunkRow struct {
 }
 
 // EntryInput is an entry about to be written. Path ("data/foo.md") is the unique key; Kind is
-// entry.KindFile or entry.KindDir.
+// entry.KindFile or entry.KindDir. Aliases are other names the entry answers to: they join the
+// title in the full-text index and resolve wikilinks (ResolveEdges). Edges are the entry's
+// outgoing links; repeats of one (DstPath, Rel, Kind) are written once.
 type EntryInput struct {
 	Path     string
 	Kind     string
 	Title    string
 	Summary  string
 	Tags     []string
+	Aliases  []string
 	Updated  string
 	Verified string
 	BodyHash string
+	Edges    []EdgeInput
+}
+
+// Edge kinds: how an edge's target was written.
+const (
+	// EdgePath: DstPath is a root-relative, cleaned path (a Markdown link or a front-matter
+	// path, already resolved against the linking file's directory).
+	EdgePath = "path"
+	// EdgeWikilink: DstPath is a [[name]] as written; ResolveEdges matches it by path, basename
+	// or alias (EdgeResolver).
+	EdgeWikilink = "wikilink"
+)
+
+// EdgeInput is one outgoing link of an entry about to be written: its target, its relation
+// (links for a body link; related, supersedes or depends_on for a front-matter list) and its
+// kind (EdgePath or EdgeWikilink). None may be empty.
+type EdgeInput struct {
+	DstPath string
+	Rel     string
+	Kind    string
+}
+
+// EdgeRow is a stored edge with both ends named. DstEntryID is 0 and DstEntryPath "" while the
+// target matches no entry (dangling: a broken link, or one not resolved yet).
+type EdgeRow struct {
+	SrcEntryID   int64
+	SrcPath      string
+	DstPath      string
+	Rel          string
+	Kind         string
+	DstEntryID   int64
+	DstEntryPath string
 }
 
 // ChunkInput is one chunk plus its vector. Embedding is exactly embed_meta.dim long, or nil on
@@ -93,7 +130,9 @@ const (
 )
 
 // FTSQuery is one full-text query. Terms are raw user fields (search splits on whitespace); the
-// backend quotes and sanitises each one. Tag, when set, keeps only entries carrying it. Weights
+// backend quotes and sanitises each one. Tag, when set, keeps only entries carrying it, compared
+// in its normalised form (NormTag: trimmed, lower case), so `Docker` and `docker` filter alike
+// (schema v7; before it the match was case-sensitive). Weights
 // are the per-column relevance weights; nil means DefaultBM25(). ChunkIDs, when non-nil, restricts
 // the query to those chunks (an empty non-nil slice matches nothing), so a caller can re-score a
 // known candidate set. Exact runs the query against the identifier index instead of the main one:
@@ -108,6 +147,10 @@ type FTSQuery struct {
 	Weights  *BM25Weights
 	ChunkIDs []int64
 	Exact    bool
+	// Alts maps a raw term (exactly as it appears in Terms) to extra alternatives; the term then
+	// matches any of itself and them: ("k8s" OR "kubernetes"). An alternative may be several
+	// words and is matched as one phrase. nil means no expansion. Synonyms (PLAN 5.5).
+	Alts map[string][]string
 }
 
 // BM25Weights are the column weights of the full-text score: chunk text, heading and entry
@@ -137,8 +180,9 @@ type FTSRow struct {
 	Score   float64
 }
 
-// KNNQuery asks for the K nearest chunks to Vec. With a Tag the backend may fetch OverFetch
-// candidates before filtering, since it cannot filter inside the vector index.
+// KNNQuery asks for the K nearest chunks to Vec. With a Tag (matched as FTSQuery.Tag is) the
+// backend may fetch OverFetch candidates before filtering, since it cannot filter inside the
+// vector index.
 type KNNQuery struct {
 	Vec       []float32
 	K         int

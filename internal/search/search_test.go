@@ -677,7 +677,7 @@ func TestSearchANDThenORRetry(t *testing.T) {
 	if len(andOnly.Rows) != 0 {
 		t.Fatalf("AND query matched %d rows, want 0 (the fixture must not contain 'fluffernutter')", len(andOnly.Rows))
 	}
-	res, _, err := s.lexicalList(ctx, terms, "", DefaultParams(), false)
+	res, _, err := s.lexicalList(ctx, terms, nil, "", DefaultParams(), false)
 	if err != nil {
 		t.Fatalf("fts AND/OR: %v", err)
 	}

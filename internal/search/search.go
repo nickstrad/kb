@@ -118,6 +118,9 @@ type Searcher struct {
 	// Queries, when set, shares query vectors between searchers: a cross-store search embeds
 	// the query once per distinct (model, query text with its prefix). nil embeds every time.
 	Queries *QueryMemo
+	// Synonyms expand the query terms of the main full-text list (PLAN 5.5); nil or empty means no
+	// expansion. The exact-identifier list and the vector query never use them.
+	Synonyms *Synonyms
 }
 
 // now is s.Now, or the wall clock.
@@ -185,6 +188,9 @@ type Outcome struct {
 
 	Settings          Settings
 	FTSMatch          string
+	FTSSynonyms       map[string][]string // query term -> its synonym alternatives, when FTSMatch is expanded
+	FTSAlts           map[string][]string // the alternatives FTSMatch was built with: FTSSynonyms plus Spell's corrections
+	Spell             []SpellFix          // the words spell correction added an alternative to (PLAN 5.6); nil when it did not run or found none
 	FTSFallbackToOr   bool
 	ExactTerms        []string
 	ExactMatch        string
@@ -471,20 +477,30 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 	var fts []FTSRow
 	if out.Mode != ModeVec {
 		ftsStart := time.Now()
-		res, retried, err := s.lexicalList(ctx, strings.Fields(req.Query), req.Tag, p, false)
-		out.FTSMs = time.Since(ftsStart).Milliseconds()
+		fields := strings.Fields(req.Query)
+		syn := s.Synonyms.Expand(fields)
+		res, retried, err := s.lexicalList(ctx, fields, syn, req.Tag, p, false)
 		if err != nil {
 			return nil, err
 		}
+		res, retried, alts, err := s.spell(ctx, out, fields, syn, req.Tag, p, res, retried)
+		if err != nil {
+			return nil, err
+		}
+		out.FTSMs = time.Since(ftsStart).Milliseconds()
 		fts = res.Rows
 		out.FTSMatch = res.Match
+		if res.Match != "" {
+			out.FTSSynonyms = syn
+			out.FTSAlts = alts
+		}
 		out.FTSFallbackToOr = retried
 	}
 	var exact []FTSRow
 	if out.Mode != ModeVec && p.ExactList {
 		if terms := ExactTerms(req.Query); len(terms) > 0 {
 			exactStart := time.Now()
-			res, retried, err := s.lexicalList(ctx, terms, req.Tag, p, true)
+			res, retried, err := s.lexicalList(ctx, terms, nil, req.Tag, p, true)
 			out.FTSMs += time.Since(exactStart).Milliseconds() // FTSMs times the lexical lists
 			if err != nil {
 				return nil, err
@@ -559,10 +575,10 @@ func resultOf(query, mode string, returned []Candidate, label func(store string)
 // lexicalList runs the full-text list (exact: the exact-identifier list over the identifier index):
 // all terms ANDed first and, if that matches nothing and there is more than one term, ORed (one
 // unknown word should not empty a good query). retried reports that the OR query is the one that
-// produced res.
-func (s *Searcher) lexicalList(ctx context.Context, terms []string, tag string, p Params, exact bool) (res store.FTSResult, retried bool, err error) {
+// produced res. alts are the synonym alternatives of terms (nil for none), applied to both queries.
+func (s *Searcher) lexicalList(ctx context.Context, terms []string, alts map[string][]string, tag string, p Params, exact bool) (res store.FTSResult, retried bool, err error) {
 	weights := p.BM25
-	q := store.FTSQuery{Terms: terms, Op: store.OpAnd, Tag: tag, Limit: p.ListLimit, Weights: &weights, Exact: exact}
+	q := store.FTSQuery{Terms: terms, Op: store.OpAnd, Tag: tag, Limit: p.ListLimit, Weights: &weights, Exact: exact, Alts: alts}
 	if res, err = s.Store.FTS(ctx, q); err != nil {
 		return store.FTSResult{}, false, err
 	}
@@ -574,6 +590,37 @@ func (s *Searcher) lexicalList(ctx context.Context, terms []string, tag string, 
 		return res, true, nil
 	}
 	return res, false, nil
+}
+
+// spell is the spell-correction step of the main FTS list (spell.go): when spellWanted, it plans
+// the corrections and, if there are any, runs the list once more with them as alternatives, with
+// the operator the first run ended with (an OR retry stays OR, so no row it found is lost to an
+// AND that the corrections now satisfy), and keeps the first run's rows (keepOriginal). It records
+// the fixes in out.Spell and returns the list, OR flag and alternatives to use; with nothing to
+// correct they are the first run's, unchanged.
+func (s *Searcher) spell(ctx context.Context, out *Outcome, fields []string, alts map[string][]string, tag string, p Params,
+	first store.FTSResult, retried bool) (store.FTSResult, bool, map[string][]string, error) {
+	v, hasVocab := s.Store.(store.Vocab)
+	if !spellWanted(p.Spell, hasVocab, first.Match, len(first.Rows)) {
+		return first, retried, alts, nil
+	}
+	plan, err := s.planSpell(ctx, v, fields, alts)
+	if err != nil || len(plan.fixes) == 0 {
+		return first, retried, alts, err
+	}
+	var res store.FTSResult
+	if retried {
+		weights := p.BM25
+		res, err = s.Store.FTS(ctx, store.FTSQuery{Terms: fields, Op: store.OpOr, Tag: tag, Limit: p.ListLimit, Weights: &weights, Alts: plan.alts})
+	} else {
+		res, retried, err = s.lexicalList(ctx, fields, plan.alts, tag, p, false)
+	}
+	if err != nil {
+		return store.FTSResult{}, false, nil, err
+	}
+	res.Rows = keepOriginal(first.Rows, res.Rows, p.ListLimit)
+	out.Spell = plan.fixes
+	return res, retried, plan.alts, nil
 }
 
 // embedQuery embeds the query with the embedder's query prefix, timing it on its own because it

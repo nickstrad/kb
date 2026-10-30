@@ -1,0 +1,293 @@
+first-run: a new project, from kb init to kb stats.
+
+A project directory and some notes written outside it. The store uses the fake embedder
+(`fake:8`), so no model is downloaded and the run needs no network.
+
+  $ kb init --model fake:8
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ cat .kb/kb.toml
+  version = 1
+  default_store = "default"
+
+  [aliases]
+
+  $ exists .kb/stores/default/config.toml
+  $ exists .kb/stores/default/kb.sqlite
+  $ exists data
+
+Add one note by copying it in, then a directory entry (its README.md and docs/*.md).
+
+  $ kb add $WORK/notes/tmux.md
+  added data/tmux.md (3 chunks)
+
+  $ kb add --dir $WORK/notes/backup
+  added data/backup/README.md (3 chunks)
+
+  $ kb list
+  PATH                   SUMMARY                                                    UPDATED     VERIFIED
+  data/backup/README.md  How the nightly backup runs and where it writes.           2026-02-02  -
+  data/tmux.md           Keep sessions alive after you log out of the remote host.  2026-02-01  -
+
+  2 entries
+
+  $ exists data/tmux.md
+  $ exists data/backup/docs/restore.md
+
+Search as a person, then as an agent. Search ids count up, and --json carries the exact
+feedback commands for that search.
+
+  $ kb search "tmux logout" --caller claude
+  search 1 · 6 hits
+  [1] data/tmux.md · updated 2026-02-01
+  Tmux survives logout: Keep sessions alive after you log out of the remote host.
+
+  [2] data/tmux.md › Troubleshooting · updated 2026-02-01
+  Tmux survives logout › Troubleshooting
+  If the session disappears at logout, systemd may be killing user processes. Enable lingering with
+  `loginctl enable-linger`.
+
+  [3] data/tmux.md › (intro) · updated 2026-02-01
+  Tmux survives logout › (intro)
+  # Tmux survives logout
+
+  Start `tmux new -s work` on the remote host and detach with Ctrl-b d. The session keeps running
+  after logout, and `tmux attach -t work` brings it back.
+
+  [4] data/backup/README.md · updated 2026-02-02
+  Nightly backup: How the nightly backup runs and where it writes.
+
+  [5] data/backup/README.md › (intro) · updated 2026-02-02
+  Nightly backup › Restore from backup › (intro)
+  To restore, unpack the newest tarball from the archive volume and run `restore.sh`. Verify the
+  restored files before reopening the service.
+
+  [6] data/backup/README.md › (intro) · updated 2026-02-02
+  Nightly backup › (intro)
+  # Nightly backup
+
+  The nightly backup writes a tarball to the archive volume at 02:00 and keeps the last seven.
+  search_id=1
+
+  $ kb search "restore the nightly backup" --caller claude --json
+  {
+    "search_id": 2,
+    "feedback": {
+      "useful": "kb feedback 2 RANK --useful",
+      "not_useful": "kb feedback 2 RANK --not-useful --note \"why\"",
+      "none": "kb feedback 2 --none --note \"why\""
+    },
+    "query": "restore the nightly backup",
+    "mode": "hybrid",
+    "hits": [
+  ...
+    ]
+  }
+
+Reading a hit is an open of the search that found it, and feedback is a verdict on it.
+
+  $ kb show data/backup/README.md
+  ==> data/backup/README.md <==
+  ---
+  title: Nightly backup
+  summary: How the nightly backup runs and where it writes.
+  tags: [ops]
+  updated: 2026-02-02
+  ---
+  # Nightly backup
+
+  The nightly backup writes a tarball to the archive volume at 02:00 and keeps the last seven.
+
+  ==> data/backup/docs/restore.md <==
+  ---
+  title: Restore from backup
+  summary: Unpack the newest tarball and run the restore script.
+  tags: [ops]
+  updated: 2026-02-03
+  ---
+  # Restore from backup
+
+  To restore, unpack the newest tarball from the archive volume and run `restore.sh`. Verify the
+  restored files before reopening the service.
+
+  $ kb show data/backup/README.md --chunks
+  --- chunk 0 [data/backup/README.md] (summary) (64 chars, 3a9e9d429a4a)
+  Nightly backup: How the nightly backup runs and where it writes.
+  --- chunk 1 [data/backup/README.md] (intro) (135 chars, 9b159d37ab20)
+  Nightly backup › (intro)
+  # Nightly backup
+
+  The nightly backup writes a tarball to the archive volume at 02:00 and keeps the last seven.
+  --- chunk 2 [data/backup/docs/restore.md] (intro) (186 chars, 829463c40123)
+  Nightly backup › Restore from backup › (intro)
+  To restore, unpack the newest tarball from the archive volume and run `restore.sh`. Verify the
+  restored files before reopening the service.
+
+  $ kb feedback 2 1 --useful
+  recorded: search 2 rank 1 useful=1
+
+  $ kb search "tmux logout" --caller claude --json
+  {
+    "search_id": 3,
+    "feedback": {
+      "useful": "kb feedback 3 RANK --useful",
+      "not_useful": "kb feedback 3 RANK --not-useful --note \"why\"",
+      "none": "kb feedback 3 --none --note \"why\""
+    },
+    "query": "tmux logout",
+    "mode": "hybrid",
+    "hits": [
+  ...
+    ]
+  }
+
+  $ kb feedback --last 1 --useful --caller claude
+  recorded: search 3 rank 1 useful=1 (newest search for claude, (time): "tmux logout")
+
+The log now holds three searches, one open and two verdicts. The open counts against the search
+that was newest when the entry was read.
+
+  $ kb stats overview --json
+  {
+    "query": "overview",
+    "columns": [
+      "mode",
+      "searches",
+      "judged",
+      "coverage_pct",
+      "hit_rate_pct",
+      "mrr",
+      "zero_result_pct",
+      "opened_pct",
+      "p50_ms",
+      "p95_ms",
+      "avg_embed_ms"
+    ],
+    "rows": [
+      {
+        "avg_embed_ms": (ms),
+        "coverage_pct": 66.7,
+        "hit_rate_pct": 100,
+        "judged": 2,
+        "mode": "hybrid",
+        "mrr": 1,
+        "opened_pct": 33.3,
+        "p50_ms": (ms),
+        "p95_ms": (ms),
+        "searches": 3,
+        "zero_result_pct": 0
+      }
+    ],
+    "searches_loaded": 3,
+    "since": null,
+    "caller": null
+  }
+
+An open counts only inside `log.open_window` (30m) of the search. Two hours later, reading the
+entry again is not an open of anything, so opened_pct does not move.
+
+  $ env KB_HARNESS_NOW=+2h
+
+  $ kb show data/tmux.md
+  ---
+  title: Tmux survives logout
+  summary: Keep sessions alive after you log out of the remote host.
+  tags: [terminal]
+  updated: 2026-02-01
+  ---
+  # Tmux survives logout
+
+  Start `tmux new -s work` on the remote host and detach with Ctrl-b d. The session keeps running
+  after logout, and `tmux attach -t work` brings it back.
+
+  ## Troubleshooting
+
+  If the session disappears at logout, systemd may be killing user processes. Enable lingering with
+  `loginctl enable-linger`.
+
+  $ kb stats overview --json
+  {
+    "query": "overview",
+    "columns": [
+      "mode",
+      "searches",
+      "judged",
+      "coverage_pct",
+      "hit_rate_pct",
+      "mrr",
+      "zero_result_pct",
+      "opened_pct",
+      "p50_ms",
+      "p95_ms",
+      "avg_embed_ms"
+    ],
+    "rows": [
+      {
+        "avg_embed_ms": (ms),
+        "coverage_pct": 66.7,
+        "hit_rate_pct": 100,
+        "judged": 2,
+        "mode": "hybrid",
+        "mrr": 1,
+        "opened_pct": 33.3,
+        "p50_ms": (ms),
+        "p95_ms": (ms),
+        "searches": 3,
+        "zero_result_pct": 0
+      }
+    ],
+    "searches_loaded": 3,
+    "since": null,
+    "caller": null
+  }
+
+  $ kb doctor
+  ok   config: $WORK/proj/.kb/stores/default/config.toml
+  ok   sources: 1 configured: "data" (entries)
+  ok   driver: fts5 enabled, sqlite 3.53.4, sqlite-vec v0.1.6
+  ok   embed_meta: model=fake:8 dim=8
+  warn model: not checked (test embedder)
+  ok   entries: 2 entries valid
+  ok   db-vs-files: 2 entries in sync
+  ok   index.md: absent (optional export)
+  ~ ok   version: kb \(version\) at .*
+  doctor: 0 failed, 1 warnings
+
+-- notes/tmux.md --
+---
+title: Tmux survives logout
+summary: Keep sessions alive after you log out of the remote host.
+tags: [terminal]
+updated: 2026-02-01
+---
+# Tmux survives logout
+
+Start `tmux new -s work` on the remote host and detach with Ctrl-b d. The session keeps running
+after logout, and `tmux attach -t work` brings it back.
+
+## Troubleshooting
+
+If the session disappears at logout, systemd may be killing user processes. Enable lingering with
+`loginctl enable-linger`.
+-- notes/backup/README.md --
+---
+title: Nightly backup
+summary: How the nightly backup runs and where it writes.
+tags: [ops]
+updated: 2026-02-02
+---
+# Nightly backup
+
+The nightly backup writes a tarball to the archive volume at 02:00 and keeps the last seven.
+-- notes/backup/docs/restore.md --
+---
+title: Restore from backup
+summary: Unpack the newest tarball and run the restore script.
+tags: [ops]
+updated: 2026-02-03
+---
+# Restore from backup
+
+To restore, unpack the newest tarball from the archive volume and run `restore.sh`. Verify the
+restored files before reopening the service.

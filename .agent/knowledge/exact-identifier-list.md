@@ -6,7 +6,7 @@
 - `chunks_exact(text, heading)`: `unicode61 remove_diacritics 0 tokenchars '_-.:/'`, no porter, no
   title column (`FTSQuery.Exact`; Weights.Title is ignored). `foo_bar` matches only `foo_bar`
   (never `foo bar`, never `foo`), `--embed-model` never `embed-model`, `café` never `cafe`, case
-  still folds. `chunks_exact_vocab` (fts5vocab 'row') is there for 5.6.
+  still folds. `chunks_exact_vocab` (fts5vocab 'row') is read by 5.6 spell and suggest (sqlite/vocab.go).
 - Documents keep a sentence-final `.`/`:` on the token (`see kb.toml.` → `kb.toml.`); the query
   side trims it (`search.ExactTerms`, to a fixed point: `FuzzExactTerms` found the one-pass trim).
   So a sentence-final identifier is found only by the main list.

@@ -1,6 +1,8 @@
 package search
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"math"
 
 	"github.com/nickstrad/kb/internal/assert"
@@ -22,6 +24,7 @@ type Params struct {
 	VecWeight      float64           `json:"vec_weight"`      // multiplier of the vector list's RRF term
 	ExactWeight    float64           `json:"exact_weight"`    // multiplier of the exact-identifier list's RRF term
 	ExactList      bool              `json:"exact_list"`      // run the exact-identifier list for a query with an identifier
+	Spell          bool              `json:"spell"`           // correct unknown words when the FTS list is short (PLAN 5.6)
 }
 
 // ParamsFrom maps [search] onto Params. The config must already be validated.
@@ -37,6 +40,7 @@ func ParamsFrom(s config.Search) Params {
 		VecWeight:      s.ListWeights.Vec,
 		ExactWeight:    s.ListWeights.Exact,
 		ExactList:      s.ExactList,
+		Spell:          s.Spell,
 	}
 }
 
@@ -69,6 +73,19 @@ func NewSettings(c config.Config) (Settings, error) {
 		return Settings{}, errs.Wrap(err, errs.KindOf(err), "search.NewSettings", "%v", err)
 	}
 	return Settings{Params: ParamsFrom(c.Search), JSON: data, Hash: hash}, nil
+}
+
+// WithSynonyms is s for a search that expands its query with synonyms whose content hash is h: the
+// settings hash then also identifies the synonyms (an eval baseline run with other synonyms is not
+// comparable). No synonyms (h "") leave s, hash included, unchanged. s must come from NewSettings.
+func (s Settings) WithSynonyms(h string) Settings {
+	if h == "" {
+		return s
+	}
+	assert.Pre(s.Hash != "", "WithSynonyms: settings have no hash")
+	sum := sha256.Sum256([]byte(s.Hash + "\x00synonyms:" + h))
+	s.Hash = hex.EncodeToString(sum[:])
+	return s
 }
 
 // DefaultSettings are the Settings of the default config.

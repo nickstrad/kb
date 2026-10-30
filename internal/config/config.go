@@ -65,8 +65,8 @@ type Source struct {
 }
 
 // Search is [search]: retrieval settings. K, the limits, rrf_k, vec_overfetch, bm25, the fts, vec
-// and exact list weights and exact_list drive kb search; the other keys are reserved (see the
-// package doc).
+// and exact list weights, exact_list, synonyms, spell and stores drive kb search; the other keys
+// are reserved (see the package doc).
 type Search struct {
 	K                int         `toml:"k" json:"k"`
 	ListLimit        int         `toml:"list_limit" json:"list_limit"`
@@ -99,10 +99,10 @@ type ListWeights struct {
 	Memory float64 `toml:"memory" json:"memory"`
 }
 
-// Output is [output]. Budget and Expand are read by kb search; ContextBudget is reserved.
+// Output is [output]. Budget and Expand are read by kb search; ContextBudget by kb context.
 type Output struct {
 	Budget        int    `toml:"budget"`         // tokens for kb search; 0 = unlimited
-	ContextBudget int    `toml:"context_budget"` // default for kb context
+	ContextBudget int    `toml:"context_budget"` // default --budget for kb context (2000)
 	Expand        string `toml:"expand"`         // none | section | entry
 }
 
@@ -117,8 +117,9 @@ type Stale struct {
 	Days int `toml:"days"`
 }
 
-// Eval is [eval]. MinJudged is read by kb eval: fewer chunk-level queries than this and the report
-// says the sample is small (0 never does). Holdout is reserved.
+// Eval is [eval], read by kb eval. MinJudged: fewer chunk-level queries than this and the report
+// says the sample is small (0 never does), and kb eval --sweep refuses to run without --force.
+// Holdout is the share of judged queries a sweep holds out to report its best setting on.
 type Eval struct {
 	MinJudged int     `toml:"min_judged"`
 	Holdout   float64 `toml:"holdout"`
@@ -208,6 +209,14 @@ func readCapped(op, what, path string) (data []byte, regular bool, err error) {
 	defer f.Close() // read-only: a close error loses nothing
 	data, err = readLimited(op, what, path, f)
 	return data, true, err
+}
+
+// ReadCapped reads a small text file kb owns (what names the kind in messages): a regular file of
+// at most MaxFileBytes, the rule Read applies to config files. A missing file is the os error
+// (errors.Is fs.ErrNotExist) for the caller to classify; any other failure is a Usage error.
+func ReadCapped(op, what, path string) ([]byte, error) {
+	data, _, err := readCapped(op, what, path)
+	return data, err
 }
 
 // readLimited reads r through the cap. It is the check that holds when a file grows between

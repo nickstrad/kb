@@ -50,6 +50,7 @@ func TestIndexSteps(t *testing.T) {
 		{"index/0004-search-settings", migrate.EffectNone},
 		{"index/0005-hit-store", migrate.EffectNone},
 		{"index/0006-exact-list", migrate.EffectNone},
+		{"index/0007-edges-tags-aliases", migrate.EffectReindex},
 	}
 	if len(indexSteps) != len(want) {
 		t.Fatalf("%d steps, the effect table lists %d: add the new step's (ID, Effect) row", len(indexSteps), len(want))
@@ -251,6 +252,33 @@ func TestStepEffects(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
+		"index/0007-edges-tags-aliases": func(t *testing.T, db *sql.DB) {
+			// Effect reindex: every body_hash is cleared, so a plain kb reindex rewrites every
+			// entry with its edges and aliases.
+			if n := count(t, db, "SELECT count(*) FROM entries WHERE body_hash != ''"); n != 0 {
+				t.Errorf("%d entries kept a body_hash: reindex would skip them and never fill edges (Effect reindex)", n)
+			}
+			if n := count(t, db, "SELECT count(*) FROM entries"); n == 0 {
+				t.Error("the fixture has no entries: the checks would be vacuous")
+			}
+			if n := count(t, db, "SELECT count(*) FROM entries WHERE aliases != '[]'"); n != 0 {
+				t.Errorf("%d entries have aliases before any reindex, want '[]'", n)
+			}
+			if n := count(t, db, "SELECT count(*) FROM pragma_table_info('entries') WHERE name = 'aliases' AND type = 'TEXT' AND \"notnull\" = 1"); n != 1 {
+				t.Error("entries.aliases: want one NOT NULL TEXT column")
+			}
+			if n := count(t, db, "SELECT count(*) FROM edges"); n != 0 {
+				t.Errorf("edges has %d rows before any reindex, want 0", n)
+			}
+			// Backfilled from entries.tags: the v6 fixture's alpha.md carries "sqlite".
+			if got, err := strings1(context.Background(), db, "SELECT e.path || ':' || t.tag FROM entry_tags t JOIN entries e ON e.id = t.entry_id ORDER BY 1"); err != nil || !slices.Equal(got, []string{"alpha.md:sqlite"}) {
+				t.Errorf("entry_tags = %q, %v; want alpha.md:sqlite", got, err)
+			}
+			// Embeddings survive: the reindex reuses them by text_hash.
+			if n := count(t, db, "SELECT count(*) FROM chunks_vec"); n != count(t, db, "SELECT count(*) FROM chunks") || n == 0 {
+				t.Errorf("chunks_vec has %d rows; want one per chunk, kept for reuse", n)
+			}
+		},
 		"index/0005-hit-store": func(t *testing.T, db *sql.DB) {
 			for _, table := range []string{"search_results", "search_candidates"} {
 				if n := count(t, db, "SELECT count(*) FROM pragma_table_info('"+table+"') WHERE name = 'store' AND type = 'TEXT' AND \"notnull\" = 0"); n != 1 {
@@ -333,6 +361,7 @@ var fixtureSeeds = map[int]func(t *testing.T, s *Store){
 	4: seedV4,
 	5: seedV5,
 	6: seedV6,
+	7: seedV7,
 }
 
 func seedV1(t *testing.T, s *Store) {
@@ -461,6 +490,78 @@ func seedV6(t *testing.T, s *Store) {
 		INSERT INTO search_opens (search_id, store, entry_path, ts)
 		VALUES (5, NULL, 'beta.md', '2026-10-05T09:02:00Z'),
 		       (5, 'notes@/Users/someone/knowledge', 'beta.md', '2026-10-05T09:03:00Z');`)
+}
+
+// seedV7 is a v7 store after a reindex: the v6 data, plus entries with mixed-case tags,
+// aliases and edges of both kinds (resolved by path, directory, basename and alias, one
+// dangling), resolved as reindex leaves them, and a search filtered by a tag.
+func seedV7(t *testing.T, s *Store) {
+	t.Helper()
+	seedV6(t, s)
+	ctx := context.Background()
+	write := func(e store.EntryInput, text, hash string, v []float32) {
+		t.Helper()
+		e.Kind, e.Summary, e.BodyHash = "file", "notes", "hash-"+e.Path
+		if strings.HasSuffix(e.Path, "/README.md") {
+			e.Kind = "dir"
+		}
+		cs := []store.ChunkInput{{Ord: 0, SourceFile: e.Path, Text: e.Title + ": " + text, TextHash: hash, Embedding: v}}
+		if _, err := s.ReplaceEntry(ctx, e, cs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(store.EntryInput{Path: "gamma.md", Title: "Gamma", Tags: []string{"Docker", "sqlite"}, Aliases: []string{"k8s", "Kubernetes notes"},
+		Edges: []store.EdgeInput{
+			{DstPath: "alpha.md", Rel: "links", Kind: store.EdgePath},
+			{DstPath: "ship", Rel: "related", Kind: store.EdgePath},
+			{DstPath: "beta", Rel: "links", Kind: store.EdgeWikilink},
+			{DstPath: "missing.md", Rel: "links", Kind: store.EdgePath},
+		}}, "gamma body", "h5", []float32{1, 1, 0, 0})
+	write(store.EntryInput{Path: "ship/README.md", Title: "Ship", Tags: []string{"docker"},
+		Edges: []store.EdgeInput{
+			{DstPath: "K8S", Rel: "supersedes", Kind: store.EdgeWikilink},
+			{DstPath: "gamma.md", Rel: "depends_on", Kind: store.EdgePath},
+		}}, "ship body", "h6", []float32{0, 1, 1, 0})
+	if err := s.ResolveEdges(ctx); err != nil {
+		t.Fatal(err)
+	}
+	execAll(t, s.DB(), `
+		INSERT INTO searches (id, ts, query, mode, k, n_returned, caller, corpus_rev, kb_version, settings, settings_hash, fts_query, tag_filter)
+		VALUES (6, '2026-10-06T09:00:00Z', 'kubernetes', 'hybrid', 8, 1, 'claude', NULL, 'v0.6.0',
+		        '{"embed":{"batch":16,"dim":0,"int8":false,"model":"BAAI/bge-small-en-v1.5","workers":0},"search":{"exact_list":true,"k":8,"rrf_k":60}}',
+		        '5c3e0b7a9d1f2e4c6a8b0d2f4e6c8a0b1d3f5e7c9a1b3d5f7e9c1a3b5d7f9e1c', '"kubernetes"', 'Docker');
+		INSERT INTO search_results (search_id, rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, store)
+		VALUES (6, 1, 5, 'gamma.md', '', 1, -1.75, 1, 0.125, NULL, NULL, 0.0328, NULL);
+		INSERT INTO search_candidates (search_id, fused_rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, returned, store)
+		VALUES (6, 1, 5, 'gamma.md', '', 1, -1.75, 1, 0.125, NULL, NULL, 0.0328, 1, NULL);
+		INSERT INTO search_feedback (search_id, rank, useful, note, ts) VALUES (6, 1, 1, 'alias hit', '2026-10-06T09:01:00Z');
+		INSERT INTO search_opens (search_id, store, entry_path, ts) VALUES (6, NULL, 'gamma.md', '2026-10-06T09:02:00Z');`)
+}
+
+// TestStep7BackfillsTags: the v7 step backfills entry_tags from entries.tags lowercased and
+// trimmed, one row per distinct tag, skipping empty and non-string items, and a tags value that is
+// not a JSON array (corrupt, or a bare string) backfills nothing instead of failing the upgrade.
+func TestStep7BackfillsTags(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := loadFixture(t, 6)
+	execAll(t, rawDB(t, path), `
+		UPDATE entries SET tags = '["Docker", " SQLite ", "", "docker", 3, "  "]' WHERE path = 'alpha.md';
+		INSERT INTO entries (id, path, kind, title, summary, tags, body_hash, indexed_at)
+		VALUES (10, 'corrupt.md', 'file', 'C', 'S', 'not json', 'h', 't'),
+		       (11, 'scalar.md', 'file', 'S', 'S', '"docker"', 'h', 't'),
+		       (12, 'object.md', 'file', 'O', 'S', '{"a":"b"}', 'h', 't'),
+		       (13, 'none.md', 'file', 'N', 'S', '[]', 'h', 't');`)
+	if _, err := artefactAt(path, 7).Apply(ctx); err != nil {
+		t.Fatalf("Apply v7: %v", err)
+	}
+	got, err := strings1(ctx, rawDB(t, path), "SELECT e.path || ':' || t.tag FROM entry_tags t JOIN entries e ON e.id = t.entry_id ORDER BY 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"alpha.md:docker", "alpha.md:sqlite"}; !slices.Equal(got, want) {
+		t.Errorf("entry_tags = %q, want %q", got, want)
+	}
 }
 
 // dumpFixture renders the database at path as the SQL text that rebuilds it: the version, every

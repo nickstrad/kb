@@ -130,6 +130,45 @@ var indexSteps = migrate.Steps[execer]{
 			return err
 		},
 	},
+	// PLAN 5.2. edges holds each entry's outgoing links (body links rel 'links', front-matter
+	// lists rel = the key), kind 'path' (a root-relative path) or 'wikilink' (a name as written);
+	// dst_entry_id is the entry the target resolves to, NULL while it dangles, and becomes NULL
+	// when that entry goes. entry_tags is the tag filter's table: normalised tags, backfilled
+	// here from entries.tags with SQL lower() (ASCII only; the reindex this step declares rewrites
+	// them with the full NormTag fold). A tags value that is not a JSON array backfills nothing.
+	// entries gains aliases (JSON array). Edges and aliases need the Markdown, so every body_hash
+	// is cleared: a plain `kb reindex` fills them, reusing every embedding by text_hash.
+	{
+		Info: migrate.Info{From: 6, ID: "index/0007-edges-tags-aliases", Desc: "add edges, entry_tags (backfilled) and entries.aliases; edges and aliases fill on the next reindex", Effect: migrate.EffectReindex},
+		Up: func(ctx context.Context, db execer) error {
+			_, err := db.ExecContext(ctx, `
+			CREATE TABLE edges (
+			  src_entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+			  dst_path     TEXT NOT NULL,
+			  dst_entry_id INTEGER REFERENCES entries(id) ON DELETE SET NULL,
+			  rel          TEXT NOT NULL,
+			  kind         TEXT NOT NULL CHECK (kind IN ('path', 'wikilink')),
+			  PRIMARY KEY (src_entry_id, dst_path, rel, kind)
+			);
+			CREATE INDEX edges_dst ON edges (dst_entry_id);
+			CREATE TABLE entry_tags (
+			  entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+			  tag      TEXT NOT NULL,
+			  PRIMARY KEY (entry_id, tag)
+			);
+			INSERT OR IGNORE INTO entry_tags (entry_id, tag)
+			SELECT e.id, lower(trim(j.value))
+			FROM entries AS e,
+			     json_each(CASE WHEN json_valid(e.tags) THEN
+			                 CASE WHEN json_type(e.tags) = 'array' THEN e.tags END
+			               END) AS j
+			WHERE j.type = 'text' AND trim(j.value) != ''
+			ORDER BY e.id;
+			ALTER TABLE entries ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]';
+			UPDATE entries SET body_hash = '';`)
+			return err
+		},
+	},
 }
 
 func init() {

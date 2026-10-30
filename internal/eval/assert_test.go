@@ -3,10 +3,12 @@
 package eval
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"github.com/nickstrad/kb/internal/assert"
+	"github.com/nickstrad/kb/internal/config"
 )
 
 // TestMetricPreconditions: calls only a kb programmer can get wrong fail a precondition.
@@ -22,6 +24,11 @@ func TestMetricPreconditions(t *testing.T) {
 		{"zero resamples", func() { Bootstrap([]float64{1}, 0, Alpha, 1) }},
 		{"alpha 0", func() { Bootstrap([]float64{1}, 10, 0, 1) }},
 		{"alpha 1", func() { Bootstrap([]float64{1}, 10, 1, 1) }},
+		{"holdout 1", func() { Split([]string{"a", "b"}, 1, 1) }},
+		{"holdout below 0", func() { Split([]string{"a", "b"}, -0.1, 1) }},
+		{"grid of no axes", func() { ExpandGrid(config.Default(), nil, MaxGrid) }},
+		{"axis of no values", func() { ExpandGrid(config.Default(), []Axis{{Key: "search.rrf_k"}}, MaxGrid) }},
+		{"sweep of no grid", func() { Sweep(context.Background(), &Prepared{}, config.Default(), nil, nil, nil, SweepOptions{}) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer func() {
@@ -37,4 +44,6 @@ func TestMetricPreconditions(t *testing.T) {
 	// The edges that are allowed: a match on the last gold item, alpha just inside (0, 1).
 	ScoreRanking([]int{0}, 1, 1)
 	Bootstrap([]float64{1}, 1, 0.999, 1)
+	Split([]string{"a", "b"}, 0, 1)
+	Split([]string{"a", "b"}, 0.999, 1)
 }

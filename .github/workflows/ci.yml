@@ -23,6 +23,11 @@ jobs:
           cache: true # caches the module and build cache; the first cgo sqlite build takes ~2 min
       - run: go vet -tags fts5 ./...
       - run: go test -tags fts5 ./...
+      - name: harnessfake-only tests (fake model, KB_HARNESS_NOW clock)
+        run: go test -tags fts5,harnessfake -run 'TestHarnessClock|TestFakeModel' ./internal/cli/
+      - name: End-to-end journeys
+        run: go test -tags fts5,e2e -count=1 ./internal/e2e/
+        timeout-minutes: 5
       - name: Agent indexes in sync
         run: go run ./.agent/scripts/index-check
 
@@ -43,3 +48,6 @@ jobs:
           "$RUNNER_TEMP/kb" model pull
       - name: Model tests
         run: go test -tags fts5,model ./internal/embed/local/...
+      - name: End-to-end journeys (repeated, shuffled)
+        run: go test -tags fts5,e2e -count=3 -shuffle=on ./internal/e2e/
+        timeout-minutes: 15

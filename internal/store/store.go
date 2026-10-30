@@ -31,7 +31,7 @@ type Index interface {
 	// model or dim is a Conflict wrapping *EmbedMetaMismatchError. It creates the vector table at
 	// m.Dim lazily.
 	EnsureEmbedMeta(ctx context.Context, m EmbedMeta) error
-	// ResetIndex empties every entry, chunk, vector and the embed_meta record. It never touches
+	// ResetIndex empties every entry, chunk, vector, tag and edge and the embed_meta record. It never touches
 	// the search log.
 	ResetIndex(ctx context.Context) error
 	// Entry returns the entry at path, or (nil, nil) when there is none.
@@ -46,12 +46,20 @@ type Index interface {
 	// Embeddings returns the stored vectors of an entry's chunks keyed by text_hash; empty on an
 	// index without vectors.
 	Embeddings(ctx context.Context, entryID int64) (map[string][]float32, error)
-	// ReplaceEntry writes an entry and its complete chunk set in one transaction. Every chunk must
-	// carry an embedding of the recorded dim (none on an FTS-only index); otherwise nothing is
-	// written and the error is a Conflict.
+	// ReplaceEntry writes an entry, its complete chunk set, its normalised tags (NormTags) and
+	// its outgoing edges in one transaction. Every chunk must carry an embedding of the recorded
+	// dim (none on an FTS-only index); otherwise nothing is written and the error is a Conflict.
+	// An edge whose (DstPath, Rel, Kind) the previous version also had keeps its resolved target;
+	// a new one is dangling until ResolveEdges.
 	ReplaceEntry(ctx context.Context, e EntryInput, chunks []ChunkInput) (entryID int64, err error)
-	// DeleteEntry removes an entry and everything indexed for it. A missing entry is not an error.
+	// DeleteEntry removes an entry and everything indexed for it, its outgoing edges included;
+	// edges of other entries that pointed at it become dangling. A missing entry is not an error.
 	DeleteEntry(ctx context.Context, path string) error
+	// ResolveEdges sets every edge's target entry by the EdgeResolver rule, against the entries
+	// as they are now, in one transaction. reindex calls it after every run.
+	ResolveEdges(ctx context.Context) error
+	// Edges returns every edge, sorted by source path, rel, kind and target.
+	Edges(ctx context.Context) ([]EdgeRow, error)
 }
 
 // Retriever is the backend's retrieval primitives. Fusion, the diversity cap and the AND→OR

@@ -1,0 +1,104 @@
+offline-first-run: a first run on a machine with no model and no network.
+
+kb init with the default model tries to fetch the model. Offline that fails after the store is
+created, and kb says so (exit 2). The proxy variables point at a dead port, so the attempt fails
+fast. The exact network error text varies, so the test matches that line by pattern.
+
+  $ kb init
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model BAAI/bge-small-en-v1.5)
+  [stderr] kb: downloading embedding model BAAI/bge-small-en-v1.5 to $WORK/home/Library/Caches/kb/models (once per machine)
+  [stderr] ~ warning: download model BAAI/bge-small-en-v1.5: .*
+  [stderr] kb init: loading model BAAI/bge-small-en-v1.5
+  [stderr] kb init: the store is created, but the model could not be loaded: model BAAI/bge-small-en-v1.5 is not downloaded (run `kb model pull`)
+  [exit 2]
+
+  $ exists .kb/stores/default/kb.sqlite
+
+Adding needs the embedder too, so nothing is copied. Search never downloads: it falls back to
+full-text search (exit 2) and names the fix. The store is empty, so there is nothing to find.
+
+  $ kb add $WORK/notes/tmux.md
+  [stderr] kb: downloading embedding model BAAI/bge-small-en-v1.5 to $WORK/home/Library/Caches/kb/models (once per machine)
+  [stderr] ~ warning: download model BAAI/bge-small-en-v1.5: .*
+  [stderr] kb add: embedder not usable, nothing copied: model BAAI/bge-small-en-v1.5 is not downloaded (run `kb model pull`)
+  [exit 2]
+
+  $ ! exists data/tmux.md
+
+  $ kb search "tmux logout" --caller claude
+  search 1 · 0 hits
+  no results
+  search_id=1
+  [stderr] warning: embedder unavailable (embed query: model BAAI/bge-small-en-v1.5 is not downloaded (run `kb model pull`)); falling back to --mode fts
+  [exit 2]
+
+  $ kb model list
+  BAAI/bge-base-en-v1.5                     768 dims  not downloaded
+  BAAI/bge-small-en-v1.5                    384 dims  not downloaded (default)
+  nomic-ai/nomic-embed-text-v1.5            768 dims  not downloaded
+  sentence-transformers/all-MiniLM-L6-v2    384 dims  not downloaded
+
+  $ kb model path
+  $WORK/home/Library/Caches/kb/models/BAAI--bge-small-en-v1.5
+
+  $ ! exists $WORK/home/Library/Caches/kb/models/*
+
+The way out without a network: switch the store to full-text only (the config file is rewritten
+here; `kb config --path` says where it is), then reindex (the index was built for the old model) and add.
+
+  $ write .kb/stores/default/config.toml @fts-only
+
+  $ kb reindex --all
+  entries: 0 scanned, 0 reindexed, 0 skipped; chunks: 0; embed calls: 0
+  [stderr] embedding model mismatch: this database was indexed with BAAI/bge-small-en-v1.5 (384 dims) but this run uses none (0 dims); rebuild it with `kb reindex --all`
+
+  $ kb add $WORK/notes/tmux.md
+  added data/tmux.md (2 chunks)
+
+  $ kb search "tmux logout" --caller claude
+  search 2 · 2 hits
+  [1] data/tmux.md · updated 2026-02-01
+  Tmux survives logout: Keep sessions alive after you log out of the remote host.
+
+  [2] data/tmux.md › (intro) · updated 2026-02-01
+  Tmux survives logout › (intro)
+  # Tmux survives logout
+
+  Start `tmux new -s work` on the remote host and detach with Ctrl-b d. The session keeps running
+  after logout, and `tmux attach -t work` brings it back.
+  search_id=2
+
+  $ kb doctor
+  ok   config: $WORK/proj/.kb/stores/default/config.toml
+  ok   sources: 1 configured: "data" (entries)
+  ok   driver: fts5 enabled, sqlite 3.53.4, sqlite-vec v0.1.6
+  ok   embed_meta: model=none dim=0
+  ok   model: none: FTS-only index and search
+  ok   entries: 1 entries valid
+  ok   db-vs-files: 1 entries in sync
+  ok   index.md: absent (optional export)
+  ~ ok   version: kb \(version\) at .*
+  doctor: 0 failed, 0 warnings
+
+-- notes/tmux.md --
+---
+title: Tmux survives logout
+summary: Keep sessions alive after you log out of the remote host.
+tags: [terminal]
+updated: 2026-02-01
+---
+# Tmux survives logout
+
+Start `tmux new -s work` on the remote host and detach with Ctrl-b d. The session keeps running
+after logout, and `tmux attach -t work` brings it back.
+-- @fts-only --
+# Full-text search only: no model, no download.
+version = 1
+
+[embed]
+model = "none"
+
+[[sources]]
+path = "data"
+layout = "entries"

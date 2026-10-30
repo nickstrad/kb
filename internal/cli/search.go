@@ -47,6 +47,10 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"kb search reindex_test finds reindex_test, not \"reindex test\" (search.exact_list,\n" +
 			"weight search.list_weights.exact; kb explain shows it). Put a query that starts\n" +
 			"with - after the flags and --: kb search --json -- --embed-model.\n\n" +
+			"When the full-text list finds fewer than 3 rows, a query word that no chunk holds\n" +
+			"is also searched as the closest common indexed word (1 edit, 2 from 8 letters;\n" +
+			"never an identifier, a number or a word under 4 letters), and a note on stderr\n" +
+			"says so (search.spell = false turns it off).\n\n" +
 			"Output opens with \"search N · M hits\" (N is the search id, so it survives | head).\n" +
 			"Read a hit with kb show <path>; that read is recorded as an open of this search.\n" +
 			"Feedback is optional: kb feedback N <rank> --useful (or kb feedback N --none) judges\n" +
@@ -138,8 +142,13 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	if err != nil {
 		return err
 	}
+	syn, err := d.loadSynonyms(cmd, ws, cfg)
+	if err != nil {
+		return err
+	}
+	settings = settings.WithSynonyms(syn.Hash())
 	memo := &search.QueryMemo{}
-	searcher := &search.Searcher{Store: st, Log: st, Embedder: embedder, KBVersion: Version, Settings: settings, Now: d.clock, Queries: memo}
+	searcher := &search.Searcher{Store: st, Log: st, Embedder: embedder, KBVersion: Version, Settings: settings, Now: d.clock, Queries: memo, Synonyms: syn}
 	refs := fanOutRefs(opts.fanOut, opts.stores, cfg.Search.Stores)
 	extras, err := d.openExtraStores(cmd, ws, refs, mode, settings, memo, embs)
 	defer extras.close()
@@ -185,6 +194,7 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	if !logged {
 		fmt.Fprintf(stderr, "warning: search not logged: %s\n", logErr)
 	}
+	noteSpell(stderr, out.Spell)
 
 	if out.Mode == search.ModeFTSFallback {
 		// The index lacking vectors (schema 3, not reindexed yet) is not the embedder's fault:
@@ -197,6 +207,14 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 		return exitSilently(ExitEmbedder)
 	}
 	return nil
+}
+
+// noteSpell says on stderr which words spell correction searched an alternative for (DEFAULTS
+// #7: it never changes a search silently), one line each.
+func noteSpell(stderr io.Writer, fixes []search.SpellFix) {
+	for _, f := range fixes {
+		fmt.Fprintf(stderr, "note: also searched %q for %q\n", f.Correction, f.Term)
+	}
 }
 
 // searchK picks the result count: an explicit -k wins, else [search] k from the config.

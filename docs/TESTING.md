@@ -22,7 +22,7 @@ Platform: kb is developed and tested on macOS (darwin/arm64). Tests run there, l
 | L4 Golden | **Exact bytes** that users or tools depend on: chunk boundaries for real entries, `--json` output, `kb explain` output | `testdata/golden` | `go test`; regenerate with `-update` |
 | L5 Contract | Behaviour **every implementation** of an interface (storage backend, `Embedder`) must have | `internal/store/storetest`, `internal/embed/embedtest` | from each implementation's package |
 | L6 Integration | **Wiring**: flags reach the service, output and exit code come back. One success and one failure per command. | `internal/cli/*_test.go` | `go test` |
-| L7 End-to-end (planned, PLAN E1–E5) | **User journeys across commands**: the commands work together as README and `kb help` say, against the real binary in a hermetic temp world. Example: `kb show` after `kb search` counts as an open in `kb stats`. Never a claim a lower layer owns (§11). | `internal/e2e/testdata/journeys/*.txt` | `make e2e` (`-tags fts5,e2e`) |
+| L7 End-to-end (PLAN E1 built the runner and the first journeys; E2–E5 add the rest) | **User journeys across commands**: the commands work together as README and `kb help` say, against the real binary in a hermetic temp world. Example: `kb show` after `kb search` counts as an open in `kb stats`. Never a claim a lower layer owns (§11). | `internal/e2e/testdata/journeys/*.txt` | `make e2e` (`-tags fts5,e2e`) |
 
 ### 2.1 Placement rules
 
@@ -51,7 +51,7 @@ Platform: kb is developed and tested on macOS (darwin/arm64). Tests run there, l
 | stats, index | | yes | | | |
 | v2 workspace (root discovery), config | yes | yes, D | round trip, discovery | | |
 | cli | | flag validation only, D (`runFeedback`) | | `--json`, `explain` | |
-| e2e (planned, PLAN E1): runner only; journeys are L7 | | yes (parse, normalise, match) | `FuzzTranscript` (round trip) | journeys are transcripts | |
+| e2e: runner only; journeys are L7 | | yes (parse, normalise, match) | `FuzzTranscript` (round trip) | journeys are transcripts | |
 
 v2 moves (PLAN.md §2): `SanitizeFTS`, its fuzz target and its corpus move to `store/sqlite`. `embed/ollama`, `embed/openai`, `embed/provider` and DuckDB (`stats/duck.go`) are deleted, and their tests go with them. Write nothing new against them.
 
@@ -400,12 +400,14 @@ Every versioned artefact (CODING_STYLE.md §6.1) has these, in its own package. 
 | `fts5` | required by mattn/go-sqlite3 for FTS5 | every build and test |
 | `noassert` | compile assertions out | `make test-noassert` (every PR), `make build-noassert` (profiling only) |
 | `model` | tests that load a real rembed model | `make test-model`, nightly and local |
-| `harnessfake` | **binary build tag, not a test tag**: adds the deterministic `fake:<dim>` embedding model (DEFAULTS #189) and, from PLAN E1, the `KB_HARNESS_NOW` clock. Release builds never set it. | the adversarial harness and the E2E runner build kb with `-tags fts5,harnessfake` |
-| `e2e` (planned, PLAN E1) | the journey test file in `internal/e2e` (it builds the binary, so it stays out of plain `go test`) | `make e2e`, CI `test` job step, nightly |
+| `harnessfake` | **binary build tag, not a test tag**: adds the deterministic `fake:<dim>` embedding model (DEFAULTS #189) and the `KB_HARNESS_NOW` clock (PLAN E1). Release builds never set it. | the adversarial harness and the E2E runner build kb with `-tags fts5,harnessfake`; `make test` and CI also run `TestHarnessClock`/`TestFakeModel` under it |
+| `e2e` | the journey test file in `internal/e2e` (`journeys_test.go`; it builds the binary, so it stays out of plain `go test`) | `make e2e`, CI `test` job step, nightly |
 
 Combine tags with commas: `-tags fts5,noassert`. There is no `integration` tag. Integration tests are ordinary fast tests. Add the tag only if the suite grows past about 60 s.
 
 ## 9. Commands, Makefile, CI
+
+The repo `Makefile` has `test`, `e2e` and `e2e-update` today (PLAN E1). The block below is the target set; until a target exists, run its command by hand. CI (`.github/workflows/ci.yml`) runs vet, `go test -tags fts5 ./...`, the E2E step and `index-check` on every PR, and the model tests plus the repeated, shuffled E2E nightly; `make check` and `make fuzz` are not wired yet.
 
 ```make
 TAGS    := fts5
@@ -444,7 +446,7 @@ FUZZTIME ?= 30s
 
 - **Every PR:** `make check`. Seeds and crashers replay inside `make test`.
 - **Nightly:** `make fuzz FUZZTIME=2m`. On failure, upload the new `testdata/fuzz/` files as an artifact. Also nightly: `make test-model`.
-- **E2E** (from PLAN E1): one step in the PR job, `go test -tags fts5,e2e -count=1 ./internal/e2e/`, budget under 90 s warm; nightly adds `-count=3 -shuffle=on` (§11.6).
+- **E2E** (built in PLAN E1): one step in the PR job, `go test -tags fts5,e2e -count=1 ./internal/e2e/`, budget under 90 s warm; nightly adds `-count=3 -shuffle=on` (§11.6).
 - **Release** (not testing): each release target must build with `-tags fts5`. Cross-compilation with cgo is a release-pipeline concern, and it does not run tests.
 
 ## 10. Where does my new test go?
@@ -457,7 +459,7 @@ Work down the list and stop at the first yes.
 4. **Is it exact bytes others depend on?** **Golden.**
 5. **Must every backend or embedder do it?** **Contract suite** (§6).
 6. **Is it only that a command wires flags to a service and maps the result to output and exit code?** **Integration**: at most one success and one failure per command.
-7. **Is it a user flow across commands** (the output of one command is the input or the precondition of the next, as README or `kb help` describes it)? An **E2E journey** (§11): add a new journey or extend an existing one. A new user-facing command, a new cross-command flow (a REF form, an upgrade step, a new log signal) or a changed README workflow needs one, in the same item. A new flag on an existing command usually doesn't: it gets the L6 wiring test. (Planned: until PLAN E1 lands, note the missing journey on the E-item.)
+7. **Is it a user flow across commands** (the output of one command is the input or the precondition of the next, as README or `kb help` describes it)? An **E2E journey** (§11): add a new journey or extend an existing one. A new user-facing command, a new cross-command flow (a REF form, an upgrade step, a new log signal) or a changed README workflow needs one, in the same item. A new flag on an existing command usually doesn't: it gets the L6 wiring test. When the journey belongs to a later E-item's set (PLAN Phase 7), note it on that item instead.
 8. **Already owned by a lower layer?** Stop. If the lower-layer test is missing, add it there.
 
 Bug fixes: put the regression at the layer that owns the root cause. If the fuzzer found the bug, commit the crasher. Any test that needs the network, a model, a host tool or a sleep: redesign it (a double, injection, `t.TempDir()`). If it truly needs a real model, tag it `model`.
@@ -471,7 +473,7 @@ layer. A survivor or a failed scenario becomes a test at the layer this section 
 
 ## 11. End-to-end journeys (L7)
 
-**Status: planned, not built.** PLAN.md Phase 7: E1 (runner, clock seam, first journeys) runs as a W10 lane, E2/E4 in W11, and E3/E5 in W14. Until E1 lands, this section is the spec. E1 replaces "planned" here and in §2, §8 and §9.
+**Status: built (PLAN E1).** The runner, the `KB_HARNESS_NOW` clock seam and the first journeys (`first-run`, `offline-first-run`, `agent-workflow`, `entry-lifecycle`) are in `internal/e2e/`; the W10 pass added `lexical-quality` (J13). E2, E3 and E4 add the other journeys in W11 and W14, and E5 cross-checks the README. `make e2e` runs them (about 2 s warm, the kb build cached); `make e2e-update` rewrites expected output. Runner details beyond this section are in `internal/e2e/doc.go`.
 
 ### 11.1 What a journey owns
 
@@ -497,7 +499,7 @@ Journeys are cram-style transcripts in `internal/e2e/testdata/journeys/<slug>.tx
 
 ### 11.5 Updating transcripts
 
-`make e2e-update` (or `go test -tags fts5,e2e ./internal/e2e -run 'TestJourneys/<slug>' -update`) rewrites the expected output in place and keeps prose, commands and still-matching `...`/`~` lines. Update one journey at a time and review the diff like code. A changed line must be explained by the change under review. Never update to make an unexplained failure pass: find the owning layer first (§10).
+`make e2e-update` (or `go test -tags fts5,e2e ./internal/e2e -run 'TestJourneys/^<slug>$' -update`) rewrites the expected output in place and keeps prose, commands and still-matching `...`/`~` lines. Update one journey at a time and review the diff like code. A changed line must be explained by the change under review. Never update to make an unexplained failure pass: find the owning layer first (§10).
 
 ### 11.6 Cadence
 

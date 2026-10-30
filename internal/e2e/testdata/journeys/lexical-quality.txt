@@ -1,0 +1,124 @@
+lexical-quality: synonyms and spell correction (PLAN J13; 5.5, 5.6).
+
+An agent searches with a word the notes never use, rewords it, and finds the note. kb synonyms
+suggest turns that reword into a synonyms.txt line; once pasted, the first word finds the note
+too. A typo that finds nothing is searched again as its correction, and kb says so on stderr.
+
+  $ kb init --model fake:8
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ kb add $WORK/notes/session.md
+  added data/session.md (2 chunks)
+
+  $ kb add $WORK/notes/cluster.md
+  added data/cluster.md (2 chunks)
+
+  $ kb add $WORK/notes/deploy.md
+  added data/deploy.md (2 chunks)
+
+The first word finds nothing; the reworded query finds the note, and the agent marks it useful.
+
+  $ kb search signout --mode fts --caller agent
+  search 1 · 0 hits
+  no results
+  search_id=1
+
+  $ kb search logout --mode fts --caller agent
+  search 2 · 2 hits
+  [1] data/session.md · updated 2026-09-01
+  Ending a session: How to logout of the dashboard.
+
+  [2] data/session.md › (intro) · updated 2026-09-01
+  Ending a session › (intro)
+  # Ending a session
+
+  Click your avatar, then logout. The session cookie is cleared.
+  search_id=2
+
+  $ kb feedback --last 1 --useful --caller agent
+  recorded: search 2 rank 1 useful=1 (newest search for agent, (time): "logout")
+
+kb synonyms suggest mines the log for that reword. Its output pastes as synonyms.txt.
+
+  $ kb synonyms suggest
+  # kb synonyms suggest · 2 searches · 1 reworded pair (window 5m0s)
+  # paste the groups you approve into $WORK/proj/.kb/stores/default/synonyms.txt (kb never writes it)
+
+  # 1 pair, 1 caller (signout -> logout 1); chunks: logout 2, signout 0
+  logout, signout
+
+  # gaps: words of searches without a useful hit or open that no chunk holds
+  #   signout (1 search)
+
+  $ write .kb/stores/default/synonyms.txt @synonyms
+
+  $ kb search signout --mode fts
+  search 3 · 2 hits
+  [1] data/session.md · updated 2026-09-01
+  Ending a session: How to logout of the dashboard.
+
+  [2] data/session.md › (intro) · updated 2026-09-01
+  Ending a session › (intro)
+  # Ending a session
+
+  Click your avatar, then logout. The session cookie is cleared.
+  search_id=3
+
+A typo of a word two notes hold (a transposition, which stemming does not fold) is also searched
+as its correction, and a note on stderr says so.
+
+  $ kb search kuberntes --mode fts
+  search 4 · 4 hits
+  [1] data/deploy.md · updated 2026-09-01
+  Deploying: Ship a release to kubernetes.
+
+  [2] data/cluster.md · updated 2026-09-01
+  Cluster basics: Our kubernetes cluster layout.
+
+  [3] data/deploy.md › (intro) · updated 2026-09-01
+  Deploying › (intro)
+  # Deploying
+
+  Push the image, then roll the kubernetes deployment.
+
+  [4] data/cluster.md › (intro) · updated 2026-09-01
+  Cluster basics › (intro)
+  # Cluster basics
+
+  The kubernetes control plane runs three nodes.
+  search_id=4
+  [stderr] note: also searched "kubernetes" for "kuberntes"
+
+-- notes/session.md --
+---
+title: Ending a session
+summary: How to logout of the dashboard.
+tags: [web]
+updated: 2026-09-01
+---
+# Ending a session
+
+Click your avatar, then logout. The session cookie is cleared.
+-- notes/cluster.md --
+---
+title: Cluster basics
+summary: Our kubernetes cluster layout.
+tags: [ops]
+updated: 2026-09-01
+---
+# Cluster basics
+
+The kubernetes control plane runs three nodes.
+-- notes/deploy.md --
+---
+title: Deploying
+summary: Ship a release to kubernetes.
+tags: [ops]
+updated: 2026-09-01
+---
+# Deploying
+
+Push the image, then roll the kubernetes deployment.
+-- @synonyms --
+logout, signout

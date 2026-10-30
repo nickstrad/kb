@@ -165,20 +165,6 @@ func TestSanitizeFTS(t *testing.T) {
 	}
 }
 
-// TestTagPatternEscapes pins the escaping itself, so a future reader can see what the SQL sees.
-func TestTagPatternEscapes(t *testing.T) {
-	for _, tc := range []struct{ tag, want string }{
-		{"docker", `%"docker"%`},
-		{"%", `%"\%"%`},
-		{"docke_", `%"docke\_"%`},
-		{`a\b`, `%"a\\b"%`},
-	} {
-		if got := tagPattern(tc.tag); got != tc.want {
-			t.Errorf("tagPattern(%q) = %q, want %q", tc.tag, got, tc.want)
-		}
-	}
-}
-
 // TestBaseRuneMatchesSQLite checks ftsBaseRune against the linked SQLite for every assigned code
 // point it accepts: each one, alone in a document, must give the unicode61 tokenizer at least one
 // token. A failure lists code points to add to ftsSkewNotToken, typically after a SQLite upgrade.

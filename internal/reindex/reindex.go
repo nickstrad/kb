@@ -7,6 +7,11 @@
 // embedder call) is per entry, because the embedding-reuse lookup is per entry and each entry
 // commits as soon as its own chunks are ready.
 //
+// Each entry is written with its tags, aliases and outgoing links (edges, PLAN 5.2): the
+// relative Markdown links and [[wikilinks]] of every indexed file (Links) plus the front-matter
+// related, supersedes and depends_on lists. Both All and One end with Store.ResolveEdges, which
+// points every edge at the entry it names now.
+//
 // A bad entry (invalid front matter, an unreadable file, a broken docs/*.md fence) is warned about
 // on Stderr and counted in Summary.Failed; the run continues. An embedder or store error aborts
 // the run and is returned as an *errs.Error that keeps the inner kind (Unavailable for a missing
@@ -15,8 +20,10 @@ package reindex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/nickstrad/kb/internal/assert"
 	"github.com/nickstrad/kb/internal/chunk"
@@ -24,6 +31,7 @@ import (
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/links"
 	"github.com/nickstrad/kb/internal/store"
 )
 
@@ -33,7 +41,9 @@ const defaultBatchSize = 16
 // Options configures a reindex run. Store must already have EnsureEmbedMeta called on it for
 // Embedder (the caller decides what to do about a mismatch; see cli/reindex.go). Force skips the
 // body_hash comparison, which the CLI sets after ResetIndex for `kb reindex --all` on a mismatch.
-// Sources is the store's [[sources]] list, which All discovers; One does not read it.
+// Sources is the store's [[sources]] list, which All discovers; One does not read it. Discover is
+// how All lists the entries on disk; nil means entry.Discover (a test seam: All calls it twice,
+// see All).
 type Options struct {
 	Root      string
 	Sources   []config.Source
@@ -43,6 +53,7 @@ type Options struct {
 	Stdout    io.Writer
 	Stderr    io.Writer
 	Force     bool
+	Discover  func(root string, sources []config.Source) ([]entry.Entry, []entry.Skipped, error)
 }
 
 // Summary tallies one reindex run for the one-line report printed at the end and for tests.
@@ -108,6 +119,10 @@ func all(ctx context.Context, o Options) (Summary, error) {
 	if len(o.Sources) == 0 {
 		fmt.Fprintln(o.Stderr, "warning: this store has no [[sources]] in its config: nothing to index")
 	}
+	discover := o.Discover
+	if discover == nil {
+		discover = entry.Discover
+	}
 	entries, skipped, err := discover(o.Root, o.Sources)
 	if err != nil {
 		return sum, err
@@ -116,9 +131,7 @@ func all(ctx context.Context, o Options) (Summary, error) {
 		fmt.Fprintf(o.Stderr, "warning: skipped %s\n", s)
 	}
 
-	onDisk := make(map[string]bool, len(entries))
 	for _, e := range entries {
-		onDisk[e.Path] = true
 		if err := reindexOne(ctx, o, e, &sum); err != nil {
 			return sum, err
 		}
@@ -128,45 +141,52 @@ func all(ctx context.Context, o Options) (Summary, error) {
 	if err != nil {
 		return sum, fmt.Errorf("list existing entries: %w", err)
 	}
-	var gone []string
+	var stored []string
 	for _, row := range rows {
-		if !onDisk[row.Path] {
-			gone = append(gone, row.Path)
+		stored = append(stored, row.Path)
+	}
+	var now []entry.Entry
+	if len(pruneSet(stored, entries, nil)) > 0 {
+		// Re-check on disk now, after Entries: see the doc comment.
+		if now, _, err = discover(o.Root, o.Sources); err != nil {
+			return sum, err
 		}
 	}
-	if len(gone) == 0 {
-		return sum, nil
-	}
-	// Re-check on disk now, after Entries: see the doc comment.
-	now, _, err := discover(o.Root, o.Sources)
-	if err != nil {
-		return sum, err
-	}
-	for _, e := range now {
-		onDisk[e.Path] = true
-	}
-	for _, path := range gone {
-		if onDisk[path] {
-			continue
-		}
+	for _, path := range pruneSet(stored, entries, now) {
 		if err := o.Store.DeleteEntry(ctx, path); err != nil {
 			return sum, fmt.Errorf("remove %s: %w", path, err)
 		}
 		sum.Removed++
 		fmt.Fprintf(o.Stdout, "removed %s (no longer on disk)\n", path)
 	}
-
+	if err := o.Store.ResolveEdges(ctx); err != nil {
+		return sum, fmt.Errorf("resolve links: %w", err)
+	}
 	return sum, nil
 }
 
-// discover is entry.Discover, whose errors (an unreadable source, two sources claiming one file)
-// are already well-formed Usage errors naming the source.
-func discover(root string, sources []config.Source) ([]entry.Entry, []entry.Skipped, error) {
-	return entry.Discover(root, sources)
+// pruneSet is the rows to delete after a run: the stored paths that neither the first discovery
+// nor the second (now, after Entries) found on disk, in stored order.
+func pruneSet(stored []string, first, now []entry.Entry) []string {
+	onDisk := make(map[string]bool, len(first)+len(now))
+	for _, e := range first {
+		onDisk[e.Path] = true
+	}
+	for _, e := range now {
+		onDisk[e.Path] = true
+	}
+	var gone []string
+	for _, p := range stored {
+		if !onDisk[p] {
+			gone = append(gone, p)
+		}
+	}
+	return gone
 }
 
-// One reindexes a single entry, typically the result of entry.Resolve. It never touches any other
-// entry and never removes anything from the database.
+// One reindexes a single entry, typically the result of entry.Resolve. It never rewrites or
+// removes any other entry; it does re-resolve every edge (ResolveEdges), since a new or changed
+// entry can be the target of another entry's link.
 func One(ctx context.Context, o Options, e entry.Entry) (Summary, error) {
 	if err := preconditions(ctx, o); err != nil {
 		return Summary{}, err
@@ -176,6 +196,9 @@ func One(ctx context.Context, o Options, e entry.Entry) (Summary, error) {
 	var sum Summary
 	if err := reindexOne(ctx, o, e, &sum); err != nil {
 		return sum, boundary(err, "reindex.One")
+	}
+	if err := o.Store.ResolveEdges(ctx); err != nil {
+		return sum, boundary(fmt.Errorf("resolve links: %w", err), "reindex.One")
 	}
 	return sum, nil
 }
@@ -323,9 +346,11 @@ func reindexOne(ctx context.Context, o Options, e entry.Entry, sum *Summary) err
 		Title:    e.Meta.Title,
 		Summary:  e.Meta.Summary,
 		Tags:     e.Meta.Tags,
+		Aliases:  e.Meta.Aliases,
 		Updated:  e.Meta.Updated,
 		Verified: e.Meta.Verified,
 		BodyHash: bodyHash,
+		Edges:    Links(e, files),
 	}
 	if _, err := o.Store.ReplaceEntry(ctx, entryInput, inputs); err != nil {
 		return fmt.Errorf("reindex %s: %w", e.Path, err)
@@ -335,4 +360,35 @@ func reindexOne(ctx context.Context, o Options, e entry.Entry, sum *Summary) err
 	sum.Chunks += len(chunks)
 	fmt.Fprintf(o.Stdout, "reindexed %s (%d chunks, %d embedded)\n", e.Path, len(chunks), embedded)
 	return nil
+}
+
+// Links returns the outgoing edges of e, whose files (front matter included) are in files: the
+// front door's related, supersedes and depends_on lists (paths resolve against the front door's
+// own directory, so `related: [x.md]` in data/droplet/README.md names data/droplet/x.md), then
+// the body links of every indexed file in e.Files order (each resolved against its own file's
+// directory), deduplicated by (target, rel, kind) keeping the first (links.Dedupe). A path link to
+// the entry itself (one of its own files, or its directory) is dropped; a wikilink is kept as
+// written and resolved later. A file whose front matter is broken contributes no body links
+// (chunk.Split has already refused such an entry).
+func Links(e entry.Entry, files map[string][]byte) []store.EdgeInput {
+	ls := links.FromFrontMatter(e.Path, e.Meta)
+	for _, f := range e.Files {
+		_, body, err := entry.ParseFrontMatter(files[f])
+		var ve *entry.ValidationError
+		if err != nil && !errors.As(err, &ve) {
+			continue
+		}
+		ls = append(ls, links.Extract(f, body)...)
+	}
+	var out []store.EdgeInput
+	for _, l := range links.Dedupe(ls) {
+		kind := store.EdgePath
+		if l.Kind == links.KindWikilink {
+			kind = store.EdgeWikilink
+		} else if l.Target == e.Dir || slices.Contains(e.Files, l.Target) {
+			continue
+		}
+		out = append(out, store.EdgeInput{DstPath: l.Target, Rel: l.Rel, Kind: kind})
+	}
+	return out
 }

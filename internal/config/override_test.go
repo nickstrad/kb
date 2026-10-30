@@ -153,3 +153,16 @@ func keys(m map[string]json.RawMessage) []string {
 	}
 	return out
 }
+
+// TestApplyAs: errors name the flag the assignment came from, both the parse and the validation.
+func TestApplyAs(t *testing.T) {
+	for _, assign := range []string{"search.nope=1", "search.rrf_k=0"} {
+		_, err := ApplyAs(Default(), "--sweep", assign)
+		if errs.KindOf(err) != errs.Usage || !strings.Contains(err.Error(), "--sweep "+assign) || strings.Contains(err.Error(), "--set") {
+			t.Errorf("%s: %v, want a Usage error naming --sweep only", assign, err)
+		}
+	}
+	if c, err := ApplyAs(Default(), "--sweep", "search.rrf_k=7"); err != nil || c.Search.RRFK != 7 {
+		t.Errorf("ApplyAs: %v %d", err, c.Search.RRFK)
+	}
+}

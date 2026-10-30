@@ -153,11 +153,12 @@ func TestDoctorReportsConfig(t *testing.T) {
 }
 
 // TestEnvReadsStayInTheAllowedPlaces guards the no-env-vars rule: os.Getenv and friends appear only
-// in workspace.OSEnv and the $EDITOR read in runEditor (and rembed's cache variable in local.Pull).
+// in workspace.OSEnv and the $EDITOR read in runEditor (and rembed's cache variable in local.Pull), plus KB_HARNESS_NOW in harnessfake.go (never compiled into release builds).
 func TestEnvReadsStayInTheAllowedPlaces(t *testing.T) {
 	allowed := map[string]bool{
 		"internal/workspace/workspace.go": true,
 		"internal/cli/edit.go":            true,
+		"internal/cli/harnessfake.go":     true, // KB_HARNESS_NOW, harnessfake builds only
 		"internal/embed/local/local.go":   true,
 	}
 	re := regexp.MustCompile(`os\.(Getenv|LookupEnv|Setenv|Environ)\(`)

@@ -47,6 +47,16 @@ type VariantDiff struct {
 	Metrics  []MetricDiff `json:"metrics"`          // hit_at_k, mrr, ndcg_at_k; empty when Paired is 0
 }
 
+// Metric is the metric named name (hit_at_k, mrr or ndcg_at_k); false when nothing was paired.
+func (d VariantDiff) Metric(name string) (MetricDiff, bool) {
+	for _, m := range d.Metrics {
+		if m.Name == name {
+			return m, true
+		}
+	}
+	return MetricDiff{}, false
+}
+
 // MetricDiff is one metric over the paired queries. Delta is Current - Baseline, with a paired
 // percentile bootstrap interval (resampling the per-query differences, as Bootstrap does).
 // Wins, Losses and Ties count queries by the sign of the difference; P is the two-sided exact

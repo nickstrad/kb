@@ -184,8 +184,8 @@ func integrity(ctx context.Context, db queryer) error {
 }
 
 // strings1 returns the first column of every row as text.
-func strings1(ctx context.Context, db queryer, query string) ([]string, error) {
-	rows, err := db.QueryContext(ctx, query)
+func strings1(ctx context.Context, db queryer, query string, args ...any) ([]string, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
