@@ -10,6 +10,7 @@ import (
 // (Q65) shows in `kb migrate status` (text and JSON) and as a doctor warning; the exit codes do
 // not change (the file is not a pending migration).
 func TestStalePartialBackupIsReported(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	indexState(t, root, "current")

@@ -10,9 +10,11 @@ import (
 	"testing"
 
 	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/store/sqlite/sqlitetest"
 )
 
 func TestShowChunksReportsDatabaseStatFailure(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "show-topic.md"), validFrontMatter("Show topic", "Stat errors must surface."))
 	if err := os.Symlink("kb.sqlite", testDBPath(root)); err != nil {
@@ -25,6 +27,7 @@ func TestShowChunksReportsDatabaseStatFailure(t *testing.T) {
 }
 
 func TestPrintChunkCountsUnicodeCharacters(t *testing.T) {
+	t.Parallel()
 	var b bytes.Buffer
 	printChunk(&b, 0, "a.md", "", "é—界", "0123456789abcdef")
 	if !strings.Contains(b.String(), "(3 chars, 0123456789ab)") {
@@ -33,6 +36,7 @@ func TestPrintChunkCountsUnicodeCharacters(t *testing.T) {
 }
 
 func TestRmPreservesSourceWhenDatabaseCannotOpen(t *testing.T) {
+	t.Parallel()
 	for _, dir := range []bool{false, true} {
 		t.Run(map[bool]string{false: "file", true: "dir"}[dir], func(t *testing.T) {
 			root := newTempRoot(t)
@@ -58,6 +62,7 @@ func TestRmPreservesSourceWhenDatabaseCannotOpen(t *testing.T) {
 }
 
 func TestEditModelMismatchUsesEditPrefix(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "edit-topic.md"), validFrontMatter("Edit topic", "Original summary."))
@@ -65,9 +70,7 @@ func TestEditModelMismatchUsesEditPrefix(t *testing.T) {
 		t.Fatalf("%d %q", code, errOut)
 	}
 	st := openTestStore(t, root)
-	if _, err := st.DB().Exec("UPDATE embed_meta SET model='other'"); err != nil {
-		t.Fatal(err)
-	}
+	sqlitetest.ForceEmbedModel(t, st, "other")
 	useFakeEditor(t, "Original summary", "Changed summary")
 	_, errOut, code := run(t, "edit", "edit-topic.md")
 	if code != 1 || !strings.HasPrefix(errOut, "kb edit:") || strings.HasPrefix(errOut, "kb reindex:") {
@@ -85,17 +88,18 @@ func TestEditModelMismatchUsesEditPrefix(t *testing.T) {
 // TestEditValidationErrorKeepsChain: an edit that leaves the front matter invalid returns the
 // entry's *ValidationError in the error chain (so --debug and errors.As see it), as a Usage error.
 func TestEditValidationErrorKeepsChain(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "edit-bad.md"), validFrontMatter("Edit bad", "Original summary."))
-	orig := testDeps.editor
-	t.Cleanup(func() { testDeps.editor = orig })
-	testDeps.editor = func(_ context.Context, _, path string) error {
+	orig := depsFor(t).editor
+	t.Cleanup(func() { depsFor(t).editor = orig })
+	depsFor(t).editor = func(_ context.Context, _, path string) error {
 		// No summary: ParseFrontMatter reports a *ValidationError.
 		return os.WriteFile(path, []byte("---\ntitle: Edit bad\n---\n\nbody\n"), 0o644)
 	}
 	var out, errBuf bytes.Buffer
-	err := runEdit(context.Background(), nil, testDeps, &out, &errBuf, testWS(root), testConfig(), "edit-bad.md")
+	err := runEdit(context.Background(), nil, depsFor(t), &out, &errBuf, testWS(root), testConfig(), "edit-bad.md")
 	var ve *entry.ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("runEdit = %v, want the *entry.ValidationError in its chain", err)

@@ -470,10 +470,10 @@ func TestResolverLocation(t *testing.T) {
 			t.Errorf("%s: Location = %v, %+v, %v; want %s", tc.name, loc, info, err, tc.root)
 		}
 	}
-	if _, _, err := r.Location(Ref{}); errs.KindOf(err) != errs.Internal {
+	if _, _, err := r.Location(Ref{}); err == nil || errs.KindOf(err) != errs.Internal {
 		t.Errorf("zero ref: %v, want Internal", err)
 	}
-	if _, _, err := r.Location(Ref{Name: "adr"}); errs.KindOf(err) != errs.Internal {
+	if _, _, err := r.Location(Ref{Name: "adr"}); err == nil || errs.KindOf(err) != errs.Internal {
 		t.Errorf("bare name: %v, want Internal", err)
 	}
 }

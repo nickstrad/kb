@@ -46,6 +46,7 @@ func (s *entryStub) EntriesByPath(_ context.Context, paths []string) (map[string
 // store is asked once for all its hits, each hit from its own store (by its Store tag); a tag with
 // no lookup degrades like a missing row.
 func TestRenderHitsEntryErrors(t *testing.T) {
+	t.Parallel()
 	hits := []search.Hit{{Rank: 1, Path: "a.md", Text: "x"}, {Rank: 2, Path: "a.md", Text: "y"}, {Rank: 3, Path: "gone.md", Text: "z"},
 		{Rank: 4, Store: "notes", Path: "a.md"}, {Rank: 5, Store: "lost", Path: "a.md"}}
 	boom := errs.New(errs.Interrupted, "sqlite.Entry", "interrupted")
@@ -75,6 +76,7 @@ func TestRenderHitsEntryErrors(t *testing.T) {
 // TestOpenSearchUnreadableIndex: a stat failure other than "does not exist" is a Usage error that
 // names the index and keeps the cause (Q71); a missing index stays NotFound.
 func TestOpenSearchUnreadableIndex(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("root can read anything")
 	}
@@ -101,7 +103,7 @@ func TestOpenSearchUnreadableIndex(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := &workspace.Workspace{DBPath: tc.db}
-			_, _, _, err := testDeps.openSearch(cmd, ws, config.Default(), "fts", "cli.search", true)
+			_, _, _, err := depsFor(t).openSearch(cmd, ws, config.Default(), "fts", "cli.search", true)
 			if errs.KindOf(err) != tc.kind || !errors.Is(err, tc.cause) || !strings.Contains(err.Error(), tc.db) {
 				t.Fatalf("err = %v (kind %v), want kind %v wrapping %v and naming %s", err, errs.KindOf(err), tc.kind, tc.cause, tc.db)
 			}

@@ -101,12 +101,13 @@ func pInt(v int) *int           { return &v }
 func pFloat(v float64) *float64 { return &v }
 
 func TestStatsListsQueries(t *testing.T) {
+	t.Parallel()
 	useRoot(t, t.TempDir())
 	stdout, stderr, exit := runKB(t, []string{"stats"})
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%s", exit, stderr)
 	}
-	for _, name := range []string{"overview", "sources", "trend", "entries", "gaps"} {
+	for _, name := range []string{"overview", "sources", "tiers", "trend", "entries", "gaps"} {
 		if !strings.Contains(stdout, name) {
 			t.Errorf("stats listing missing %q:\n%s", name, stdout)
 		}
@@ -114,6 +115,7 @@ func TestStatsListsQueries(t *testing.T) {
 }
 
 func TestStatsListNeedsNoDatabase(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir() // no .kb at all
 	useRoot(t, root)
 
@@ -127,10 +129,11 @@ func TestStatsListNeedsNoDatabase(t *testing.T) {
 }
 
 func TestStatsNamedQueriesRun(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
-	for _, name := range []string{"overview", "sources", "trend", "entries", "gaps"} {
+	for _, name := range []string{"overview", "sources", "tiers", "trend", "entries", "gaps"} {
 		t.Run(name, func(t *testing.T) {
 			stdout, stderr, exit := runKB(t, []string{"stats", name})
 			if exit != 0 {
@@ -144,6 +147,7 @@ func TestStatsNamedQueriesRun(t *testing.T) {
 }
 
 func TestStatsOverviewHasExpectedColumns(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
@@ -168,6 +172,7 @@ func TestStatsOverviewHasExpectedColumns(t *testing.T) {
 // form (strconv.FormatFloat(v, 'f', -1, 64)), not padded to a fixed number of decimals: a rate the
 // SQL already rounded must print as "100" or "1", never "100.000" or "1.000".
 func TestStatsFloatsShortestForm(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
@@ -219,6 +224,7 @@ func equalFields(a, b []string) bool {
 }
 
 func TestStatsJSONShape(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
@@ -263,6 +269,7 @@ func TestStatsJSONShape(t *testing.T) {
 }
 
 func TestStatsPrintSQLNeedsNoDatabase(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir() // no .kb/kb.sqlite anywhere
 	useRoot(t, root)
 
@@ -280,6 +287,7 @@ func TestStatsPrintSQLNeedsNoDatabase(t *testing.T) {
 }
 
 func TestStatsAdHocSQL(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
@@ -307,6 +315,7 @@ func TestStatsAdHocSQL(t *testing.T) {
 // TestStatsSQLFilterDecision covers each branch of the `--sql` with `--since`/`--caller` check:
 // --sql refuses either filter, and a filter without --sql is fine.
 func TestStatsSQLFilterDecision(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
@@ -334,6 +343,7 @@ func TestStatsSQLFilterDecision(t *testing.T) {
 }
 
 func TestStatsSinceDuration(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
@@ -347,6 +357,7 @@ func TestStatsSinceDuration(t *testing.T) {
 }
 
 func TestStatsSinceDate(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
@@ -361,6 +372,7 @@ func TestStatsSinceDate(t *testing.T) {
 }
 
 func TestStatsSinceBogus(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
@@ -374,6 +386,7 @@ func TestStatsSinceBogus(t *testing.T) {
 }
 
 func TestStatsCallerFilter(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
@@ -387,6 +400,7 @@ func TestStatsCallerFilter(t *testing.T) {
 }
 
 func TestStatsUnknownName(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
@@ -394,7 +408,7 @@ func TestStatsUnknownName(t *testing.T) {
 	if exit != 1 {
 		t.Fatalf("exit = %d, want 1; stderr=%s", exit, stderr)
 	}
-	for _, name := range []string{"overview", "sources", "trend", "entries", "gaps"} {
+	for _, name := range []string{"overview", "sources", "tiers", "trend", "entries", "gaps"} {
 		if !strings.Contains(stderr, name) {
 			t.Errorf("unknown-name error missing %q from the valid list: %s", name, stderr)
 		}
@@ -402,6 +416,7 @@ func TestStatsUnknownName(t *testing.T) {
 }
 
 func TestStatsNameAndSQLConflict(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
@@ -415,6 +430,7 @@ func TestStatsNameAndSQLConflict(t *testing.T) {
 }
 
 func TestStatsPrintSQLAndSQLConflict(t *testing.T) {
+	t.Parallel()
 	f := buildStatsFixture(t)
 	useRoot(t, f.root)
 
@@ -428,6 +444,7 @@ func TestStatsPrintSQLAndSQLConflict(t *testing.T) {
 }
 
 func TestStatsMissingDatabase(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir() // no .kb/kb.sqlite
 	useRoot(t, root)
 
@@ -441,6 +458,7 @@ func TestStatsMissingDatabase(t *testing.T) {
 }
 
 func TestStatsHelpShowsDefinitionsAndQueries(t *testing.T) {
+	t.Parallel()
 	useRoot(t, t.TempDir())
 	stdout, stderr, exit := runKB(t, []string{"stats", "--help"})
 	if exit != 0 {
@@ -449,7 +467,7 @@ func TestStatsHelpShowsDefinitionsAndQueries(t *testing.T) {
 	if !strings.Contains(stdout, "judged searches") || !strings.Contains(stdout, "unknown, not a failure") {
 		t.Errorf("stats --help missing the hit/judged definitions:\n%s", stdout)
 	}
-	for _, name := range []string{"overview", "sources", "trend", "entries", "gaps"} {
+	for _, name := range []string{"overview", "sources", "tiers", "trend", "entries", "gaps"} {
 		if !strings.Contains(stdout, name) {
 			t.Errorf("stats --help missing query %q:\n%s", name, stdout)
 		}
@@ -462,6 +480,7 @@ func TestStatsHelpShowsDefinitionsAndQueries(t *testing.T) {
 // TestStatsErrorHasOneStatsPrefix: a file that is not a SQLite database makes stats fail inside
 // the stats package; the user sees one "kb stats:" prefix, not "kb stats: stats:".
 func TestStatsErrorHasOneStatsPrefix(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	useRoot(t, root)
 	p := testDBPath(root)

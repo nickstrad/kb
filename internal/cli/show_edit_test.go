@@ -84,9 +84,9 @@ func setupRepo(t *testing.T) string {
 // kb edit's reindex never loads a real model.
 func withFakeEmbedder(t *testing.T) {
 	t.Helper()
-	orig := testDeps.embedder
-	testDeps.embedder = func(config.Embed) (embed.Embedder, error) { return fake.New("test-model", testDim768), nil }
-	t.Cleanup(func() { testDeps.embedder = orig })
+	orig := depsFor(t).embedder
+	depsFor(t).embedder = func(config.Embed) (embed.Embedder, error) { return fake.New("test-model", testDim768), nil }
+	t.Cleanup(func() { depsFor(t).embedder = orig })
 }
 
 // indexEntry reindexes one entry with the fake embedder directly, so tests can start from an
@@ -117,10 +117,11 @@ func indexEntry(t *testing.T, ctx context.Context, root, arg string) {
 }
 
 func TestShowPrintsFileVerbatim(t *testing.T) {
+	t.Parallel()
 	root := setupRepo(t)
 	var out, errBuf bytes.Buffer
 
-	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md", false, true, false); err != nil {
+	if err := runShow(context.Background(), depsFor(t), &out, &errBuf, testWS(root), testConfig(), "foo.md", false, true, false); err != nil {
 		t.Fatalf("runShow: %v", err)
 	}
 	if out.String() != fooMD {
@@ -129,10 +130,11 @@ func TestShowPrintsFileVerbatim(t *testing.T) {
 }
 
 func TestShowMultiFileEntryHasHeaders(t *testing.T) {
+	t.Parallel()
 	root := setupRepo(t)
 	var out, errBuf bytes.Buffer
 
-	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), testConfig(), "bar", false, true, false); err != nil {
+	if err := runShow(context.Background(), depsFor(t), &out, &errBuf, testWS(root), testConfig(), "bar", false, true, false); err != nil {
 		t.Fatalf("runShow: %v", err)
 	}
 	got := out.String()
@@ -148,10 +150,11 @@ func TestShowMultiFileEntryHasHeaders(t *testing.T) {
 }
 
 func TestShowSingleFileEntryHasNoHeader(t *testing.T) {
+	t.Parallel()
 	root := setupRepo(t)
 	var out, errBuf bytes.Buffer
 
-	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md", false, true, false); err != nil {
+	if err := runShow(context.Background(), depsFor(t), &out, &errBuf, testWS(root), testConfig(), "foo.md", false, true, false); err != nil {
 		t.Fatalf("runShow: %v", err)
 	}
 	if strings.Contains(out.String(), "==>") {
@@ -160,10 +163,11 @@ func TestShowSingleFileEntryHasNoHeader(t *testing.T) {
 }
 
 func TestShowChunksUnindexedFallsBackToSplit(t *testing.T) {
+	t.Parallel()
 	root := setupRepo(t)
 	var out, errBuf bytes.Buffer
 
-	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md", true, true, false); err != nil {
+	if err := runShow(context.Background(), depsFor(t), &out, &errBuf, testWS(root), testConfig(), "foo.md", true, true, false); err != nil {
 		t.Fatalf("runShow --chunks: %v", err)
 	}
 	if !strings.Contains(errBuf.String(), "not indexed") {
@@ -178,12 +182,13 @@ func TestShowChunksUnindexedFallsBackToSplit(t *testing.T) {
 }
 
 func TestShowChunksIndexedReadsFromDB(t *testing.T) {
+	t.Parallel()
 	root := setupRepo(t)
 	ctx := context.Background()
 	indexEntry(t, ctx, root, "foo.md")
 
 	var out, errBuf bytes.Buffer
-	if err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md", true, true, false); err != nil {
+	if err := runShow(context.Background(), depsFor(t), &out, &errBuf, testWS(root), testConfig(), "foo.md", true, true, false); err != nil {
 		t.Fatalf("runShow --chunks: %v", err)
 	}
 	if strings.Contains(errBuf.String(), "not indexed") {
@@ -195,10 +200,11 @@ func TestShowChunksIndexedReadsFromDB(t *testing.T) {
 }
 
 func TestShowUnknownEntryExitsUsage(t *testing.T) {
+	t.Parallel()
 	root := setupRepo(t)
 	var out, errBuf bytes.Buffer
 
-	err := runShow(context.Background(), testDeps, &out, &errBuf, testWS(root), testConfig(), "nope.md", false, true, false)
+	err := runShow(context.Background(), depsFor(t), &out, &errBuf, testWS(root), testConfig(), "nope.md", false, true, false)
 	if err == nil {
 		t.Fatal("expected an error for an unknown entry")
 	}
@@ -208,6 +214,7 @@ func TestShowUnknownEntryExitsUsage(t *testing.T) {
 }
 
 func TestListFiltersByTag(t *testing.T) {
+	t.Parallel()
 	root := setupRepo(t)
 	var out bytes.Buffer
 
@@ -224,6 +231,7 @@ func TestListFiltersByTag(t *testing.T) {
 }
 
 func TestListShowsBrokenEntryAsError(t *testing.T) {
+	t.Parallel()
 	root := setupRepo(t)
 	// Front matter with no summary: entry.ParseFrontMatter reports this as a *ValidationError,
 	// which Discover/loadMeta turns into Entry.Err rather than a zero-valued Meta.
@@ -243,12 +251,13 @@ func TestListShowsBrokenEntryAsError(t *testing.T) {
 }
 
 func TestRmFileRemovesFileAndDBRow(t *testing.T) {
+	t.Parallel()
 	root := setupRepo(t)
 	ctx := context.Background()
 	indexEntry(t, ctx, root, "foo.md")
 
 	var out, errBuf bytes.Buffer
-	if err := runRm(ctx, testDeps, &out, &errBuf, testWS(root), testSources, "foo.md", false); err != nil {
+	if err := runRm(ctx, depsFor(t), &out, &errBuf, testWS(root), testSources, "foo.md", false); err != nil {
 		t.Fatalf("runRm: %v", err)
 	}
 	if !strings.Contains(out.String(), "removed data/foo.md") {
@@ -273,12 +282,13 @@ func TestRmFileRemovesFileAndDBRow(t *testing.T) {
 }
 
 func TestRmDirRequiresYes(t *testing.T) {
+	t.Parallel()
 	root := setupRepo(t)
 	ctx := context.Background()
 	indexEntry(t, ctx, root, "bar")
 
 	var out, errBuf bytes.Buffer
-	err := runRm(ctx, testDeps, &out, &errBuf, testWS(root), testSources, "bar", false)
+	err := runRm(ctx, depsFor(t), &out, &errBuf, testWS(root), testSources, "bar", false)
 	if err == nil {
 		t.Fatal("expected rm of a directory entry without --yes to be refused")
 	}
@@ -289,7 +299,7 @@ func TestRmDirRequiresYes(t *testing.T) {
 		t.Errorf("bar/ should still exist after a refused rm: %v", statErr)
 	}
 
-	if err := runRm(ctx, testDeps, &out, &errBuf, testWS(root), testSources, "bar", true); err != nil {
+	if err := runRm(ctx, depsFor(t), &out, &errBuf, testWS(root), testSources, "bar", true); err != nil {
 		t.Fatalf("runRm --yes: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(root, "data", "bar")); !os.IsNotExist(statErr) {
@@ -323,7 +333,7 @@ func TestEditReindexesOnChange(t *testing.T) {
 	t.Setenv("EDITOR", `sh -c 'printf "\n## Added\n\nnew text\n" >> "$1"' --`)
 
 	var out, errBuf bytes.Buffer
-	if err := runEdit(ctx, nil, testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md"); err != nil {
+	if err := runEdit(ctx, nil, depsFor(t), &out, &errBuf, testWS(root), testConfig(), "foo.md"); err != nil {
 		t.Fatalf("runEdit: %v (stderr=%s)", err, errBuf.String())
 	}
 	if strings.Contains(out.String(), "unchanged") {
@@ -373,7 +383,7 @@ func TestEditEditorFailureAbortsWithoutTouchingDB(t *testing.T) {
 	t.Setenv("EDITOR", "false")
 
 	var out, errBuf bytes.Buffer
-	err = runEdit(ctx, nil, testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md")
+	err = runEdit(ctx, nil, depsFor(t), &out, &errBuf, testWS(root), testConfig(), "foo.md")
 	if err == nil {
 		t.Fatal("expected an error when $EDITOR exits non-zero")
 	}
@@ -412,7 +422,7 @@ func TestEditNoopIsUnchanged(t *testing.T) {
 	t.Setenv("EDITOR", "true")
 
 	var out, errBuf bytes.Buffer
-	if err := runEdit(ctx, nil, testDeps, &out, &errBuf, testWS(root), testConfig(), "foo.md"); err != nil {
+	if err := runEdit(ctx, nil, depsFor(t), &out, &errBuf, testWS(root), testConfig(), "foo.md"); err != nil {
 		t.Fatalf("runEdit: %v (stderr=%s)", err, errBuf.String())
 	}
 	if strings.TrimSpace(out.String()) != "unchanged" {

@@ -9,7 +9,9 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -615,31 +617,78 @@ func (h *H) kbQuiet(args ...string) res {
 	return res{Args: args, Code: exitCode(err), Stdout: o.String(), Stderr: e.String(), Dur: time.Since(t0)}
 }
 
+var goroutineRe = regexp.MustCompile(`(?m)^goroutine \d+ \[`)
+
+// lineWatch is a stderr sink that closes hit once the text seen so far contains want, so a
+// scenario can signal kb at a known point of its run instead of after a guessed delay.
+type lineWatch struct {
+	mu   sync.Mutex
+	buf  bytes.Buffer
+	want string
+	hit  chan struct{}
+	done bool
+}
+
+func newLineWatch(want string) *lineWatch { return &lineWatch{want: want, hit: make(chan struct{})} }
+
+func (w *lineWatch) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf.Write(p)
+	if !w.done && strings.Contains(w.buf.String(), w.want) {
+		w.done = true
+		close(w.hit)
+	}
+	return len(p), nil
+}
+
+func (w *lineWatch) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// scSigint interrupts kb reindex --all at known points: each run is started with --debug, which
+// prints "reindex: entry N" after every entry written, and SIGINT is sent when line N appears. A
+// run that never reaches that line (or finishes before it) is a failure, not a note: the interrupt
+// path must be exercised every time (H23).
 func scSigint(h *H) {
-	for i := range 400 {
+	const entries = 400
+	for i := range entries {
 		h.write(fmt.Sprintf("data/e-%03d.md", i), entryText(fmt.Sprintf("Entry %d", i),
 			strings.Repeat(fmt.Sprintf("## S\n\nsigword %d body text for chunking.\n\n", i), 20)))
 	}
-	interrupted := false
-	for _, delay := range []time.Duration{80 * time.Millisecond, 250 * time.Millisecond, 600 * time.Millisecond} {
-		c, o, e := h.cmd(withNone("reindex", "--all")...)
-		h.must(c.Start() == nil, "start reindex")
-		time.Sleep(delay)
-		_ = c.Process.Signal(syscall.SIGINT)
-		err := c.Wait()
-		r := res{Args: []string{"reindex", "--all", "(SIGINT after " + delay.String() + ")"}, Code: exitCode(err), Stdout: o.String(), Stderr: e.String()}
-		h.invariants(r)
-		if r.Code != 0 {
-			interrupted = true
+	for _, at := range []int{5, 50, 200} {
+		// Start from an empty index each time, so entry N is the Nth write of the run.
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			os.Remove(h.dbPath() + suffix)
 		}
-		h.note("SIGINT after %s: exit %d, stderr %q", delay, r.Code, clip(r.Stderr, 120))
+		c, o, _ := h.cmd(withNone("--debug", "reindex", "--all")...)
+		w := newLineWatch(fmt.Sprintf("reindex: entry %d\n", at))
+		c.Stderr = w
+		h.must(c.Start() == nil, "start reindex")
+		select {
+		case <-w.hit:
+			_ = c.Process.Signal(syscall.SIGINT)
+		case <-time.After(30 * time.Second):
+			_ = c.Process.Kill()
+			h.fail("reindex never printed progress line %d within 30 s:\n%s", at, clip(w.String(), 300))
+		}
+		err := c.Wait()
+		r := res{Args: []string{"reindex", "--all", fmt.Sprintf("(SIGINT at entry %d)", at)}, Code: exitCode(err), Stdout: o.String(), Stderr: w.String()}
+		// --debug prints the error's stack ("goroutine N [running]:"), which the no-stack
+		// invariant would flag; a real panic still shows as "panic: " or exit 3.
+		inv := r
+		inv.Stderr = goroutineRe.ReplaceAllString(r.Stderr, "stack [")
+		h.invariants(inv)
+		if r.Code == 0 {
+			h.fail("SIGINT at entry %d of %d: reindex still exited 0 (the interrupt did not land mid-run):\n%s", at, entries, r)
+		}
+		h.note("SIGINT at entry %d: exit %d, stderr %q", at, r.Code, clip(r.Stderr, 120))
 		d := h.kb(withNone("doctor")...)
 		if strings.Contains(d.Stdout+d.Stderr, "malformed") || strings.Contains(d.Stdout, "FAIL driver") {
 			h.fail("database damaged by SIGINT:\n%s", d)
 		}
-	}
-	if !interrupted {
-		h.note("reindex finished before every SIGINT; the interrupt path was not exercised")
 	}
 	h.expect(h.kb(withNone("reindex", "--all")...), 0)
 	h.expect(h.kb(withNone("doctor")...), 0)

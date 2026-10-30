@@ -22,6 +22,7 @@ import (
 )
 
 func TestDownloadsModel(t *testing.T) {
+	t.Parallel()
 	for name, want := range map[string]bool{
 		"reindex": true, "add": true,
 		"search": false, "doctor": false, "show": false, "edit": false, "pull": false, "": false,
@@ -33,24 +34,25 @@ func TestDownloadsModel(t *testing.T) {
 }
 
 func TestNewEmbedderKinds(t *testing.T) {
-	cmd := newRootCmd(testDeps, nil, nil)
-	if e, err := testDeps.newEmbedder(cmd, config.Embed{Model: config.ModelNone}); err != nil || !embed.IsNone(e) {
+	t.Parallel()
+	cmd := newRootCmd(depsFor(t), nil, nil)
+	if e, err := depsFor(t).newEmbedder(cmd, config.Embed{Model: config.ModelNone}); err != nil || !embed.IsNone(e) {
 		t.Fatalf("model none gave %T, %v", e, err)
 	}
-	e, err := testDeps.newEmbedder(cmd, config.Default().Embed)
+	e, err := depsFor(t).newEmbedder(cmd, config.Default().Embed)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if le, ok := e.(*local.Embedder); !ok || le.Model() != local.DefaultModel || le.Dim() != 384 {
 		t.Fatalf("default embedder = %T %v", e, e)
 	}
-	if _, err := testDeps.newEmbedder(cmd, config.Embed{Model: "acme/unknown"}); errs.KindOf(err) != errs.Usage || !strings.Contains(err.Error(), "supported: ") {
+	if _, err := depsFor(t).newEmbedder(cmd, config.Embed{Model: "acme/unknown"}); errs.KindOf(err) != errs.Usage || !strings.Contains(err.Error(), "supported: ") {
 		t.Fatalf("unknown model = %v, want a Usage error listing the supported models", err)
 	}
-	origDir := testDeps.modelCacheDir
-	t.Cleanup(func() { testDeps.modelCacheDir = origDir })
-	testDeps.modelCacheDir = func() (string, error) { return "", errFakeCache }
-	if _, err := testDeps.newEmbedder(cmd, config.Default().Embed); !errors.Is(err, errFakeCache) {
+	origDir := depsFor(t).modelCacheDir
+	t.Cleanup(func() { depsFor(t).modelCacheDir = origDir })
+	depsFor(t).modelCacheDir = func() (string, error) { return "", errFakeCache }
+	if _, err := depsFor(t).newEmbedder(cmd, config.Default().Embed); !errors.Is(err, errFakeCache) {
 		t.Fatalf("cache dir failure = %v, want it returned", err)
 	}
 }
@@ -62,6 +64,7 @@ var errFakeCache = errs.New(errs.Usage, "test.modelCacheDir", "no cache dir")
 // TestConfigConstantsMatchServices pins the values config repeats so it need not import a
 // service or the embedder: the k bounds, the default model and the open window.
 func TestConfigConstantsMatchServices(t *testing.T) {
+	t.Parallel()
 	if config.MinK != search.MinK || config.MaxK != search.MaxK {
 		t.Errorf("config k bounds %d..%d != search %d..%d", config.MinK, config.MaxK, search.MinK, search.MaxK)
 	}
@@ -97,7 +100,7 @@ func recordModel(t *testing.T, root, model string, dim int) {
 // loadFor runs loadConfig for the store at root, with the global store under home.
 func loadFor(t *testing.T, root, home string) (config.Config, error) {
 	t.Helper()
-	d := *testDeps
+	d := *depsFor(t)
 	d.workspaceEnv = func() workspace.Env {
 		return workspace.Env{Cwd: root, Home: home, CacheBase: filepath.Join(home, "cache")}
 	}
@@ -110,6 +113,7 @@ func loadFor(t *testing.T, root, home string) (config.Config, error) {
 // config file or the default (never from its index), and how the global store's
 // aliases merge.
 func TestLoadConfigDecisions(t *testing.T) {
+	t.Parallel()
 	const cfgPath = ".kb/stores/default/config.toml"
 	tests := []struct {
 		name       string
@@ -159,6 +163,7 @@ func ptr(s string) *string { return &s }
 // TestPrecedenceDecisions is the decision table for the settings a command resolves from a flag
 // and the config: the flag wins when given, else the config value, else the default.
 func TestPrecedenceDecisions(t *testing.T) {
+	t.Parallel()
 	t.Run("search k", func(t *testing.T) {
 		for _, tt := range []struct {
 			name           string

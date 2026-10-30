@@ -1,0 +1,151 @@
+phrase-tier: words that sit next to each other rank above words that are merely both present
+(PLAN J18; 4.6).
+
+Two notes use the words "disk" and "quota". One says "disk quota" in a row; the other mentions
+them in separate sentences and is the better match for a plain AND search. With phrase_boost
+(the default) the chunk holding the phrase leads. kb explain names the tier of every hit, and
+the setting turns the tiers off.
+
+  $ kb init --model fake:8
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ kb add $WORK/notes/scattered.md
+  added data/scattered.md (2 chunks)
+  $ kb add $WORK/notes/adjacent.md
+  added data/adjacent.md (2 chunks)
+
+  $ kb search 'disk quota' --mode fts
+  search 1 · 3 hits
+  [1] data/adjacent.md › (intro) · updated 2026-02-02
+  Reporting › (intro)
+  # Reporting
+
+  A disk quota alert is filed in the tracker.
+
+  [2] data/scattered.md · updated 2026-02-01
+  Storage planning: Disk and quota planning.
+
+  [3] data/scattered.md › (intro) · updated 2026-02-01
+  Storage planning › (intro)
+  # Storage planning
+
+  Every disk is checked weekly. Each team keeps a quota. The disk report and the quota report
+  are separate.
+  search_id=1
+
+Quotes add nothing: the phrase tier is automatic for any query of two or more words, so a
+quoted query is the same search.
+
+  $ kb search '"disk quota"' --mode fts
+  search 2 · 3 hits
+  [1] data/adjacent.md › (intro) · updated 2026-02-02
+  ...
+  search_id=2
+
+Reverse the words and no chunk holds the phrase: the scattered note, with more matches, leads.
+
+  $ kb search 'quota disk' --mode fts
+  search 3 · 3 hits
+  [1] data/scattered.md · updated 2026-02-01
+  ...
+  search_id=3
+
+kb explain names the tiers (each with its row count) and the tier of every hit.
+
+  $ kb explain 'disk quota' --mode fts
+  ~ explain "disk quota" · mode fts · k 8 · settings [0-9a-f]{12}
+  ...
+  tiers: phrase "disk quota" (1 row) · near NEAR("disk" "quota", 8) (3 rows) · and "disk" AND "quota" (3 rows)
+  lists: fts 3 rows · vec 0 rows · 3 candidates
+  ...
+  ~ #1  rrf [0-9.]+  data/adjacent.md › \(intro\)  \[returned as hit #1\]
+  ~     fts  rank 1  tier phrase  bm25 .*
+  ...
+  ~ #2  rrf [0-9.]+  data/scattered.md  \[returned as hit #2\]
+  ~     fts  rank 2  tier near  bm25 .*
+  ...
+  ~ #3  rrf [0-9.]+  data/scattered.md › \(intro\)  \[returned as hit #3\]
+  ~     fts  rank 3  tier near  bm25 .*
+  ...
+
+With search.phrase_boost off the tiers go away and the plain AND order returns.
+
+  $ kb explain 'disk quota' --mode fts --set search.phrase_boost=false
+  ~ explain "disk quota" · mode fts · k 8 · settings [0-9a-f]{12}
+  ...
+  tiers: off (search.phrase_boost = false)
+  ...
+  ~ #1  rrf [0-9.]+  data/scattered.md  \[returned as hit #1\]
+  ~     fts  rank 1  bm25 .*
+  ...
+
+Judge the phrase hit of the first search, then ask the log how each tier did: kb stats tiers
+counts the shown hits per tier and how many were judged useful.
+
+  $ kb feedback 1 1 --useful
+  recorded: search 1 rank 1 useful=1
+  $ kb stats tiers --json
+  {
+    "query": "tiers",
+    "columns": [
+      "tier",
+      "results",
+      "share_pct",
+      "judged",
+      "useful",
+      "useful_rate_pct",
+      "avg_rank",
+      "with_memory",
+      "memory_useful"
+    ],
+    "rows": [
+      {
+        "avg_rank": 1,
+        "judged": 1,
+        "memory_useful": 0,
+        "results": 2,
+        "share_pct": 22.2,
+        "tier": "phrase",
+        "useful": 1,
+        "useful_rate_pct": 100,
+        "with_memory": 0
+      },
+      {
+        "avg_rank": 2.29,
+        "judged": 0,
+        "memory_useful": 0,
+        "results": 7,
+        "share_pct": 77.8,
+        "tier": "near",
+        "useful": 0,
+        "useful_rate_pct": null,
+        "with_memory": 0
+      }
+    ],
+    "searches_loaded": 3,
+    "since": null,
+    "caller": null
+  }
+
+-- notes/scattered.md --
+---
+title: Storage planning
+summary: Disk and quota planning.
+tags: [ops]
+updated: 2026-02-01
+---
+# Storage planning
+
+Every disk is checked weekly. Each team keeps a quota. The disk report and the quota report
+are separate.
+-- notes/adjacent.md --
+---
+title: Reporting
+summary: Where reports are filed.
+tags: [ops]
+updated: 2026-02-02
+---
+# Reporting
+
+A disk quota alert is filed in the tracker.

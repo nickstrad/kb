@@ -27,8 +27,9 @@ func testConfig() config.Config {
 // docs/*.md finds docs/PLAN.md; both stores may index the same file (overlap across stores is
 // allowed).
 func TestInPlaceSourcesAcceptance(t *testing.T) {
+	t.Parallel()
 	root := realTempDir(t)
-	t.Chdir(root)
+	chdir(t, root)
 	withHome(t, realTempDir(t))
 	writeFile(t, filepath.Join(root, "README.md"), "# kb\n\nA knowledge store.\n\n## Install\n\nRun go install to install kb.\n")
 	writeFile(t, filepath.Join(root, "docs", "PLAN.md"), "# Plan\n\nThe work plan, phase by phase.\n")
@@ -77,6 +78,7 @@ func TestInPlaceSourcesAcceptance(t *testing.T) {
 
 // TestInPlaceRefusals: kb rm and kb add on an in-place store.
 func TestInPlaceRefusals(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	writeConfig(t, root, "[embed]\nmodel = \"none\"\n[[sources]]\nglob = \"docs/*.md\"\nlayout = \"files\"\n")
 	writeFile(t, filepath.Join(root, "docs", "a.md"), "# A\n\nText.\n")
@@ -99,8 +101,9 @@ func TestInPlaceRefusals(t *testing.T) {
 
 // TestAddToNamedStore: a named store made by kb init adds into data-<name>/, not data/.
 func TestAddToNamedStore(t *testing.T) {
+	t.Parallel()
 	root := realTempDir(t)
-	t.Chdir(root)
+	chdir(t, root)
 	withHome(t, realTempDir(t))
 	for _, args := range [][]string{{"init", "--model", "none"}, {"init", "--name", "adr", "--model", "none"}} {
 		if _, errOut, code := run(t, args...); code != 0 {
@@ -124,6 +127,7 @@ func TestAddToNamedStore(t *testing.T) {
 // TestEntriesSource is the decision table of entriesSource: exactly one entries source, none, or
 // several.
 func TestEntriesSource(t *testing.T) {
+	t.Parallel()
 	e := func(p string) config.Source { return config.Source{Path: p, Layout: config.LayoutEntries} }
 	f := config.Source{Glob: "*.md", Layout: config.LayoutFiles}
 	for _, tt := range []struct {
@@ -150,6 +154,7 @@ func TestEntriesSource(t *testing.T) {
 
 // TestDoctorSources: the sources findings, one row per outcome (Q55).
 func TestDoctorSources(t *testing.T) {
+	t.Parallel()
 	outside := realTempDir(t)
 	writeFile(t, filepath.Join(outside, "secret.md"), "# Secret\n")
 	tests := []struct {
@@ -202,11 +207,12 @@ func TestDoctorSources(t *testing.T) {
 // TestDoctorModelFail: when the embedder cannot be built (here: no model cache directory), doctor
 // prints one FAIL model line naming the cause, still runs the other checks, and exits 1 (Q60).
 func TestDoctorModelFail(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "a.md"), validFrontMatter("A", "a"))
-	orig := testDeps.modelCacheDir
-	t.Cleanup(func() { testDeps.modelCacheDir = orig })
-	testDeps.modelCacheDir = func() (string, error) { return "", errs.New(errs.Usage, "test", "no cache dir here") }
+	orig := depsFor(t).modelCacheDir
+	t.Cleanup(func() { depsFor(t).modelCacheDir = orig })
+	depsFor(t).modelCacheDir = func() (string, error) { return "", errs.New(errs.Usage, "test", "no cache dir here") }
 	out, _, code := run(t, "doctor")
 	if code != ExitUsage || !strings.Contains(out, "FAIL model: ") || !strings.Contains(out, "no cache dir here") {
 		t.Fatalf("doctor = %d, want FAIL model naming the cause:\n%s", code, out)
@@ -219,6 +225,7 @@ func TestDoctorModelFail(t *testing.T) {
 // TestReindexWarnsSkippedSymlink: kb reindex skips a link out of the root with a warning and
 // still exits 0; kb list warns the same way.
 func TestReindexWarnsSkippedSymlink(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	outside := realTempDir(t)

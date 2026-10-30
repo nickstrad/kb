@@ -121,6 +121,7 @@ func contextTokens(out string) int {
 // leaves hits out, and the exact size of the unlimited output (which must fit with nothing cut).
 // Each run gets a fresh store, so every output is search 1 and the goldens do not depend on order.
 func TestContextGolden(t *testing.T) {
+	t.Parallel()
 	run := func(args ...string) string {
 		t.Helper()
 		newContextRepo(t)
@@ -154,6 +155,7 @@ func TestContextGolden(t *testing.T) {
 // output (heading, hits and footer) fits. The floor is the output at budget 1, which keeps the
 // frame: below it nothing can fit, and the output says so with the "raise --budget" note.
 func TestContextBudgetBound(t *testing.T) {
+	t.Parallel()
 	newContextRepo(t)
 	floorOut, stderr, exit := runKB(t, []string{"context", "tmux logout", "--budget", "1"})
 	if exit != 0 {
@@ -182,6 +184,7 @@ func TestContextBudgetBound(t *testing.T) {
 // TestContextFlagErrors: a bad budget, an unknown expand mode and an empty task are usage errors
 // (exit 1) with nothing on stdout.
 func TestContextFlagErrors(t *testing.T) {
+	t.Parallel()
 	newContextRepo(t)
 	for _, tc := range []struct {
 		name string
@@ -206,6 +209,7 @@ func TestContextFlagErrors(t *testing.T) {
 // TestContextJSON pins the --json shape: the search id and feedback, the query and mode, the
 // budget and its token count, and every hit with its level (0 when the budget left it out).
 func TestContextJSON(t *testing.T) {
+	t.Parallel()
 	newContextRepo(t)
 	stdout, stderr, exit := runKB(t, []string{"context", "tmux logout", "--json", "--budget", "60"})
 	if exit != 0 || stderr != "" {
@@ -269,6 +273,7 @@ func TestContextJSON(t *testing.T) {
 
 // TestContextConfigBudget: [output] context_budget is the default; --budget wins.
 func TestContextConfigBudget(t *testing.T) {
+	t.Parallel()
 	root := newContextRepo(t)
 	writeConfig(t, root, "[embed]\nmodel = \""+testModel768+"\"\n[output]\ncontext_budget = 70\n")
 	fromConfig, _, exit := runKB(t, []string{"context", "tmux logout"})
@@ -287,6 +292,7 @@ func TestContextConfigBudget(t *testing.T) {
 // TestContextLogsSearch: the footer's search id is a logged search, so kb feedback accepts it, and
 // the next context run gets the next id.
 func TestContextLogsSearch(t *testing.T) {
+	t.Parallel()
 	newContextRepo(t)
 	out, _, exit := runKB(t, []string{"context", "tmux logout"})
 	if exit != 0 || !strings.Contains(out, "## kb context (search 1)") || !strings.Contains(out, "kb feedback 1 RANK") {
@@ -305,6 +311,7 @@ func TestContextLogsSearch(t *testing.T) {
 // them on the primary store while fan-out stores loaded theirs): the logged FTS query holds the
 // alternative and the settings hash changes with the file.
 func TestContextSynonyms(t *testing.T) {
+	t.Parallel()
 	root := newContextRepo(t)
 	if _, stderr, exit := runKB(t, []string{"context", "tmux"}); exit != 0 {
 		t.Fatalf("without synonyms: exit %d %s", exit, stderr)
@@ -341,6 +348,7 @@ func TestContextSynonyms(t *testing.T) {
 // and every budget from the floor (the output at budget 1) to the unlimited size, the framed
 // output fits and every hit gets a level.
 func TestFitContextBound(t *testing.T) {
+	t.Parallel()
 	rng := rand.New(rand.NewPCG(10, 43))
 	words := []string{"tmux", "détaché", "session", "日本語", "logout", "rebase", "a", "pull-request"}
 	text := func(n int) string {
@@ -380,6 +388,7 @@ func TestFitContextBound(t *testing.T) {
 // hits, a store-prefixed best hit), a block's levels (summary only when set; level 3 shows the
 // expansion, else the trimmed text) and the body's tail for hidden or condensed hits.
 func TestContextFrame(t *testing.T) {
+	t.Parallel()
 	hit := render.Hit{Rank: 2, Path: "tmux.md", Heading: "Detach", Updated: "2026-07-01", Summary: "S", Text: "  body  "}
 	for _, tc := range []struct{ name, got, want string }{
 		{"footer: not logged", contextFooter(0, false, []render.Hit{hit}), "search not logged"},
@@ -404,6 +413,7 @@ func TestContextFrame(t *testing.T) {
 // TestContextFallbackExits2: with the embedder down, kb context still prints the pack from FTS,
 // warns, and exits 2 (the kb search fallback contract).
 func TestContextFallbackExits2(t *testing.T) {
+	t.Parallel()
 	newContextRepo(t)
 	countingEmbedders(t, true)
 	stdout, stderr, exit := runKB(t, []string{"context", "tmux logout"})

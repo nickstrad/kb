@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math/rand"
 	"os"
@@ -314,13 +315,15 @@ func FuzzExactMatch(f *testing.F) {
 	for _, seed := range []string{"foo_bar", "--embed-model kb.toml", "a/b:c. (x.y),", "EnsureEmbedMeta", "café_x", "-e", `a"b_c`, "x*_y", "ᳳ_a", "a_\x00b", "AND_or NOT-x"} {
 		f.Add(seed)
 	}
-	st, err := sqlite.Open(context.Background(), filepath.Join(f.TempDir(), "kb.sqlite"), sqlite.Options{})
+	// SQLite is the oracle for the tokenizer: a scratch in-memory database, not a kb store, so the
+	// test touches no kb schema.
+	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		f.Fatal(err)
 	}
-	f.Cleanup(func() { st.Close() })
+	f.Cleanup(func() { db.Close() })
 	ctx := context.Background()
-	conn, err := st.DB().Conn(ctx) // temp tables are per connection
+	conn, err := db.Conn(ctx) // temp tables are per connection
 	if err != nil {
 		f.Fatal(err)
 	}

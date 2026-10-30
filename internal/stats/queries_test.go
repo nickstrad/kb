@@ -450,11 +450,41 @@ func TestWholeSearchVerdict(t *testing.T) {
 		})
 }
 
+// TestTiers sets fts_tier and memory_rank on the fixture's results: search 1 ranks 1-2 are
+// 'phrase' and 'and' (rank 1 also memory-placed, judged not useful; rank 3 judged useful is
+// 'none'), search 2 rank 1 is 'phrase' and memory-placed (judged useful), search 3 rank 1 is
+// 'and', search 7 rank 1 is 'near', search 8 rank 1 (judged not useful) is 'or'. The other 10 of
+// the 16 rows are NULL -> 'none'. One verdict per (search, rank) (the primary key), so max() in
+// the query only turns "no verdict" into NULL.
+func TestTiers(t *testing.T) {
+	db := openFixture(t, `
+UPDATE search_results SET fts_tier = 'phrase', memory_rank = 1 WHERE search_id = 1 AND rank = 1;
+UPDATE search_results SET fts_tier = 'and' WHERE search_id = 1 AND rank = 2;
+UPDATE search_results SET fts_tier = 'phrase', memory_rank = 2 WHERE search_id = 2 AND rank = 1;
+UPDATE search_results SET fts_tier = 'and' WHERE search_id = 3 AND rank = 1;
+UPDATE search_results SET fts_tier = 'near' WHERE search_id = 7 AND rank = 1;
+UPDATE search_results SET fts_tier = 'or' WHERE search_id = 8 AND rank = 1;`)
+	// 16 rows. phrase: (1,1) not useful, (2,1) useful -> 2 results, judged 2, useful 1, 50.0,
+	// avg rank 1.0, with_memory 2, memory_useful 1. near: 1 row, unjudged. and: (1,2) unjudged,
+	// (3,1) not useful -> 2 rows, judged 1, useful 0 -> 0.0, avg rank 1.5. or: (8,1) not useful ->
+	// 1 row, 6.3, judged 1, useful 0, 0.0, avg 1.0. none: 10 rows, judged (1,3) useful, (3,2) not
+	// useful, (6,2) useful -> 3, useful 2, 66.7; ranks sum 3+2+2+3+3+5+1 = 19, avg 1.9.
+	checkQuery(t, db, "tiers", Filter{},
+		[]string{"tier", "results", "share_pct", "judged", "useful", "useful_rate_pct", "avg_rank", "with_memory", "memory_useful"},
+		[][]any{
+			{"phrase", int64(2), 12.5, int64(2), int64(1), 50.0, 1.0, int64(2), int64(1)},
+			{"near", int64(1), 6.3, int64(0), int64(0), nil, 1.0, int64(0), int64(0)},
+			{"and", int64(2), 12.5, int64(1), int64(0), 0.0, 1.5, int64(0), int64(0)},
+			{"or", int64(1), 6.3, int64(1), int64(0), 0.0, 1.0, int64(0), int64(0)},
+			{"none", int64(10), 62.5, int64(3), int64(2), 66.7, 1.9, int64(0), int64(0)},
+		})
+}
+
 // TestLookup checks the registry itself: the names in display order, a populated Summary and
 // Help on each, a Help paragraph that ends in a "Decision:" sentence, and a
 // miss for a name nobody defined (which is what the CLI turns into a usage error).
 func TestLookup(t *testing.T) {
-	want := []string{"overview", "sources", "trend", "entries", "gaps", "settings"}
+	want := []string{"overview", "sources", "tiers", "trend", "entries", "gaps", "settings"}
 
 	if len(Queries) != len(want) {
 		t.Fatalf("len(Queries) = %d, want %d", len(Queries), len(want))

@@ -19,10 +19,10 @@ import (
 // order of the commands.
 func steppingClock(t *testing.T) {
 	t.Helper()
-	orig := testDeps.now
+	orig := depsFor(t).now
 	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
-	testDeps.now = func() time.Time { at = at.Add(time.Minute); return at }
-	t.Cleanup(func() { testDeps.now = orig })
+	depsFor(t).now = func() time.Time { at = at.Add(time.Minute); return at }
+	t.Cleanup(func() { depsFor(t).now = orig })
 }
 
 // evalPriorRepo is the two-chunk widget repo with the prior at its smallest gate (min_judged 1)
@@ -65,6 +65,7 @@ func evalPriorRun(t *testing.T, flags ...string) (eval.Report, *eval.Comparison)
 // before W was judged), or on W itself, it does not. The prior's evidence is the same log the
 // gold comes from; the replay's own searches are left out of it.
 func TestEvalPriorLeakage(t *testing.T) {
+	t.Parallel()
 	searchW := []string{"search", "widget", "--mode", "fts"}
 	searchC := []string{"search", "configuring widget", "--mode", "fts"}
 	for _, tc := range []struct {
@@ -121,6 +122,7 @@ func perQuery(t *testing.T, r eval.Report, key string) eval.Result {
 // prints the deltas against a baseline without the prior, and says how many replays the prior
 // was active in. Here it lifts one query's gold from rank 2 to 1: MRR +0.25 over 2 queries.
 func TestEvalComparePriorOn(t *testing.T) {
+	t.Parallel()
 	evalPriorRepo(t)
 	mustKB(t, "search", "configuring widget", "--mode", "fts")
 	mustKB(t, "feedback", "1", "1", "--useful")
@@ -151,6 +153,7 @@ func TestEvalComparePriorOn(t *testing.T) {
 // past search with the same words in another order (another eval query) remembers its useful hit.
 // The store the replays run on can locate chunks, so the list is active.
 func TestEvalPriorQueryMemory(t *testing.T) {
+	t.Parallel()
 	root := evalPriorRepo(t)
 	writeConfig(t, root, "[embed]\nmodel = \""+testModel768+"\"\n[prior]\nmin_judged = 1\n[search.list_weights]\nmemory = 2\n")
 	mustKB(t, "search", "widget configuring", "--mode", "fts")
@@ -171,6 +174,7 @@ func TestEvalPriorQueryMemory(t *testing.T) {
 // TestEvalPriorSweepRefused: a sweep of a [prior] key below eval.min_judged is refused, --force
 // or not; a [prior] axis the grid never enables is refused too; both before the model loads.
 func TestEvalPriorSweepRefused(t *testing.T) {
+	t.Parallel()
 	evalPriorRepo(t)
 	mustKB(t, "search", "widget", "--mode", "fts")
 	mustKB(t, "feedback", "1", "2", "--useful")
@@ -207,6 +211,7 @@ func judgeCThenW(t *testing.T, callerC, callerW string) {
 // TestEvalPriorReadsWholeLog: kb eval --caller (or --since) scores that window's queries, but the
 // prior learns from the whole log, as kb search does: another caller's verdict lifts W's gold.
 func TestEvalPriorReadsWholeLog(t *testing.T) {
+	t.Parallel()
 	evalPriorRepo(t)
 	judgeCThenW(t, "other", "me")
 	for _, flags := range [][]string{{"--caller", "me"}, {"--since", "2026-10-01"}, {}} {
@@ -234,12 +239,13 @@ func (f judgedFault) Judged(ctx context.Context, flt store.JudgedFilter) ([]stor
 // TestEvalPriorSecondReadFails: with --caller the prior's whole-log read is a second read; its
 // failure stops eval and sweep with its kind (exit 1), before any report.
 func TestEvalPriorSecondReadFails(t *testing.T) {
+	t.Parallel()
 	evalPriorRepo(t)
 	judgeCThenW(t, "other", "me")
-	orig := testDeps.openStore
-	t.Cleanup(func() { testDeps.openStore = orig })
+	orig := depsFor(t).openStore
+	t.Cleanup(func() { depsFor(t).openStore = orig })
 	n := 0
-	testDeps.openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
+	depsFor(t).openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
 		st, err := orig(ctx, path, ro)
 		if err != nil {
 			return nil, err
@@ -265,6 +271,7 @@ func TestEvalPriorSecondReadFails(t *testing.T) {
 // TestEvalPriorSweepUsesPrior: a sweep of prior.enabled replays the enabled point with the prior
 // (the evidence is loaded when any grid point enables it): it wins, at MRR 1.
 func TestEvalPriorSweepUsesPrior(t *testing.T) {
+	t.Parallel()
 	evalPriorRepo(t)
 	judgeCThenW(t, "c", "c")
 	stdout, stderr, exit := runKB(t, []string{"eval", "--mode", "fts", "--json", "--set", "eval.min_judged=1", "--set", "eval.holdout=0",
@@ -284,6 +291,7 @@ func TestEvalPriorSweepUsesPrior(t *testing.T) {
 // TestPriorLine is the eval report's prior line: none while the prior is off, the counts when on,
 // and a hint when the gate never opened.
 func TestPriorLine(t *testing.T) {
+	t.Parallel()
 	const head = "prior: active in %d/%d replays · query memory placed hits in %d (each replay as of its search's time, without its own query's feedback)\n"
 	const hint = "prior inactive in every replay: fewer than prior.min_judged judged searches before each one\n"
 	for _, tc := range []struct {
@@ -307,6 +315,7 @@ func TestPriorLine(t *testing.T) {
 // caller "other" and then by "me"; replaying "me"'s search must not see "other"'s verdict, with
 // or without the window, in kb eval and in a sweep.
 func TestEvalPriorWindowLeavesOutQuery(t *testing.T) {
+	t.Parallel()
 	evalPriorRepo(t)
 	mustKB(t, "search", "widget", "--mode", "fts", "--caller", "other")
 	mustKB(t, "feedback", "1", "2", "--useful")

@@ -2,7 +2,7 @@
 > Every CLI test runs through one package-level `testDeps` and `os.Getwd`, so tests swap fields and `t.Chdir`, and none can run in parallel.
 
 - **Smell:** global/process state · hidden coupling
-- **Status:** needs work
+- **Status:** resolved (2026-10-30)
 - **Where:** `internal/cli/main_test.go:testDeps` (`= productionDeps()`), `internal/cli/add_test.go:useRoot` (`t.Chdir`), `internal/cli/root.go:deps` (mixes factories with per-run `caches *embedCaches`), `internal/cli/setup.go:withEmbedCache` / `downloadsModel` (take `*cobra.Command`, nil-tolerant for tests)
 - **Symptoms in tests:**
   - 73 swaps of a `testDeps` field restored by `t.Cleanup` (openStore 15, modelCacheDir 14, embedder 14, editor 8, userCacheDir 7, embedCachePath 7, workspaceEnv 5, pullModel 3). `main_test.go` says "the CLI tests are not parallel": a forgotten restore leaks into every later test. (W7 count; was 62 at the first pass.)
@@ -17,4 +17,5 @@
 - **W10 pass:** recount 96 `testDeps.X = ` swaps, 54 `t.Chdir`, 81 `useRoot` (+13 from kb context, synonyms, sweep tests). The pass added pure-function tables where it could (`TestContextFrame`, `TestFitContextBound`), and `TestLoadSynonymsLookup` calls `testDeps.loadSynonyms` with a bare `cobra.Command`, but it still needs the process HOME (`useGlobalLocation`) for the global store. The new `harnessNow` package var (root.go, set by harnessfake.go `init`) is a process-level seam, contained to harnessfake builds. Remedy unchanged → new item.
 - **W12 pass:** recount 102 `testDeps.X = ` swaps, 54 `t.Chdir`, 94 `useRoot` (+13, mostly `prior_cmd_test.go`). The W12 decisions themselves (prior gate, memory gold selection and cut) are pure or Searcher-level and tested in `internal/search` (`TestRememberedGold`, `TestMemoryRowsOf`, `TestPriorGate`), so the CLI tests only check wiring. Remedy unchanged → T1.
 - **W13 pass:** recount 106 `testDeps.X = ` swaps (+4: `steppingClock` swaps `testDeps.now`, `TestEvalPriorSecondReadFails` swaps `openStore` for a `judgedFault` wrapper), 54 `t.Chdir`, 96 `useRoot`. The 6.4 decisions (leave-out ids, replay time, prior gate, PriorUse counts) are pure and tested in `internal/eval`; the CLI tests check wiring and the leakage table end to end. Remedy unchanged → T1.
-- **Last reviewed:** 2026-10-30 · W13 wave-end pass
+- **Resolution:** T1: `world`/`depsFor(t)` (main_test.go) gives every CLI test its own deps, home, user cache, model cache and working directory (`chdir(t, dir)` sets `workspace.Env.Cwd`, no `t.Chdir`); `execute` runs on `deps.forRun()`, so the embedding caches and the global-synonyms memo are per run, not on a shared value. 317 of 321 CLI tests call `t.Parallel`; `go test -race -count=3 ./internal/cli/` is clean. Left: 4 tests that `t.Setenv("EDITOR"|"KB_CALLER")` stay serial; `withEmbedCache` still takes a `*cobra.Command` (it keys the doctor exemption on `cmd.Name()`).
+- **Last reviewed:** 2026-10-30 · T1 (archived)

@@ -57,6 +57,7 @@ func mustKB(t *testing.T, args ...string) (stdout, stderr string) {
 }
 
 func TestShowRecordsOpenOfRecentSearch(t *testing.T) {
+	t.Parallel()
 	root := openRepo(t)
 	id := searchID(t, "foo")
 	out, stderr := mustKB(t, "show", "foo.md")
@@ -76,6 +77,7 @@ func TestShowRecordsOpenOfRecentSearch(t *testing.T) {
 }
 
 func TestShowWithoutMatchingSearchRecordsNothing(t *testing.T) {
+	t.Parallel()
 	root := openRepo(t)
 
 	mustKB(t, "show", "foo.md") // no search at all
@@ -91,6 +93,7 @@ func TestShowWithoutMatchingSearchRecordsNothing(t *testing.T) {
 }
 
 func TestShowOpensNewestOfTwoSearches(t *testing.T) {
+	t.Parallel()
 	root := openRepo(t)
 	searchID(t, "foo")
 	second := searchID(t, "foo")
@@ -101,6 +104,7 @@ func TestShowOpensNewestOfTwoSearches(t *testing.T) {
 }
 
 func TestShowNoLog(t *testing.T) {
+	t.Parallel()
 	root := openRepo(t)
 	searchID(t, "foo")
 	_, stderr := mustKB(t, "show", "foo.md", "--no-log", "--debug")
@@ -118,6 +122,7 @@ func TestShowNoLog(t *testing.T) {
 }
 
 func TestShowWithoutDatabaseStaysQuiet(t *testing.T) {
+	t.Parallel()
 	root := setupRepo(t)
 	useRoot(t, root)
 	_, stderr := mustKB(t, "show", "foo.md")
@@ -136,6 +141,7 @@ func TestShowWithoutDatabaseStaysQuiet(t *testing.T) {
 // TestShowOpenFailureIsSilentButNotSwallowed: the entry has been printed, so an unusable database
 // must not change the exit code; --debug is where the cause surfaces.
 func TestShowOpenFailureIsSilentButNotSwallowed(t *testing.T) {
+	t.Parallel()
 	root := setupRepo(t)
 	useRoot(t, root)
 	if err := os.MkdirAll(filepath.Dir(testDBPath(root)), 0o755); err != nil {
@@ -160,6 +166,7 @@ func TestShowOpenFailureIsSilentButNotSwallowed(t *testing.T) {
 }
 
 func TestShowVerboseExplainsNoMatch(t *testing.T) {
+	t.Parallel()
 	openRepo(t)
 	_, stderr := mustKB(t, "show", "foo.md", "--debug")
 	if !strings.Contains(stderr, "no search in the last 30m0s returned data/foo.md") {
@@ -168,6 +175,7 @@ func TestShowVerboseExplainsNoMatch(t *testing.T) {
 }
 
 func TestShowAndSearchHelpMentionOpens(t *testing.T) {
+	t.Parallel()
 	out, _ := mustKB(t, "show", "--help")
 	for _, want := range []string{"--no-log", "--debug", "opened_pct", "30 minutes"} {
 		if !strings.Contains(out, want) {

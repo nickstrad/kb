@@ -234,7 +234,7 @@ func edgesContract(t *testing.T, st store.Store, dim int) {
 	for _, bad := range []store.EdgeInput{edge("", "links", path), edge("x.md", "", path), edge("x.md", "links", "other")} {
 		in := entryIn("a.md", "newtag")
 		in.Edges = []store.EdgeInput{bad}
-		if _, err := st.ReplaceEntry(ctx, in, chunks(dim, "edge refused")); errs.KindOf(err) != errs.Internal {
+		if _, err := st.ReplaceEntry(ctx, in, chunks(dim, "edge refused")); err == nil || errs.KindOf(err) != errs.Internal {
 			t.Errorf("edge %+v: err = %v (kind %v), want Internal", bad, err, errs.KindOf(err))
 		}
 	}

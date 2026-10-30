@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"encoding/json"
 	"path/filepath"
@@ -10,25 +9,17 @@ import (
 	"testing"
 
 	"github.com/nickstrad/kb/internal/config"
-	"github.com/nickstrad/kb/internal/store/sqlite"
+	"github.com/nickstrad/kb/internal/store/sqlite/sqlitetest"
 )
 
 // lastSearchSettings reads the settings columns of the newest search in a store's log.
 func lastSearchSettings(t *testing.T, dbPath string) (settings, hash string, fts sql.NullString) {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), dbPath, sqlite.Options{ReadOnly: true})
-	if err != nil {
-		t.Fatal(err)
+	row := sqlitetest.LastSearch(t, dbPath)
+	if !row.HasSettings {
+		t.Fatalf("the newest search has no settings (settings %q, hash %q)", row.Settings, row.SettingsHash)
 	}
-	defer st.Close()
-	var s, h sql.NullString
-	if err := st.DB().QueryRow("SELECT settings, settings_hash, fts_query FROM searches ORDER BY id DESC LIMIT 1").Scan(&s, &h, &fts); err != nil {
-		t.Fatal(err)
-	}
-	if !s.Valid || !h.Valid {
-		t.Fatalf("the newest search has no settings (settings %v, hash %v)", s, h)
-	}
-	return s.String, h.String, fts
+	return row.Settings, row.SettingsHash, sql.NullString{String: row.FTSQuery, Valid: row.FTSQuery != ""}
 }
 
 // TestSearchLogsEachStoresSettings (PLAN 2.5): a search logs the effective settings of the store
@@ -36,6 +27,7 @@ func lastSearchSettings(t *testing.T, dbPath string) (settings, hash string, fts
 // the logged JSON is the canonical text the hash covers, two stores with different [search] log
 // different hashes, and `kb stats settings` shows one row per hash.
 func TestSearchLogsEachStoresSettings(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	addStore(t, root, "adr")

@@ -13,6 +13,8 @@ import (
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/workspace"
 )
 
@@ -20,9 +22,9 @@ import (
 // deterministic fake, restoring it after the test.
 func useFakeEmbedder(t *testing.T) {
 	t.Helper()
-	orig := testDeps.embedder
-	testDeps.embedder = func(config.Embed) (embed.Embedder, error) { return fake.New("fake-add-test", 16), nil }
-	t.Cleanup(func() { testDeps.embedder = orig })
+	orig := depsFor(t).embedder
+	depsFor(t).embedder = func(config.Embed) (embed.Embedder, error) { return fake.New("fake-add-test", 16), nil }
+	t.Cleanup(func() { depsFor(t).embedder = orig })
 }
 
 // testWS is the workspace of a store root, for tests that call a run function directly.
@@ -62,7 +64,7 @@ func useNoneModel(t *testing.T, root string) {
 
 // newTempRoot creates a fresh location root (.kb/kb.toml and a default store config with only the
 // data/ source, no database yet), makes it the working directory for the test and returns it with symlinks
-// resolved, the form root discovery reports. The CLI tests are not parallel, so t.Chdir is safe.
+// resolved, the form root discovery reports. It moves the working directory root discovery sees, not the process.
 func newTempRoot(t *testing.T) string {
 	t.Helper()
 	return useRoot(t, t.TempDir())
@@ -80,7 +82,7 @@ func useRoot(t *testing.T, dir string) string {
 	if _, err := os.Stat(filepath.Join(real, ".kb", "kb.toml")); err != nil {
 		makeLocation(t, real, "default")
 	}
-	t.Chdir(real)
+	chdir(t, real)
 	return real
 }
 
@@ -118,8 +120,26 @@ func writeFile(t *testing.T, path, content string) {
 func run(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
 	var out, errBuf bytes.Buffer
-	code = execute(context.Background(), testDeps, args, &out, &errBuf)
+	code = execute(context.Background(), depsFor(t), args, &out, &errBuf)
 	return out.String(), errBuf.String(), code
+}
+
+// runErr is run that also returns the error the command ended with (nil on success), so a
+// decision test asserts its kind and typed cause (wantKind, errors.As) instead of stderr wording.
+// Keep one wording test per message family (report_test.go).
+func runErr(t *testing.T, args ...string) (stdout, stderr string, code int, err error) {
+	t.Helper()
+	var out, errBuf bytes.Buffer
+	code, err = executeErr(context.Background(), depsFor(t), args, &out, &errBuf)
+	return out.String(), errBuf.String(), code, err
+}
+
+// wantKind fails unless err is of kind k.
+func wantKind(t *testing.T, err error, k errs.Kind) {
+	t.Helper()
+	if got := errs.KindOf(err); err == nil || got != k {
+		t.Fatalf("error kind = %v (err %v), want %v", got, err, k)
+	}
 }
 
 // validFrontMatter is a minimal but valid entry body: title, summary, tags, updated, and one
@@ -138,15 +158,15 @@ func validFrontMatter(title, summary string) string {
 // it is given, so edit tests need no shell or sed (TESTING.md §7).
 func useFakeEditor(t *testing.T, from, to string) {
 	t.Helper()
-	orig := testDeps.editor
-	testDeps.editor = func(_ context.Context, _, path string) error {
+	orig := depsFor(t).editor
+	depsFor(t).editor = func(_ context.Context, _, path string) error {
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
 		return os.WriteFile(path, []byte(strings.ReplaceAll(string(b), from, to)), 0o644)
 	}
-	t.Cleanup(func() { testDeps.editor = orig })
+	t.Cleanup(func() { depsFor(t).editor = orig })
 }
 
 // openTestStore opens the database kb add just wrote to, for assertions.
@@ -161,6 +181,7 @@ func openTestStore(t *testing.T, root string) *sqlite.Store {
 }
 
 func TestAddFileOutsideRootIsCopiedAndIndexed(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	scratch := t.TempDir()
@@ -196,17 +217,19 @@ func TestAddFileOutsideRootIsCopiedAndIndexed(t *testing.T) {
 }
 
 func TestAddBadNameIsRejected(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	scratch := t.TempDir()
 	src := filepath.Join(scratch, "Bad_Name.md")
 	writeFile(t, src, validFrontMatter("Bad name test", "Should be rejected before anything is read or copied."))
 
-	_, errOut, code := run(t, "add", src)
+	_, errOut, code, err := runErr(t, "add", src)
 	if code != ExitUsage {
 		t.Fatalf("exit = %d, want %d; stderr=%q", code, ExitUsage, errOut)
 	}
-	if !strings.Contains(errOut, "lowercase kebab-case") {
+	wantKind(t, err, errs.Usage)
+	if !strings.Contains(errOut, "lowercase kebab-case") { // the wording test of the naming rule
 		t.Errorf("stderr = %q, want it to name the naming rule", errOut)
 	}
 	if _, err := os.Stat(filepath.Join(root, "data", "Bad_Name.md")); !os.IsNotExist(err) {
@@ -215,18 +238,21 @@ func TestAddBadNameIsRejected(t *testing.T) {
 }
 
 func TestAddMissingSummaryIsRejected(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	scratch := t.TempDir()
 	src := filepath.Join(scratch, "no-summary.md")
 	writeFile(t, src, "---\ntitle: No summary\ntags: [test]\n---\n\n## Section\n\nbody\n")
 
-	_, errOut, code := run(t, "add", src)
+	_, errOut, code, err := runErr(t, "add", src)
 	if code != ExitUsage {
 		t.Fatalf("exit = %d, want %d; stderr=%q", code, ExitUsage, errOut)
 	}
-	if !strings.Contains(errOut, "summary") {
-		t.Errorf("stderr = %q, want it to mention summary", errOut)
+	wantKind(t, err, errs.Usage)
+	var ve *entry.ValidationError
+	if !errors.As(err, &ve) {
+		t.Errorf("error %v does not carry an *entry.ValidationError", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "data", "no-summary.md")); !os.IsNotExist(err) {
 		t.Errorf("file should not have been copied (stat err = %v)", err)
@@ -234,6 +260,7 @@ func TestAddMissingSummaryIsRejected(t *testing.T) {
 }
 
 func TestAddSecretPatternIsRejected(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	scratch := t.TempDir()
@@ -242,10 +269,11 @@ func TestAddSecretPatternIsRejected(t *testing.T) {
 		"\npassword=example-not-real\n"
 	writeFile(t, src, body)
 
-	_, errOut, code := run(t, "add", src)
+	_, errOut, code, err := runErr(t, "add", src)
 	if code != ExitUsage {
 		t.Fatalf("exit = %d, want %d; stderr=%q", code, ExitUsage, errOut)
 	}
+	wantKind(t, err, errs.Usage)
 	if !strings.Contains(errOut, "password") {
 		t.Errorf("stderr = %q, want it to name the password pattern", errOut)
 	}
@@ -258,6 +286,7 @@ func TestAddSecretPatternIsRejected(t *testing.T) {
 }
 
 func TestAddDuplicateIsRejected(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	// Hand-drafted directly in the repo root: valid, not yet in the DB.
@@ -278,6 +307,7 @@ func TestAddDuplicateIsRejected(t *testing.T) {
 }
 
 func TestAddDirWithReadmeAndDocsIsIndexed(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	scratch := t.TempDir()
@@ -317,6 +347,7 @@ func TestAddDirWithReadmeAndDocsIsIndexed(t *testing.T) {
 }
 
 func TestAddDirWithoutReadmeIsRejected(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	_ = newTempRoot(t)
 	scratch := t.TempDir()
@@ -333,6 +364,7 @@ func TestAddDirWithoutReadmeIsRejected(t *testing.T) {
 }
 
 func TestAddFileInsideRootSubdirectoryIsRejected(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	nested := filepath.Join(root, "data", "sub", "nested.md")
@@ -355,11 +387,12 @@ func (unusableEmbedder) Ping(context.Context) error { return errors.New("model n
 // TestAddFileFailsBeforeCopyWhenEmbedderUnusable pins Q11: kb add checks the embedder before it
 // writes anything, so a failed model load exits 2 with no copied file to roll back.
 func TestAddFileFailsBeforeCopyWhenEmbedderUnusable(t *testing.T) {
-	orig := testDeps.embedder
-	testDeps.embedder = func(config.Embed) (embed.Embedder, error) {
+	t.Parallel()
+	orig := depsFor(t).embedder
+	depsFor(t).embedder = func(config.Embed) (embed.Embedder, error) {
 		return unusableEmbedder{fake.New("fake-add-test", 16)}, nil
 	}
-	t.Cleanup(func() { testDeps.embedder = orig })
+	t.Cleanup(func() { depsFor(t).embedder = orig })
 
 	root := newTempRoot(t)
 	src := filepath.Join(t.TempDir(), "kb-add-unusable-test.md")

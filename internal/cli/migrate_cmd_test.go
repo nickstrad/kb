@@ -117,6 +117,7 @@ func indexState(t *testing.T, root, state string) {
 // index refuses an older or newer one without touching it; the exempt commands (doctor, stores,
 // config --path, version, migrate) explain instead.
 func TestCommandsOnIndexStates(t *testing.T) {
+	t.Parallel()
 	const (
 		older = "Run: kb migrate up"
 		newer = "use a newer kb"
@@ -173,6 +174,7 @@ func TestCommandsOnIndexStates(t *testing.T) {
 // TestMigrateUpUpgrades is the accept path: an older store is refused, `kb migrate up` backs it up
 // and upgrades it, and the same command then works. From v2 the re-embed effect is reported.
 func TestMigrateUpUpgrades(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	db := testDBPath(root)
@@ -217,6 +219,7 @@ func TestMigrateUpUpgrades(t *testing.T) {
 
 // TestMigrateUpOptions: --dry-run writes nothing, --no-backup writes no backup.
 func TestMigrateUpOptions(t *testing.T) {
+	t.Parallel()
 	t.Run("dry run", func(t *testing.T) {
 		root := newTempRoot(t)
 		useNoneModel(t, root)
@@ -262,6 +265,7 @@ func TestMigrateUpOptions(t *testing.T) {
 // TestMigrateScope: the default scope is the resolved store, --store picks another, --all covers
 // every store; --all with --store is a usage error; no location is NotFound.
 func TestMigrateScope(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	addStore(t, root, "adr")
@@ -294,7 +298,7 @@ func TestMigrateScope(t *testing.T) {
 	}
 
 	empty := t.TempDir()
-	t.Chdir(empty)
+	chdir(t, empty)
 	if _, stderr, code := run(t, "migrate", "status"); code != 1 || !strings.Contains(stderr, "kb init") {
 		t.Errorf("no location: exit %d %q", code, stderr)
 	}
@@ -302,6 +306,7 @@ func TestMigrateScope(t *testing.T) {
 
 // TestMigrateStatusOutput pins the status table and its JSON shape.
 func TestMigrateStatusOutput(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	installIndex(t, testDBPath(root), sqlite.SchemaVersion()-1)
@@ -352,13 +357,14 @@ store default index:
 // TestMigrateStatusShowsCache: the embedding cache is listed for information, migrates by itself
 // and never makes status fail.
 func TestMigrateStatusShowsCache(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	indexState(t, root, "current")
 	path := filepath.Join(t.TempDir(), "embed-cache.sqlite")
-	old := testDeps.embedCachePath
-	testDeps.embedCachePath = func() (string, error) { return path, nil }
-	t.Cleanup(func() { testDeps.embedCachePath = old })
+	old := depsFor(t).embedCachePath
+	depsFor(t).embedCachePath = func() (string, error) { return path, nil }
+	t.Cleanup(func() { depsFor(t).embedCachePath = old })
 
 	c, err := cache.Open(context.Background(), path)
 	if err != nil {
@@ -390,8 +396,9 @@ func TestMigrateStatusShowsCache(t *testing.T) {
 // TestInitCreatesCurrentIndexThatNeedsNoMigration: a store made by kb init is at the target, so
 // status is clean and every command works at once.
 func TestInitCreatesCurrentIndexThatNeedsNoMigration(t *testing.T) {
+	t.Parallel()
 	root := realTempDir(t)
-	t.Chdir(root)
+	chdir(t, root)
 	withHome(t, realTempDir(t))
 	if _, stderr, code := run(t, "init", "--model", "none"); code != 0 {
 		t.Fatalf("init: exit %d %q", code, stderr)
@@ -408,6 +415,7 @@ func TestInitCreatesCurrentIndexThatNeedsNoMigration(t *testing.T) {
 // TestMigrateAllCoversGlobalLocation: --all reaches the global location as well, and --store global
 // names only it.
 func TestMigrateAllCoversGlobalLocation(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	home := realTempDir(t)
@@ -449,6 +457,7 @@ func TestMigrateAllCoversGlobalLocation(t *testing.T) {
 // default_store is found even when Parse would refuse the file (an older or newer kb's keys), a missing key means "default", and a broken file is
 // a usage error that names it.
 func TestMigrateReadsAnOlderLocationFile(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	addStore(t, root, "adr")
@@ -478,6 +487,7 @@ func TestMigrateReadsAnOlderLocationFile(t *testing.T) {
 // parser would refuse; a good store passes. Verify runs on an older file too (its schema is
 // compared at its own version).
 func TestMigrateVerifyFindsDrift(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	indexState(t, root, "current")
@@ -506,6 +516,7 @@ func TestMigrateVerifyFindsDrift(t *testing.T) {
 // TestMigrateInterrupted: a cancelled context is reported as an interrupt (exit 1), not a failure
 // of one file, and the store is left as it was.
 func TestMigrateInterrupted(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	installIndex(t, testDBPath(root), sqlite.SchemaVersion()-1)
@@ -514,7 +525,7 @@ func TestMigrateInterrupted(t *testing.T) {
 	cancel()
 	for _, sub := range []string{"status", "up", "verify"} {
 		var out, errBuf strings.Builder
-		code := execute(ctx, testDeps, []string{"migrate", sub}, &out, &errBuf)
+		code := execute(ctx, depsFor(t), []string{"migrate", sub}, &out, &errBuf)
 		if code != ExitUsage {
 			t.Errorf("migrate %s after cancel: exit %d, stderr %q", sub, code, errBuf.String())
 		}
@@ -530,8 +541,9 @@ func TestMigrateInterrupted(t *testing.T) {
 // `kb config --path` resolves, and the location row is that store's kb.toml; a ref the other
 // commands refuse, migrate refuses with the same exit code.
 func TestMigrateScopeMatchesStoreRefs(t *testing.T) {
+	t.Parallel()
 	w := newRefWorld(t)
-	t.Chdir(w.loc)
+	chdir(t, w.loc)
 	for _, args := range [][]string{
 		nil,
 		{"--store", "adr"},
@@ -579,6 +591,7 @@ func TestMigrateScopeMatchesStoreRefs(t *testing.T) {
 // TestEditRefusesIndexStateBeforeEditor: on an older or newer index kb edit is refused before the
 // editor runs, so the file is never changed and left unindexed (W7 pass).
 func TestEditRefusesIndexStateBeforeEditor(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ state, want string }{{"older", "Run: kb migrate up"}, {"newer", "use a newer kb"}} {
 		t.Run(tc.state, func(t *testing.T) {
 			root := newTempRoot(t)
@@ -586,10 +599,10 @@ func TestEditRefusesIndexStateBeforeEditor(t *testing.T) {
 			indexState(t, root, tc.state)
 			file := filepath.Join(root, "data", "e.md")
 			writeFile(t, file, validFrontMatter("E", "e"))
-			orig := testDeps.editor
-			t.Cleanup(func() { testDeps.editor = orig })
+			orig := depsFor(t).editor
+			t.Cleanup(func() { depsFor(t).editor = orig })
 			ran := false
-			testDeps.editor = func(_ context.Context, _, path string) error {
+			depsFor(t).editor = func(_ context.Context, _, path string) error {
 				ran = true
 				return os.WriteFile(path, []byte(validFrontMatter("E", "changed")), 0o644)
 			}
@@ -607,6 +620,7 @@ func TestEditRefusesIndexStateBeforeEditor(t *testing.T) {
 // TestMigrateScopeErrors: a malformed --store is Usage naming it (not ignored), and --root at a
 // directory with no kb.toml says to run kb init.
 func TestMigrateScopeErrors(t *testing.T) {
+	t.Parallel()
 	newTempRoot(t)
 	if _, stderr, code := run(t, "--store", "Bad", "migrate", "status"); code != ExitUsage || !strings.Contains(stderr, "Bad") {
 		t.Errorf("malformed --store: exit %d %q", code, stderr)
@@ -621,6 +635,7 @@ func TestMigrateScopeErrors(t *testing.T) {
 // reports: what is said for an upgrade with a backup, a config file with a warning, --no-backup,
 // a dry run, and nothing to do.
 func TestPrintMigrateReport(t *testing.T) {
+	t.Parallel()
 	idx := migrateItem{Scope: "location", Path: "/loc/.kb/kb.sqlite"}
 	cfg := migrateItem{Scope: "store docs", Path: "/loc/.kb/stores/docs/config.toml"}
 	step := func(from int, id, desc string, e migrate.Effect) migrate.Info {

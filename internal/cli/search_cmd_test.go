@@ -20,6 +20,7 @@ import (
 	"github.com/nickstrad/kb/internal/search"
 	"github.com/nickstrad/kb/internal/store"
 	"github.com/nickstrad/kb/internal/store/sqlite"
+	"github.com/nickstrad/kb/internal/store/sqlite/sqlitetest"
 )
 
 // newSearchTestRepo builds a temp repo root with a populated database: one entry, two chunks,
@@ -103,11 +104,12 @@ func newSearchTestRepo(t *testing.T, embedModel string, embedDim int) string {
 func runKB(t *testing.T, args []string) (stdout, stderr string, exit int) {
 	t.Helper()
 	var outBuf, errBuf bytes.Buffer
-	exit = execute(context.Background(), testDeps, args, &outBuf, &errBuf)
+	exit = execute(context.Background(), depsFor(t), args, &outBuf, &errBuf)
 	return outBuf.String(), errBuf.String(), exit
 }
 
 func TestSearchFTSMode(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
@@ -134,6 +136,7 @@ func TestSearchFTSMode(t *testing.T) {
 }
 
 func TestSearchJSONMode(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
@@ -192,6 +195,7 @@ func TestSearchJSONMode(t *testing.T) {
 }
 
 func TestSearchHybridEmbedderUnavailable(t *testing.T) {
+	t.Parallel()
 	// embed_meta matches the configured model, so the mismatch check passes and the failure comes from
 	// the model not being downloaded (TestMain's cache is empty).
 	root := newSearchTestRepo(t, testModel768, testDim768)
@@ -210,6 +214,7 @@ func TestSearchHybridEmbedderUnavailable(t *testing.T) {
 }
 
 func TestSearchVecEmbedderUnavailable(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
@@ -223,6 +228,7 @@ func TestSearchVecEmbedderUnavailable(t *testing.T) {
 }
 
 func TestSearchNoDatabase(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir() // no .kb/kb.sqlite
 	useRoot(t, root)
 
@@ -239,6 +245,7 @@ func TestSearchNoDatabase(t *testing.T) {
 }
 
 func TestSearchTagFilterAndZeroHits(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
@@ -282,6 +289,7 @@ func TestSearchTagFilterAndZeroHits(t *testing.T) {
 }
 
 func TestSearchEmbedMetaMismatch(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, "a-different-model", testDim768)
 	useRoot(t, root)
 
@@ -327,9 +335,10 @@ func TestSearchCallerPrecedence(t *testing.T) {
 }
 
 func TestSearchLogFailure(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
-	disableSearchLog(t, root)
+	failSearchLog(t)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts"})
 	if exit != 0 {
@@ -362,9 +371,10 @@ func TestSearchLogFailure(t *testing.T) {
 }
 
 func TestSearchFallbackLogFailurePrintsBothWarnings(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
-	disableSearchLog(t, root)
+	failSearchLog(t)
 
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "hybrid"})
 	if exit != 2 {
@@ -382,31 +392,34 @@ func TestSearchFallbackLogFailurePrintsBothWarnings(t *testing.T) {
 
 func loggedSearchCaller(t *testing.T, root string) string {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{})
-	if err != nil {
-		t.Fatalf("open store for caller assertion: %v", err)
-	}
-	defer st.Close()
-	var caller string
-	if err := st.DB().QueryRow("SELECT caller FROM searches ORDER BY id DESC LIMIT 1").Scan(&caller); err != nil {
-		t.Fatalf("read logged caller: %v", err)
-	}
-	return caller
+	return sqlitetest.LastSearch(t, testDBPath(root)).Caller
 }
 
-func disableSearchLog(t *testing.T, root string) {
+// failingLog is a store whose search log cannot be written: LogSearch fails, everything else is
+// the wrapped store. It replaces renaming the searches table, so the test names the failure, not
+// the schema.
+type failingLog struct{ store.Store }
+
+func (failingLog) LogSearch(context.Context, store.SearchRecord) (int64, error) {
+	return 0, errs.New(errs.Internal, "test.LogSearch", "search log unavailable")
+}
+
+// failSearchLog makes every store the test's CLI opens read-write a failingLog.
+func failSearchLog(t *testing.T) {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{})
-	if err != nil {
-		t.Fatalf("open store to disable search logging: %v", err)
-	}
-	defer st.Close()
-	if _, err := st.DB().Exec("ALTER TABLE searches RENAME TO searches_disabled"); err != nil {
-		t.Fatalf("rename searches table: %v", err)
+	d := depsFor(t)
+	open := d.openStore
+	d.openStore = func(ctx context.Context, path string, readOnly bool) (store.Store, error) {
+		st, err := open(ctx, path, readOnly)
+		if err != nil {
+			return nil, err
+		}
+		return failingLog{st}, nil
 	}
 }
 
 func TestSearchBadMode(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	useRoot(t, root)
 
@@ -420,6 +433,7 @@ func TestSearchBadMode(t *testing.T) {
 }
 
 func TestSearchErrorHasOneSearchPrefix(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
@@ -433,6 +447,7 @@ func TestSearchErrorHasOneSearchPrefix(t *testing.T) {
 }
 
 func TestSearchHelpRecommendsJSON(t *testing.T) {
+	t.Parallel()
 	stdout, stderr, exit := runKB(t, []string{"search", "--help"})
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0; stdout=%s stderr=%s", exit, stdout, stderr)
@@ -443,6 +458,7 @@ func TestSearchHelpRecommendsJSON(t *testing.T) {
 }
 
 func TestSearchKClampsToOne(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
@@ -460,6 +476,7 @@ func TestSearchKClampsToOne(t *testing.T) {
 }
 
 func TestSearchMultiWordQueryJoinsArgs(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
@@ -476,6 +493,7 @@ func TestSearchMultiWordQueryJoinsArgs(t *testing.T) {
 // JSON encode fail. printResults returns it as an Internal error and writes nothing, rather than
 // panicking.
 func TestPrintResultsJSONEncodeFailureIsInternal(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		score float64
@@ -487,7 +505,7 @@ func TestPrintResultsJSONEncodeFailureIsInternal(t *testing.T) {
 			var buf bytes.Buffer
 			res := &search.Result{Query: "q", Mode: search.ModeFTS, Hits: []search.Hit{{RRFScore: tc.score}}}
 			err := printResults(context.Background(), &buf, nil, res, true, true, 0, "none", nil)
-			if errs.KindOf(err) != errs.Internal {
+			if err == nil || errs.KindOf(err) != errs.Internal {
 				t.Fatalf("printResults = %v, want an Internal error", err)
 			}
 			if buf.Len() != 0 {

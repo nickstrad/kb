@@ -87,9 +87,9 @@ var explainEntries = []explainEntry{
 // withFixtureEmbedder makes the CLI embed with a fake of the fixture's model and width.
 func withFixtureEmbedder(t *testing.T) {
 	t.Helper()
-	orig := testDeps.embedder
-	testDeps.embedder = func(config.Embed) (embed.Embedder, error) { return fake.New(testModel768, testDim768), nil }
-	t.Cleanup(func() { testDeps.embedder = orig })
+	orig := depsFor(t).embedder
+	depsFor(t).embedder = func(config.Embed) (embed.Embedder, error) { return fake.New(testModel768, testDim768), nil }
+	t.Cleanup(func() { depsFor(t).embedder = orig })
 }
 
 // explainGoldenDir is resolved at init: tests chdir into a temp root.
@@ -125,6 +125,7 @@ func checkExplainGolden(t *testing.T, name, got string) {
 // TestExplainGoldenFTS pins the human output of an FTS explain: the header, the AND match, the
 // per-column scores (a title term: the title column is nonzero) and the RRF arithmetic.
 func TestExplainGoldenFTS(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newExplainRepo(t))
 	stdout, stderr, exit := runKB(t, []string{"explain", "tmux", "logout", "--mode", "fts"})
 	if exit != 0 || stderr != "" {
@@ -138,6 +139,7 @@ func TestExplainGoldenFTS(t *testing.T) {
 
 // TestExplainGoldenHybrid pins a hybrid explain: both lists, both RRF terms, vector distance.
 func TestExplainGoldenHybrid(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newExplainRepo(t))
 	withFixtureEmbedder(t)
 	stdout, stderr, exit := runKB(t, []string{"explain", "tmux logout"})
@@ -150,6 +152,7 @@ func TestExplainGoldenHybrid(t *testing.T) {
 // TestExplainJSONShape pins the --json contract: the key sets of the top level, a candidate and
 // its parts, with null (not absent) for what a hit lacks.
 func TestExplainJSONShape(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newSearchTestRepo(t, testModel768, testDim768))
 	withFixtureEmbedder(t)
 	stdout, stderr, exit := runKB(t, []string{"explain", "widget", "--json"})
@@ -205,6 +208,7 @@ func wantKeys(t *testing.T, what string, m map[string]json.RawMessage, want ...s
 // TestExplainDoesNotLogOrChangeIDs: explain leaves the search log alone, so the next real search
 // is still search 1.
 func TestExplainDoesNotLog(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newSearchTestRepo(t, testModel768, testDim768))
 	if _, stderr, exit := runKB(t, []string{"explain", "widget", "--mode", "fts"}); exit != 0 {
 		t.Fatalf("explain: exit %d %s", exit, stderr)
@@ -217,6 +221,7 @@ func TestExplainDoesNotLog(t *testing.T) {
 
 // TestExplainSetOverride: --set changes the settings explain runs with and hashes them.
 func TestExplainSetOverride(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newSearchTestRepo(t, testModel768, testDim768))
 	plain, _, _ := runKB(t, []string{"explain", "widget", "--mode", "fts"})
 	set, stderr, exit := runKB(t, []string{"explain", "widget", "--mode", "fts", "--set", "search.rrf_k=1", "--set", "search.bm25.title=9"})
@@ -233,6 +238,7 @@ func TestExplainSetOverride(t *testing.T) {
 
 // TestExplainFlagErrors is the usage-error table: each is exit 1 with the problem named.
 func TestExplainFlagErrors(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	for _, tc := range []struct {
@@ -263,6 +269,7 @@ func TestExplainFlagErrors(t *testing.T) {
 
 // TestExplainNoResults: a query nothing matches prints the header and "no candidates", exit 0.
 func TestExplainNoResults(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newSearchTestRepo(t, testModel768, testDim768))
 	stdout, _, exit := runKB(t, []string{"explain", "fluffernutter", "--mode", "fts"})
 	if exit != 0 || !strings.Contains(stdout, "no candidates") || !strings.Contains(stdout, `match "fluffernutter" · AND`) {
@@ -273,6 +280,7 @@ func TestExplainNoResults(t *testing.T) {
 // TestExplainEmbedderUnavailable: hybrid with no downloaded model explains the fts fallback,
 // warns on stderr and exits 2 like kb search.
 func TestExplainEmbedderUnavailable(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newSearchTestRepo(t, testModel768, testDim768))
 	stdout, stderr, exit := runKB(t, []string{"explain", "widget"})
 	if exit != ExitEmbedder || !strings.Contains(stderr, "explained --mode fts instead") ||
@@ -284,6 +292,7 @@ func TestExplainEmbedderUnavailable(t *testing.T) {
 // TestExplainFormatHelpers: the small formatters at their edges (a missing score, negative zero,
 // a short and a full-length hash).
 func TestExplainFormatHelpers(t *testing.T) {
+	t.Parallel()
 	negZero := math.Copysign(0, -1)
 	one := -1.23456
 	for _, tc := range []struct{ got, want string }{
@@ -312,6 +321,7 @@ var identEntries = append(slices.Clone(explainEntries),
 // holding it at exact rank 1, with an exact RRF term; a query whose identifier's words are split
 // in other chunks ranks the verbatim chunk first; exact_list=false removes the list.
 func TestExplainExactList(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newExplainRepoWith(t, identEntries))
 	withFixtureEmbedder(t)
 	stdout, stderr, exit := runKB(t, []string{"explain", "EnsureEmbedMeta"})
@@ -377,6 +387,7 @@ func TestExplainExactList(t *testing.T) {
 // it (the chunk holding the words adjacent is the phrase tier, ahead of the NEAR and AND ones);
 // phrase_boost=false removes the tiers; a bad value is a usage error.
 func TestExplainPhraseTier(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newExplainRepo(t))
 	stdout, stderr, exit := runKB(t, []string{"explain", "alive after logout", "--mode", "fts"})
 	if exit != 0 || stderr != "" {

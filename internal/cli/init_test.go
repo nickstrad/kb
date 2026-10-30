@@ -21,12 +21,28 @@ import (
 // withHome makes home the user's home directory for root discovery and the init guard.
 func withHome(t *testing.T, home string) {
 	t.Helper()
-	orig := testDeps.workspaceEnv
-	t.Cleanup(func() { testDeps.workspaceEnv = orig })
-	testDeps.workspaceEnv = func() workspace.Env {
+	orig := depsFor(t).workspaceEnv
+	t.Cleanup(func() { depsFor(t).workspaceEnv = orig })
+	depsFor(t).workspaceEnv = func() workspace.Env {
 		e := orig()
 		e.Home = home
 		return e
+	}
+}
+
+// wantCheck asserts the one check d recorded: want is "LEVEL name: detail-prefix". Level and
+// name are compared as fields, so a wording change in the detail cannot hide a level change.
+func wantCheck(t *testing.T, label string, d *doctorState, want string) {
+	t.Helper()
+	level, rest, _ := strings.Cut(want, " ")
+	name, detail, _ := strings.Cut(strings.TrimSpace(rest), ": ")
+	if len(d.checks) != 1 {
+		t.Errorf("%s: recorded %v, want one check", label, d.checks)
+		return
+	}
+	c := d.checks[0]
+	if string(c.Level) != level || c.Name != name || !strings.HasPrefix(c.Detail, detail) {
+		t.Errorf("%s: got %+v, want level %s name %s detail prefix %q", label, c, level, name, detail)
 	}
 }
 
@@ -44,6 +60,7 @@ func exists(path string) bool { _, err := os.Stat(path); return err == nil }
 // TestInitDecisions is the decision table of kb init: {no location, a location without the store,
 // the store exists} x {--name given, not} x {target is $HOME, other} x {--force}.
 func TestInitDecisions(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"no location", "location without the store", "store exists"} {
 		for _, named := range []bool{false, true} {
 			for _, home := range []bool{false, true} {
@@ -53,7 +70,7 @@ func TestInitDecisions(t *testing.T) {
 						"/force=" + map[bool]string{false: "no", true: "yes"}[force]
 					t.Run(name, func(t *testing.T) {
 						root := realTempDir(t)
-						t.Chdir(root)
+						chdir(t, root)
 						if home {
 							withHome(t, root)
 						} else {
@@ -165,8 +182,9 @@ func TestInitDecisions(t *testing.T) {
 }
 
 func TestInitRefusesRoot(t *testing.T) {
+	t.Parallel()
 	// "/" is refused without --force. Never run with --force here: it would write to /.kb.
-	t.Chdir(realTempDir(t))
+	chdir(t, realTempDir(t))
 	_, stderr, code := run(t, "init", "--root", "/", "--model", "none")
 	if code != ExitUsage || !strings.Contains(stderr, "refusing to create a kb location at /") {
 		t.Fatalf("exit %d stderr %q", code, stderr)
@@ -177,6 +195,7 @@ func TestInitRefusesRoot(t *testing.T) {
 }
 
 func TestIsHomeOrRoot(t *testing.T) {
+	t.Parallel()
 	base := realTempDir(t)
 	link := filepath.Join(base, "link")
 	if err := os.Symlink(base, link); err != nil {
@@ -200,7 +219,9 @@ func TestIsHomeOrRoot(t *testing.T) {
 }
 
 func TestInitThenListIsEmptyNotAnError(t *testing.T) {
-	t.Chdir(realTempDir(t))
+	t.Parallel()
+	dir := realTempDir(t)
+	chdir(t, dir)
 	if _, errOut, code := run(t, "init", "--model", "none"); code != 0 {
 		t.Fatalf("init: %d %q", code, errOut)
 	}
@@ -209,7 +230,7 @@ func TestInitThenListIsEmptyNotAnError(t *testing.T) {
 		t.Fatalf("list on an empty store: %d %q %q", code, out, errOut)
 	}
 	// And without data/ at all (a clone that has not made it).
-	if err := os.Remove("data"); err != nil {
+	if err := os.Remove(filepath.Join(dir, "data")); err != nil {
 		t.Fatal(err)
 	}
 	if out, _, code := run(t, "list"); code != 0 || strings.TrimSpace(out) != "no entries" {
@@ -218,8 +239,9 @@ func TestInitThenListIsEmptyNotAnError(t *testing.T) {
 }
 
 func TestInitTwiceAndSecondStoreKeepsDefault(t *testing.T) {
+	t.Parallel()
 	root := realTempDir(t)
-	t.Chdir(root)
+	chdir(t, root)
 	run1, _, c1 := run(t, "init", "--model", "none")
 	if c1 != 0 || !strings.Contains(run1, "created location") {
 		t.Fatalf("first init: %d %q", c1, run1)
@@ -248,10 +270,11 @@ func TestInitTwiceAndSecondStoreKeepsDefault(t *testing.T) {
 }
 
 func TestInitInvalidNames(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"../x", "A", "global", strings.Repeat("a", 33), "", "a/b", "-x"} {
 		t.Run("name="+name, func(t *testing.T) {
 			root := realTempDir(t)
-			t.Chdir(root)
+			chdir(t, root)
 			_, stderr, code := run(t, "init", "--model", "none", "--name", name)
 			if code != ExitUsage || stderr == "" {
 				t.Fatalf("exit %d stderr %q", code, stderr)
@@ -264,6 +287,7 @@ func TestInitInvalidNames(t *testing.T) {
 }
 
 func TestInitFlagRefusals(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		args []string
 		want string
@@ -276,7 +300,7 @@ func TestInitFlagRefusals(t *testing.T) {
 		{[]string{"--root", "x", "--global", "init"}, "root"},
 	} {
 		root := realTempDir(t)
-		t.Chdir(root)
+		chdir(t, root)
 		_, stderr, code := run(t, tc.args...)
 		if code != ExitUsage || !strings.Contains(stderr, tc.want) {
 			t.Errorf("%v: exit %d stderr %q, want exit 1 with %q", tc.args, code, stderr, tc.want)
@@ -288,9 +312,10 @@ func TestInitFlagRefusals(t *testing.T) {
 }
 
 func TestInitGlobalWritesUnderXDG(t *testing.T) {
-	t.Chdir(realTempDir(t))
-	globalRoot := globalLocationRoot()
-	t.Cleanup(func() { os.RemoveAll(filepath.Join(testDeps.workspaceEnv().Home, ".local")) })
+	t.Parallel()
+	chdir(t, realTempDir(t))
+	globalRoot := globalLocationRoot(t)
+	t.Cleanup(func() { os.RemoveAll(filepath.Join(depsFor(t).workspaceEnv().Home, ".local")) })
 	if _, errOut, code := run(t, "--global", "init", "--model", "none"); code != 0 {
 		t.Fatalf("init --global: %d %q", code, errOut)
 	}
@@ -305,12 +330,13 @@ func TestInitGlobalWritesUnderXDG(t *testing.T) {
 
 // TestInitTargetIsCwdNotAnAncestor: a location in a parent does not absorb init in a child.
 func TestInitTargetIsCwdNotAnAncestor(t *testing.T) {
+	t.Parallel()
 	parent := newTempRoot(t)
 	child := filepath.Join(parent, "sub", "project")
 	if err := os.MkdirAll(child, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(child)
+	chdir(t, child)
 	if _, errOut, code := run(t, "init", "--model", "none"); code != 0 {
 		t.Fatalf("init: %d %q", code, errOut)
 	}
@@ -323,8 +349,9 @@ func TestInitTargetIsCwdNotAnAncestor(t *testing.T) {
 }
 
 func TestInitBrokenLocationFileIsReported(t *testing.T) {
+	t.Parallel()
 	root := realTempDir(t)
-	t.Chdir(root)
+	chdir(t, root)
 	writeFile(t, filepath.Join(root, ".kb", "kb.toml"), "colour = 1\n")
 	_, stderr, code := run(t, "init", "--model", "none")
 	if code != ExitUsage || !strings.Contains(stderr, `unknown key "colour"`) {
@@ -336,8 +363,9 @@ func TestInitBrokenLocationFileIsReported(t *testing.T) {
 }
 
 func TestInitKeepsAnExistingGitignore(t *testing.T) {
+	t.Parallel()
 	root := realTempDir(t)
-	t.Chdir(root)
+	chdir(t, root)
 	writeFile(t, filepath.Join(root, ".kb", ".gitignore"), "mine\n")
 	writeFile(t, filepath.Join(root, ".kb", "kb.toml"), "version = 1\n")
 	if _, errOut, code := run(t, "init", "--model", "none"); code != 0 {
@@ -351,10 +379,11 @@ func TestInitKeepsAnExistingGitignore(t *testing.T) {
 // TestInitRecordsEmbedderAndLoadsModel: with a fake embedder the embed_meta row is its identity;
 // with the real local embedder and no network the store is created but init exits 2.
 func TestInitRecordsEmbedderAndLoadsModel(t *testing.T) {
+	t.Parallel()
 	t.Run("fake embedder", func(t *testing.T) {
 		useFakeEmbedder(t)
 		root := realTempDir(t)
-		t.Chdir(root)
+		chdir(t, root)
 		if _, errOut, code := run(t, "init"); code != 0 {
 			t.Fatalf("init: %d %q", code, errOut)
 		}
@@ -374,7 +403,7 @@ func TestInitRecordsEmbedderAndLoadsModel(t *testing.T) {
 	t.Run("model cannot be downloaded", func(t *testing.T) {
 		_, calls := stubPull(t, errors.New("offline"))
 		root := realTempDir(t)
-		t.Chdir(root)
+		chdir(t, root)
 		_, errOut, code := run(t, "init")
 		if code != ExitEmbedder || !strings.Contains(errOut, "the store is created") || !strings.Contains(errOut, "kb model pull") {
 			t.Fatalf("exit %d stderr %q; want exit 2 saying the store is created", code, errOut)
@@ -395,9 +424,9 @@ func TestInitRecordsEmbedderAndLoadsModel(t *testing.T) {
 		}
 		// Once the model loads (a stand-in with the default model's identity), a rerun finishes.
 		spec, _ := local.Lookup(local.DefaultModel)
-		orig := testDeps.embedder
-		t.Cleanup(func() { testDeps.embedder = orig })
-		testDeps.embedder = func(config.Embed) (embed.Embedder, error) {
+		orig := depsFor(t).embedder
+		t.Cleanup(func() { depsFor(t).embedder = orig })
+		depsFor(t).embedder = func(config.Embed) (embed.Embedder, error) {
 			return modelEmbedder{Embedder: fake.New(spec.ID, spec.Dim)}, nil
 		}
 		if out, errOut, code := run(t, "init"); code != 0 || !strings.Contains(out, "already initialised") || !strings.Contains(errOut, "kb init: loading model") {
@@ -408,7 +437,7 @@ func TestInitRecordsEmbedderAndLoadsModel(t *testing.T) {
 		// stubPull writes a stand-in model dir that rembed cannot load, so init ends in exit 2
 		// after the download; what this checks is that the download happens, and is announced.
 		_, calls := stubPull(t, nil)
-		t.Chdir(realTempDir(t))
+		chdir(t, realTempDir(t))
 		_, errOut, _ := run(t, "init")
 		if len(*calls) != 1 || !strings.Contains(errOut, "downloading embedding model") || !strings.Contains(errOut, "kb init: loading model") {
 			t.Fatalf("stderr %q pulls %v", errOut, *calls)
@@ -417,6 +446,7 @@ func TestInitRecordsEmbedderAndLoadsModel(t *testing.T) {
 }
 
 func TestStoreConfigTextParses(t *testing.T) {
+	t.Parallel()
 	for _, id := range append(local.Supported(), "none", "") {
 		text, ecfg, err := storeConfigText(id, nil)
 		if err != nil {
@@ -443,6 +473,7 @@ func TestStoreConfigTextParses(t *testing.T) {
 }
 
 func TestWriteNewRefusesExisting(t *testing.T) {
+	t.Parallel()
 	p := filepath.Join(t.TempDir(), "f")
 	if err := writeNew(p, []byte("a")); err != nil {
 		t.Fatal(err)
@@ -456,8 +487,9 @@ func TestWriteNewRefusesExisting(t *testing.T) {
 }
 
 func TestDoctorUnresolvedLocationAndStore(t *testing.T) {
+	t.Parallel()
 	t.Run("no location", func(t *testing.T) {
-		t.Chdir(realTempDir(t))
+		chdir(t, realTempDir(t))
 		out, _, code := run(t, "doctor")
 		if code != ExitUsage || !strings.Contains(out, "FAIL location: not initialised: run kb init") || !strings.Contains(out, "doctor: 1 failed, 0 warnings") {
 			t.Fatalf("exit %d out %q", code, out)
@@ -482,8 +514,9 @@ func TestDoctorUnresolvedLocationAndStore(t *testing.T) {
 }
 
 func TestDoctorAfterInitChecks(t *testing.T) {
+	t.Parallel()
 	root := realTempDir(t)
-	t.Chdir(root)
+	chdir(t, root)
 	if _, errOut, code := run(t, "init", "--model", "none"); code != 0 {
 		t.Fatalf("init: %d %q", code, errOut)
 	}
@@ -525,6 +558,7 @@ func (p modelEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, 
 }
 
 func TestCheckEmbedderModelCheck(t *testing.T) {
+	t.Parallel()
 	base := fake.New("m", 4)
 	for _, tc := range []struct {
 		name string
@@ -536,25 +570,21 @@ func TestCheckEmbedderModelCheck(t *testing.T) {
 		{"embed fails", modelEmbedder{Embedder: base, embedErr: errors.New("boom")}, `FAIL model: loaded m but embedding "ping" failed: boom`},
 		{"wrong shape", modelEmbedder{Embedder: base, badShape: true}, `FAIL model: m returned the wrong shape for "ping"`},
 	} {
-		var buf strings.Builder
-		d := &doctorState{stdout: &buf}
+		d := &doctorState{}
 		checkEmbedder(context.Background(), d, tc.e)
-		if !strings.Contains(buf.String(), tc.want) {
-			t.Errorf("%s: %q lacks %q", tc.name, buf.String(), tc.want)
-		}
+		wantCheck(t, tc.name, d, tc.want)
 	}
-	var buf strings.Builder
-	checkEmbedder(context.Background(), &doctorState{stdout: &buf}, base)
-	if !strings.Contains(buf.String(), "warn model: not checked (test embedder)") {
-		t.Errorf("non-pinger: %q", buf.String())
-	}
+	d := &doctorState{}
+	checkEmbedder(context.Background(), d, base)
+	wantCheck(t, "non-pinger", d, "warn model: not checked (test embedder)")
 }
 
 func TestModelPathAndAlias(t *testing.T) {
+	t.Parallel()
 	cache := t.TempDir()
-	orig := testDeps.modelCacheDir
-	t.Cleanup(func() { testDeps.modelCacheDir = orig })
-	testDeps.modelCacheDir = func() (string, error) { return cache, nil }
+	orig := depsFor(t).modelCacheDir
+	t.Cleanup(func() { depsFor(t).modelCacheDir = orig })
+	depsFor(t).modelCacheDir = func() (string, error) { return cache, nil }
 	root := newTempRoot(t)
 	out, _, code := run(t, "model", "path")
 	want := filepath.Join(cache, "BAAI--bge-small-en-v1.5")
@@ -571,13 +601,14 @@ func TestModelPathAndAlias(t *testing.T) {
 		t.Fatalf("model ls differs from list: %q vs %q", ls, list)
 	}
 	// Outside any location the defaults apply, so the command works before kb init.
-	t.Chdir(realTempDir(t))
+	chdir(t, realTempDir(t))
 	if out, _, code := run(t, "model", "path"); code != 0 || strings.TrimSpace(out) != want {
 		t.Fatalf("model path outside a location: %d %q", code, out)
 	}
 }
 
 func TestProductionModelCacheDirFollowsWorkspaceEnv(t *testing.T) {
+	t.Parallel()
 	d := productionDeps()
 	d.workspaceEnv = func() workspace.Env { return workspace.Env{CacheBase: "/c"} }
 	if got, err := d.modelCacheDir(); err != nil || got != "/c/kb/models" {
@@ -592,10 +623,11 @@ func TestProductionModelCacheDirFollowsWorkspaceEnv(t *testing.T) {
 // TestInitFailures: filesystem and wiring failures are well-formed errors that name the path,
 // never an exit 3, and leave no half-made store behind where it can be avoided.
 func TestInitFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("unknown working directory", func(t *testing.T) {
-		orig := testDeps.workspaceEnv
-		t.Cleanup(func() { testDeps.workspaceEnv = orig })
-		testDeps.workspaceEnv = func() workspace.Env { e := orig(); e.Cwd = ""; return e }
+		orig := depsFor(t).workspaceEnv
+		t.Cleanup(func() { depsFor(t).workspaceEnv = orig })
+		depsFor(t).workspaceEnv = func() workspace.Env { e := orig(); e.Cwd = ""; return e }
 		_, stderr, code := run(t, "init", "--model", "none")
 		if code != ExitUsage || !strings.Contains(stderr, "no working directory") {
 			t.Fatalf("exit %d stderr %q", code, stderr)
@@ -603,7 +635,7 @@ func TestInitFailures(t *testing.T) {
 	})
 	t.Run("data is a file", func(t *testing.T) {
 		root := realTempDir(t)
-		t.Chdir(root)
+		chdir(t, root)
 		writeFile(t, filepath.Join(root, "data"), "in the way")
 		_, stderr, code := run(t, "init", "--model", "none")
 		if code != ExitUsage || !strings.Contains(stderr, "create "+filepath.Join(root, "data")) {
@@ -612,7 +644,7 @@ func TestInitFailures(t *testing.T) {
 	})
 	t.Run(".kb is a file", func(t *testing.T) {
 		root := realTempDir(t)
-		t.Chdir(root)
+		chdir(t, root)
 		writeFile(t, filepath.Join(root, ".kb"), "in the way")
 		_, stderr, code := run(t, "init", "--model", "none")
 		if code != ExitUsage || !strings.Contains(stderr, "create "+filepath.Join(root, ".kb")) {
@@ -621,7 +653,7 @@ func TestInitFailures(t *testing.T) {
 	})
 	t.Run("stores is a file", func(t *testing.T) {
 		root := realTempDir(t)
-		t.Chdir(root)
+		chdir(t, root)
 		makeLocationFile(t, root, "default")
 		writeFile(t, filepath.Join(root, ".kb", "stores"), "in the way")
 		_, stderr, code := run(t, "init", "--model", "none")
@@ -630,22 +662,22 @@ func TestInitFailures(t *testing.T) {
 		}
 	})
 	t.Run("the database cannot be opened", func(t *testing.T) {
-		orig := testDeps.openStore
-		t.Cleanup(func() { testDeps.openStore = orig })
-		testDeps.openStore = func(context.Context, string, bool) (store.Store, error) {
+		orig := depsFor(t).openStore
+		t.Cleanup(func() { depsFor(t).openStore = orig })
+		depsFor(t).openStore = func(context.Context, string, bool) (store.Store, error) {
 			return nil, usageErr("disk on fire")
 		}
-		t.Chdir(realTempDir(t))
+		chdir(t, realTempDir(t))
 		_, stderr, code := run(t, "init", "--model", "none")
 		if code != ExitUsage || !strings.Contains(stderr, "disk on fire") {
 			t.Fatalf("exit %d stderr %q", code, stderr)
 		}
 	})
 	t.Run("the embedder cannot be built", func(t *testing.T) {
-		orig := testDeps.embedder
-		t.Cleanup(func() { testDeps.embedder = orig })
-		testDeps.embedder = func(config.Embed) (embed.Embedder, error) { return nil, usageErr("no embedder today") }
-		t.Chdir(realTempDir(t))
+		orig := depsFor(t).embedder
+		t.Cleanup(func() { depsFor(t).embedder = orig })
+		depsFor(t).embedder = func(config.Embed) (embed.Embedder, error) { return nil, usageErr("no embedder today") }
+		chdir(t, realTempDir(t))
 		_, stderr, code := run(t, "init", "--model", "none")
 		if code != ExitUsage || !strings.Contains(stderr, "no embedder today") {
 			t.Fatalf("exit %d stderr %q", code, stderr)
@@ -654,6 +686,7 @@ func TestInitFailures(t *testing.T) {
 }
 
 func TestModelPathFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("a broken store config", func(t *testing.T) {
 		root := newTempRoot(t)
 		writeConfig(t, root, "colour = 1\n")
@@ -662,9 +695,9 @@ func TestModelPathFailures(t *testing.T) {
 		}
 	})
 	t.Run("no model cache directory", func(t *testing.T) {
-		orig := testDeps.modelCacheDir
-		t.Cleanup(func() { testDeps.modelCacheDir = orig })
-		testDeps.modelCacheDir = func() (string, error) { return "", usageErr("no cache here") }
+		orig := depsFor(t).modelCacheDir
+		t.Cleanup(func() { depsFor(t).modelCacheDir = orig })
+		depsFor(t).modelCacheDir = func() (string, error) { return "", usageErr("no cache here") }
 		newTempRoot(t)
 		if _, stderr, code := run(t, "model", "path"); code != ExitUsage || !strings.Contains(stderr, "no cache here") {
 			t.Fatalf("exit %d stderr %q", code, stderr)

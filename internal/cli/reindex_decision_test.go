@@ -45,6 +45,7 @@ func (p pingEmbedder) Ping(context.Context) error { return p.err }
 // TestEnsureEmbedMetaForReindexDecision is the TESTING.md §4.2 table for the reindex mismatch
 // path: one row per branch outcome.
 func TestEnsureEmbedMetaForReindexDecision(t *testing.T) {
+	t.Parallel()
 	mismatch := errs.Wrap(&store.EmbedMetaMismatchError{StoredModel: "a", StoredDim: 1, WantModel: "b", WantDim: 2},
 		errs.Conflict, "sqlite.EnsureEmbedMeta", "mismatch")
 	driver := errs.New(errs.Internal, "sqlite.x", "driver failed")
@@ -101,18 +102,19 @@ func (s interruptingStore) Entry(context.Context, string) (*store.EntryRow, erro
 // TestReindexInterruptedKind: an Interrupted error without context.Canceled in its chain gets the
 // same friendly interrupted message and exit 1 as a cancelled ctx (TestReindexInterrupted).
 func TestReindexInterruptedKind(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	writeFile(t, filepath.Join(root, "data", "a.md"), validFrontMatter("A", "a summary"))
-	orig := testDeps.openStore
-	testDeps.openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
+	orig := depsFor(t).openStore
+	depsFor(t).openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
 		st, err := orig(ctx, path, ro)
 		if err != nil {
 			return nil, err
 		}
 		return interruptingStore{st}, nil
 	}
-	t.Cleanup(func() { testDeps.openStore = orig })
+	t.Cleanup(func() { depsFor(t).openStore = orig })
 	_, stderr, code := run(t, "reindex", "--all")
 	if code != ExitUsage || !strings.Contains(stderr, "rerun kb reindex") {
 		t.Fatalf("exit %d, stderr %q; want 1 with the interrupted/rerun message", code, stderr)
@@ -123,6 +125,7 @@ func TestReindexInterruptedKind(t *testing.T) {
 // rebuilt (not the advice to run `kb reindex --all`, which is what is already running), and only
 // once the embedder has passed its ping, so a refused reset does not claim a rebuild.
 func TestEnsureEmbedMetaForReindexNotice(t *testing.T) {
+	t.Parallel()
 	mismatch := errs.Wrap(&store.EmbedMetaMismatchError{StoredModel: "a", StoredDim: 1, WantModel: "b", WantDim: 2},
 		errs.Conflict, "sqlite.EnsureEmbedMeta", "mismatch")
 	down := errs.New(errs.Unavailable, "local.Load", "model not downloaded")
@@ -150,5 +153,33 @@ func TestEnsureEmbedMetaForReindexNotice(t *testing.T) {
 				t.Fatalf("stderr = %q, want %q and no advice to rebuild", got, tc.wantNotice)
 			}
 		})
+	}
+}
+
+// TestReindexDebugPrintsProgress: --debug prints one "reindex: entry N" line per written entry
+// (the point the adversarial harness waits for before it sends SIGINT); without --debug there is
+// none.
+func TestReindexDebugPrintsProgress(t *testing.T) {
+	t.Parallel()
+	root := newTempRoot(t)
+	useNoneModel(t, root)
+	for _, n := range []string{"a", "b", "c"} {
+		writeFile(t, filepath.Join(root, "data", n+".md"), validFrontMatter(n, n+" summary"))
+	}
+	_, stderr, code := run(t, "--debug", "reindex", "--all")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	for _, want := range []string{"reindex: entry 1\n", "reindex: entry 2\n", "reindex: entry 3\n"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, stderr)
+		}
+	}
+	if strings.Contains(stderr, "reindex: entry 4") {
+		t.Errorf("more progress lines than entries:\n%s", stderr)
+	}
+	writeFile(t, filepath.Join(root, "data", "d.md"), validFrontMatter("d", "d summary"))
+	if _, stderr, _ := run(t, "reindex", "--all"); strings.Contains(stderr, "reindex: entry") {
+		t.Errorf("progress lines without --debug:\n%s", stderr)
 	}
 }

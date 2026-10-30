@@ -148,7 +148,7 @@ func rememberedGold(judged []store.JudgedSearch, key string, p prior.Params, asO
 	// A model over it alone: u is what the earlier identical searches learned.
 	p.Enabled, p.MinJudged = true, 0
 	m, err := prior.Build(events, p, asOf)
-	if err != nil { // unreachable after loadEvidence built the same params
+	if err != nil { // not reached with validated params (loadEvidence builds with the same ones); kept as a guard, tested with invalid params
 		return nil, 0, errs.Wrap(err, errs.Internal, "search.Search", "build the query memory: %v", err)
 	}
 	have := map[store.ChunkRef]bool{}

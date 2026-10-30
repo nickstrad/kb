@@ -18,6 +18,7 @@ var staleNow = time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
 // TestParseStaleDate: a calendar date and an RFC 3339 timestamp parse; blank and anything else is
 // unknown (ok false), so the entry is listed under "no date".
 func TestParseStaleDate(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in   string
 		want time.Time // zero when unknown
@@ -45,6 +46,7 @@ func TestParseStaleDate(t *testing.T) {
 // now. Exactly N days old is stale, N-1 is not, N+1 is. Verified wins over updated (when set), and
 // a future date counts as 0 days old.
 func TestBuildStaleBoundary(t *testing.T) {
+	t.Parallel()
 	const days = 180
 	ago := func(n int) string { return staleNow.AddDate(0, 0, -n).Format("2006-01-02") }
 	for _, tc := range []struct {
@@ -82,6 +84,7 @@ func TestBuildStaleBoundary(t *testing.T) {
 // unresolved wikilinks, resolved path links and a self-supersede are not listed, and the group
 // order is fixed.
 func TestBuildStaleReasons(t *testing.T) {
+	t.Parallel()
 	entries := []store.EntryRow{
 		{ID: 1, Path: "a/blank.md"},                    // no date at all
 		{ID: 2, Path: "b/garbage.md", Updated: "soon"}, // unparseable
@@ -134,6 +137,7 @@ func TestBuildStaleReasons(t *testing.T) {
 
 // TestBuildStaleOrder: old entries list oldest first, then by path; the other groups by path.
 func TestBuildStaleOrder(t *testing.T) {
+	t.Parallel()
 	entries := []store.EntryRow{
 		{ID: 1, Path: "a.md", Updated: "2026-01-01"},
 		{ID: 2, Path: "b.md", Updated: "2025-01-01"},
@@ -153,6 +157,7 @@ func TestBuildStaleOrder(t *testing.T) {
 
 // TestBuildStaleDaysZero: --days 0 lists every entry (the PLAN accept case).
 func TestBuildStaleDaysZero(t *testing.T) {
+	t.Parallel()
 	entries := []store.EntryRow{
 		{ID: 1, Path: "a.md", Updated: "2026-10-30"},
 		{ID: 2, Path: "b.md", Updated: "2026-10-01"},
@@ -167,11 +172,12 @@ func TestBuildStaleDaysZero(t *testing.T) {
 // TestStaleCommand: the CLI reads the index and the pinned clock, prints the grouped human form and
 // the JSON, honours the config default and the --days flag, and rejects a negative --days.
 func TestStaleCommand(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
-	orig := testDeps.now
-	t.Cleanup(func() { testDeps.now = orig })
-	testDeps.now = func() time.Time { return staleNow }
+	orig := depsFor(t).now
+	t.Cleanup(func() { depsFor(t).now = orig })
+	depsFor(t).now = func() time.Time { return staleNow }
 
 	writeFile(t, filepath.Join(root, "data", "fresh.md"), validFrontMatter("Fresh", "fresh summary"))
 	writeFile(t, filepath.Join(root, "data", "old.md"), strings.Replace(
@@ -228,6 +234,7 @@ func TestStaleCommand(t *testing.T) {
 // with no index is a NotFound failure with the reindex hint, and a broken store config fails
 // naming the key.
 func TestStaleCommandErrors(t *testing.T) {
+	t.Parallel()
 	root := useRoot(t, t.TempDir())
 	if stdout, stderr, exit := runKB(t, []string{"stale", "--days", "-1"}); exit != ExitUsage || stdout != "" || !strings.Contains(stderr, "invalid --days -1") {
 		t.Errorf("--days -1: exit %d stdout %q stderr %q", exit, stdout, stderr)
@@ -272,6 +279,7 @@ func itemPaths(items []staleItem) []string {
 // TestRenderStale: the human form's three summaries (no entries, nothing flagged, some flagged) at
 // their 0/1 edges, and only non-empty groups get a block.
 func TestRenderStale(t *testing.T) {
+	t.Parallel()
 	old := 200
 	date := "2026-04-13"
 	groups := func(oldItems ...staleItem) []staleGroup {
@@ -324,6 +332,7 @@ func (s staleFaultStore) Edges(ctx context.Context) ([]store.EdgeRow, error) {
 // TestStaleReadFaults (Q126): a read error after the index opened is the command's error with its
 // kind, never a partial or empty report.
 func TestStaleReadFaults(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "a.md"), validFrontMatter("A", "a summary"))
@@ -331,8 +340,8 @@ func TestStaleReadFaults(t *testing.T) {
 		t.Fatalf("reindex: exit %d\n%s", code, stderr)
 	}
 	boom := errs.New(errs.Conflict, "test", "disk exploded")
-	orig := testDeps.openStore
-	t.Cleanup(func() { testDeps.openStore = orig })
+	orig := depsFor(t).openStore
+	t.Cleanup(func() { depsFor(t).openStore = orig })
 	for _, tc := range []struct {
 		name string
 		wrap func(store.Store) store.Store
@@ -341,7 +350,7 @@ func TestStaleReadFaults(t *testing.T) {
 		{"edges", func(s store.Store) store.Store { return staleFaultStore{Store: s, edges: boom} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			testDeps.openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
+			depsFor(t).openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
 				st, err := orig(ctx, path, ro)
 				if err != nil {
 					return nil, err

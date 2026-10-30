@@ -557,3 +557,14 @@ func TestMemoryRowsOf(t *testing.T) {
 		t.Errorf("no golds: %v, %d", rows, skipped)
 	}
 }
+
+// TestRememberedGoldBadParams: params that prior.Build rejects fail the decision with an
+// Internal error (config.Validate keeps this from happening in a search; it is the guard).
+func TestRememberedGoldBadParams(t *testing.T) {
+	bad := DefaultParams().Prior
+	bad.HalfLifeDays = 0
+	golds, searches, err := rememberedGold(nil, "k", bad, priorNow)
+	if err == nil || errs.KindOf(err) != errs.Internal || golds != nil || searches != 0 {
+		t.Errorf("golds %v, searches %d, err %v (kind %v); want nothing and an Internal error", golds, searches, err, errs.KindOf(err))
+	}
+}

@@ -55,6 +55,7 @@ func hitHeaders(out string) []string {
 // entry shows the whole entry once (the best rank, naming the merged ranks); the repeated context
 // line is dropped when expanding; [output] expand is the default and the flag overrides it.
 func TestSearchExpandModes(t *testing.T) {
+	t.Parallel()
 	w := newExpandWorld(t)
 	base := []string{"search", "PRIMARYTAG", "--mode", "fts", "--k", "10"}
 
@@ -122,6 +123,7 @@ func TestSearchExpandModes(t *testing.T) {
 
 // TestSearchExpandBudget: the expanded text is the level-3 body, so the budget still holds.
 func TestSearchExpandBudget(t *testing.T) {
+	t.Parallel()
 	newExpandWorld(t)
 	base := []string{"search", "PRIMARYTAG", "--mode", "fts", "--expand", "entry"}
 	full, _, _ := run(t, append(base, "--budget", "0")...)
@@ -143,6 +145,7 @@ func TestSearchExpandBudget(t *testing.T) {
 // TestSearchExpandCrossStore: a hit from another store expands from that store's chunks; the
 // primary's text never leaks into it.
 func TestSearchExpandCrossStore(t *testing.T) {
+	t.Parallel()
 	newExpandWorld(t)
 	out, stderr, code := run(t, "search", "OTHERTAG", "--mode", "fts", "--k", "10", "--stores", "notes", "--expand", "entry")
 	if code != 0 {
@@ -159,6 +162,7 @@ func TestSearchExpandCrossStore(t *testing.T) {
 // TestSearchExpandJSON: --expand adds an "expanded" field to the hits it expanded, and nothing
 // else changes; without it the field is absent.
 func TestSearchExpandJSON(t *testing.T) {
+	t.Parallel()
 	newExpandWorld(t)
 	type hit struct {
 		Rank     int    `json:"rank"`
@@ -196,6 +200,7 @@ func TestSearchExpandJSON(t *testing.T) {
 }
 
 func TestSearchExpandInvalid(t *testing.T) {
+	t.Parallel()
 	newExpandWorld(t)
 	out, stderr, code := run(t, "search", "PRIMARYTAG", "--mode", "fts", "--expand", "page")
 	if code != 1 || out != "" || !strings.Contains(stderr, `invalid --expand "page"`) {
@@ -205,6 +210,7 @@ func TestSearchExpandInvalid(t *testing.T) {
 
 // TestSkipReasonNamesStoreOnce (Q85): the skipped-store warning names the store once.
 func TestSkipReasonNamesStoreOnce(t *testing.T) {
+	t.Parallel()
 	w := newFanOutWorld(t)
 	writeFile(t, filepath.Join(w.loc, ".kb", "stores", "adr", "config.toml"), "[search\n")
 	_, stderr, _ := run(t, "search", "zebracorn", "--stores", "adr")
@@ -244,6 +250,7 @@ func (s *chunkStub) Chunks(_ context.Context, id int64) ([]store.ChunkRow, error
 // TestExpandHitsTable is the decision table for expandHits: which hits expand, which degrade to
 // no expansion, and what is returned as an error.
 func TestExpandHitsTable(t *testing.T) {
+	t.Parallel()
 	chunks := []store.ChunkRow{
 		{SourceFile: "a.md", Heading: "", Text: "A: s"},
 		{SourceFile: "a.md", Heading: "X", Text: "A › X\none"},
@@ -306,10 +313,11 @@ func TestExpandHitsTable(t *testing.T) {
 // TestWarnSkippedKinds (Q84, Q85): a skipped extra store's warning names the store once; an
 // Internal skip also writes an incident and names its id; NotFound and Conflict write none.
 func TestWarnSkippedKinds(t *testing.T) {
+	t.Parallel()
 	cache := t.TempDir()
-	orig := testDeps.userCacheDir
-	t.Cleanup(func() { testDeps.userCacheDir = orig })
-	testDeps.userCacheDir = func() (string, error) { return cache, nil }
+	orig := depsFor(t).userCacheDir
+	t.Cleanup(func() { depsFor(t).userCacheDir = orig })
+	depsFor(t).userCacheDir = func() (string, error) { return cache, nil }
 	for _, tc := range []struct {
 		kind     errs.Kind
 		incident bool
@@ -323,7 +331,7 @@ func TestWarnSkippedKinds(t *testing.T) {
 			cmd.Flags().Bool("debug", false, "")
 			var buf strings.Builder
 			cmd.SetErr(&buf)
-			testDeps.warnSkipped(cmd, skipped)
+			depsFor(t).warnSkipped(cmd, skipped)
 			got := buf.String()
 			if !strings.HasPrefix(got, "warning: skipping store adr: it broke") || strings.Contains(got, "adr@/loc") {
 				t.Errorf("stderr %q: want the store named once, as adr", got)

@@ -3,283 +3,54 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	sqlite3 "github.com/mattn/go-sqlite3"
 
 	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/sqlfault"
 	"github.com/nickstrad/kb/internal/store"
 )
 
-// faultDriver wraps the real driver and fails the nth statement whose SQL contains match
-// ("COMMIT" matches Tx.Commit). It reaches error paths only a broken disk or driver would (H20).
-// Tests set it with fail() before the operation; it is reset per test.
+// faults is the fault driver the sqlite store tests open through (Options.driver). The driver
+// itself is the shared internal/sqlfault package; these wrappers keep the call sites short.
+// faultDriverName is what Options.driver, Artefact.driver and judgedLog take.
 const faultDriverName = "sqlite3_fault"
 
 var (
-	faultMu    sync.Mutex
-	faultMatch string
-	faultNth   int
-	faultSeen  int
-	faultHook  func() error // when set, runs at the matched statement and its error is returned
-	errFault   = errors.New("injected fault")
-
-	// faultRewrite answers the statements containing faultRewriteMatch with a one-row, one-column
-	// result of the next value here instead of running them, so a PRAGMA can "succeed" with a
-	// surprising value. Once the values run out, statements run for real.
-	faultRewriteMatch string
-	faultRewriteVals  []string
+	faults   = sqlfault.Register(faultDriverName)
+	errFault = sqlfault.ErrFault
 )
 
-func init() {
-	sql.Register(faultDriverName, faultDriver{&sqlite3.SQLiteDriver{}})
-}
+const (
+	rowsIter = sqlfault.RowsIter
+	rowsScan = sqlfault.RowsScan
+)
 
-// fail arms the fault for the nth (1-based) statement containing match; "" disarms it.
-func fail(t *testing.T, match string, nth int) {
-	arm(match, nth)
-	t.Cleanup(func() { arm("", 0) })
-}
+// fail arms the fault for the nth (1-based) statement containing match; it disarms at cleanup.
+func fail(t *testing.T, match string, nth int) { t.Helper(); faults.Fail(t, match, nth) }
+
+// arm arms (or with "" disarms) the fault without a cleanup.
+func arm(match string, nth int) { faults.Arm(match, nth) }
 
 // rewrite makes the first len(vals) statements containing match answer vals in order.
 func rewrite(t *testing.T, match string, vals ...string) {
-	faultMu.Lock()
-	faultRewriteMatch, faultRewriteVals = match, vals
-	faultMu.Unlock()
-	t.Cleanup(func() { rewrite0() })
+	t.Helper()
+	faults.Rewrite(t, match, vals...)
 }
 
-func rewrite0() {
-	faultMu.Lock()
-	faultRewriteMatch, faultRewriteVals = "", nil
-	faultMu.Unlock()
-}
-
-// rewritten reports the canned answer for query, if one is due.
-func rewritten(query string) (driver.Rows, bool) {
-	faultMu.Lock()
-	defer faultMu.Unlock()
-	if faultRewriteMatch == "" || !strings.Contains(query, faultRewriteMatch) || len(faultRewriteVals) == 0 {
-		return nil, false
-	}
-	v := faultRewriteVals[0]
-	faultRewriteVals = faultRewriteVals[1:]
-	return &oneRow{col: "value", val: v}, true
-}
-
-type oneRow struct {
-	col  string
-	val  string
-	done bool
-}
-
-func (r *oneRow) Columns() []string { return []string{r.col} }
-func (r *oneRow) Close() error      { return nil }
-func (r *oneRow) Next(dest []driver.Value) error {
-	if r.done {
-		return io.EOF
-	}
-	r.done, dest[0] = true, r.val
-	return nil
-}
-
-// Row faults (testability remedy 4): failRows makes the nth (1-based) row of the first query that
-// contains match fail, either at Rows.Next (rowsIter: Rows.Err reports it) or at Scan (rowsScan: the
-// row carries a value no destination accepts). It reaches the scan and iteration error branches
-// that a statement-level fault cannot.
-type rowFault int
-
-const (
-	rowsIter rowFault = iota + 1
-	rowsScan
-)
-
-var (
-	rowMatch string
-	rowNth   int
-	rowMode  rowFault
-)
-
-// failRows arms a row fault for the first query containing match; it disarms at cleanup.
-func failRows(t *testing.T, match string, nth int, mode rowFault) {
-	faultMu.Lock()
-	rowMatch, rowNth, rowMode = match, nth, mode
-	faultMu.Unlock()
-	t.Cleanup(func() {
-		faultMu.Lock()
-		rowMatch, rowNth, rowMode = "", 0, 0
-		faultMu.Unlock()
-	})
-}
-
-// wrapRows returns rows wrapped to fail at the armed row when query matches, and disarms.
-func wrapRows(query string, rows driver.Rows) driver.Rows {
-	faultMu.Lock()
-	defer faultMu.Unlock()
-	if rowMatch == "" || !strings.Contains(query, rowMatch) {
-		return rows
-	}
-	f := &faultRows{Rows: rows, nth: rowNth, mode: rowMode}
-	rowMatch, rowNth, rowMode = "", 0, 0
-	return f
-}
-
-type faultRows struct {
-	driver.Rows
-	nth  int
-	mode rowFault
-	seen int
-}
-
-func (r *faultRows) Next(dest []driver.Value) error {
-	if err := r.Rows.Next(dest); err != nil {
-		return err
-	}
-	r.seen++
-	if r.seen != r.nth {
-		return nil
-	}
-	if r.mode == rowsIter {
-		return errFault
-	}
-	for i := range dest {
-		dest[i] = struct{ bad bool }{true} // database/sql cannot convert this into any destination
-	}
-	return nil
-}
-
-func arm(match string, nth int) {
-	faultMu.Lock()
-	faultMatch, faultNth, faultSeen, faultHook = match, nth, 0, nil
-	faultMu.Unlock()
-}
-
-func faulty(query string) error {
-	faultMu.Lock()
-	defer faultMu.Unlock()
-	if faultMatch == "" || !strings.Contains(query, faultMatch) {
-		return nil
-	}
-	faultSeen++
-	if faultSeen == faultNth {
-		if faultHook != nil {
-			return faultHook()
-		}
-		return errFault
-	}
-	return nil
-}
-
-type faultDriver struct{ inner driver.Driver }
-
-func (d faultDriver) Open(name string) (driver.Conn, error) {
-	c, err := d.inner.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	return faultConn{c.(*sqlite3.SQLiteConn)}, nil
-}
-
-type faultConn struct{ c *sqlite3.SQLiteConn }
-
-func (f faultConn) Prepare(q string) (driver.Stmt, error) {
-	return f.PrepareContext(context.Background(), q)
-}
-func (f faultConn) PrepareContext(ctx context.Context, q string) (driver.Stmt, error) {
-	if err := faulty("PREPARE " + q); err != nil {
-		return nil, err
-	}
-	s, err := f.c.PrepareContext(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	return faultStmt{s, q}, nil
-}
-func (f faultConn) Close() error { return f.c.Close() }
-func (f faultConn) Begin() (driver.Tx, error) {
-	return f.BeginTx(context.Background(), driver.TxOptions{})
-}
-func (f faultConn) BeginTx(ctx context.Context, o driver.TxOptions) (driver.Tx, error) {
-	if err := faulty("BEGIN"); err != nil {
-		return nil, err
-	}
-	tx, err := f.c.BeginTx(ctx, o)
-	if err != nil {
-		return nil, err
-	}
-	return faultTx{tx}, nil
-}
-func (f faultConn) ExecContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Result, error) {
-	if err := faulty(q); err != nil {
-		return nil, err
-	}
-	return f.c.ExecContext(ctx, q, args)
-}
-func (f faultConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
-	if rows, ok := rewritten(q); ok {
-		return rows, nil
-	}
-	if err := faulty(q); err != nil {
-		return nil, err
-	}
-	rows, err := f.c.QueryContext(ctx, q, args)
-	if err != nil {
-		return nil, err
-	}
-	return wrapRows(q, rows), nil
-}
-func (f faultConn) Ping(ctx context.Context) error { return f.c.Ping(ctx) }
-
-type faultTx struct{ tx driver.Tx }
-
-func (t faultTx) Commit() error {
-	if err := faulty("COMMIT"); err != nil {
-		_ = t.tx.Rollback() // the injected commit failure leaves nothing applied
-		return err
-	}
-	return t.tx.Commit()
-}
-func (t faultTx) Rollback() error { return t.tx.Rollback() }
-
-type faultStmt struct {
-	s driver.Stmt
-	q string
-}
-
-func (s faultStmt) Close() error  { return s.s.Close() }
-func (s faultStmt) NumInput() int { return s.s.NumInput() }
-func (s faultStmt) Exec(args []driver.Value) (driver.Result, error) {
-	return nil, errors.New("faultStmt: Exec without context is not used")
-}
-func (s faultStmt) Query(args []driver.Value) (driver.Rows, error) {
-	return nil, errors.New("faultStmt: Query without context is not used")
-}
-func (s faultStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	if err := faulty(s.q); err != nil {
-		return nil, err
-	}
-	return s.s.(driver.StmtExecContext).ExecContext(ctx, args)
-}
-func (s faultStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	if err := faulty(s.q); err != nil {
-		return nil, err
-	}
-	rows, err := s.s.(driver.StmtQueryContext).QueryContext(ctx, args)
-	if err != nil {
-		return nil, err
-	}
-	return wrapRows(s.q, rows), nil
+// failRows fails the nth row of the first query containing match (see sqlfault.FailRows).
+func failRows(t *testing.T, match string, nth int, mode sqlfault.RowFault) {
+	t.Helper()
+	faults.FailRows(t, match, nth, mode)
 }
 
 // openFaulty opens a store through the fault driver with embed_meta recorded at dim.
@@ -549,7 +320,7 @@ func TestDriverFaultsOnRows(t *testing.T) {
 	} {
 		for _, mode := range []struct {
 			name string
-			m    rowFault
+			m    sqlfault.RowFault
 		}{{"next", rowsIter}, {"scan", rowsScan}} {
 			t.Run(tc.name+" "+mode.name, func(t *testing.T) {
 				st := openFaulty(t, 0)
@@ -668,9 +439,7 @@ func TestCancelMidWriteIsInterrupted(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			fail(t, match, 1)
-			faultMu.Lock()
-			faultHook = func() error { cancel(); return tc.err }
-			faultMu.Unlock()
+			faults.SetHook(func() error { cancel(); return tc.err })
 			_, err := st.ReplaceEntry(ctx, entry, faultChunks(4, "after"))
 			if errs.KindOf(err) != errs.Interrupted {
 				t.Fatalf("err = %v (kind %v), want Interrupted", err, errs.KindOf(err))
@@ -697,9 +466,7 @@ func TestCancelMidResolveIsInterrupted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fail(t, "UPDATE edges SET dst_entry_id = ? WHERE rowid", 1)
-	faultMu.Lock()
-	faultHook = func() error { cancel(); return nil }
-	faultMu.Unlock()
+	faults.SetHook(func() error { cancel(); return nil })
 	err := st.ResolveEdges(ctx)
 	if errs.KindOf(err) != errs.Interrupted {
 		t.Fatalf("err = %v (kind %v), want Interrupted", err, errs.KindOf(err))
@@ -728,11 +495,7 @@ func TestEnableWALRetries(t *testing.T) {
 		}
 	})
 	t.Run("every attempt fails", func(t *testing.T) {
-		faultMu.Lock()
-		faultMatch, faultNth, faultSeen = "journal_mode", 1, 0
-		faultHook = func() error { faultSeen = 0; return errFault } // re-arm: fail every time
-		faultMu.Unlock()
-		t.Cleanup(func() { arm("", 0) })
+		faults.FailAlways(t, "journal_mode") // every attempt fails
 		_, err := Open(ctx, filepath.Join(t.TempDir(), "kb.sqlite"), Options{driver: faultDriverName})
 		if !errors.Is(err, errFault) || !strings.Contains(fmt.Sprint(errs.Chain(err)), "enable WAL") {
 			t.Fatalf("err = %v (chain %v), want the injected fault after the retries", err, errs.Chain(err))
@@ -740,11 +503,8 @@ func TestEnableWALRetries(t *testing.T) {
 	})
 	t.Run("cancelled while retrying", func(t *testing.T) {
 		cctx, cancel := context.WithCancel(ctx)
-		faultMu.Lock()
-		faultMatch, faultNth, faultSeen = "journal_mode", 1, 0
-		faultHook = func() error { cancel(); return errFault }
-		faultMu.Unlock()
-		t.Cleanup(func() { arm("", 0) })
+		fail(t, "journal_mode", 1)
+		faults.SetHook(func() error { cancel(); return errFault })
 		_, err := Open(cctx, filepath.Join(t.TempDir(), "kb.sqlite"), Options{driver: faultDriverName})
 		if errs.KindOf(err) != errs.Interrupted {
 			t.Fatalf("err = %v (kind %v), want Interrupted", err, errs.KindOf(err))
@@ -816,9 +576,7 @@ func TestDiskFullAndIOErrorAreUsage(t *testing.T) {
 				}
 				cause := sqlite3.Error{Code: code}
 				fail(t, match, 1)
-				faultMu.Lock()
-				faultHook = func() error { return cause }
-				faultMu.Unlock()
+				faults.SetHook(func() error { return cause })
 				_, err := st.ReplaceEntry(context.Background(), entry, faultChunks(4, "after"))
 				if errs.KindOf(err) != errs.Usage || !errors.Is(err, cause) ||
 					!strings.Contains(err.Error(), "disk full or unwritable: "+st.Path()+"; free space and retry") {
@@ -863,11 +621,9 @@ func TestVecInsertDiskFullIsUsage(t *testing.T) {
 				}
 			} else {
 				fail(t, "INSERT INTO chunks_vec (chunk_id", 1)
-				faultMu.Lock()
-				faultHook = func() error {
+				faults.SetHook(func() error {
 					return fmt.Errorf("%s: %w", vecChunkFailure, sqlite3.Error{Code: sqlite3.ErrError})
-				}
-				faultMu.Unlock()
+				})
 			}
 			_, err := st.ReplaceEntry(ctx, entry, faultChunks(4, "x"))
 			if errs.KindOf(err) != tc.want {

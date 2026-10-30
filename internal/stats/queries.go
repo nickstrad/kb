@@ -161,6 +161,48 @@ ORDER BY CASE source WHEN 'both' THEN 1 WHEN 'fts-only' THEN 2 WHEN 'vec-only' T
          source`,
 	},
 	{
+		Name:    "tiers",
+		Summary: "Which full-text tier placed returned hits (phrase, near, and, or) and how they rated.",
+		Help: "One row per fts_tier of a result that was actually shown: 'phrase' and 'near' are the\n" +
+			"phrase and NEAR tiers that the main full-text list puts ahead of AND for a query of two or\n" +
+			"more words (search.phrase_boost), 'and' is the all-terms query, 'or' its any-term retry, and\n" +
+			"'none' a hit the full-text list did not return (vector-only or exact-only), or one logged\n" +
+			"before tiers were recorded (schema v8 and older). results counts result rows and share_pct\n" +
+			"is that share of every result row. judged is how many have a verdict, useful how many were\n" +
+			"marked useful, and useful_rate_pct is useful/judged (NULL when the tier was never judged).\n" +
+			"avg_rank is the mean display rank. with_memory counts the tier's rows that the query-memory\n" +
+			"list (search.list_weights.memory) also placed, and memory_useful how many of those were\n" +
+			"judged useful.\n" +
+			"Decision: does the phrase tier put useful hits first (a high useful_rate_pct at a low\n" +
+			"avg_rank), or is search.phrase_boost noise; does the query memory place hits that are judged useful.",
+		SQL: filterCTE + `,
+res AS (
+    SELECT
+        coalesce(r.fts_tier, 'none') AS tier,
+        r.rank AS result_rank,
+        r.memory_rank IS NOT NULL AS in_memory,
+        (SELECT max(f.useful) FROM search_feedback AS f
+          WHERE f.search_id = r.search_id AND f.rank = r.rank) AS useful_verdict
+    FROM search_results AS r
+    JOIN fs ON fs.id = r.search_id
+)
+SELECT
+    tier,
+    count(*) AS results,
+    round(100.0 * count(*) / nullif((SELECT count(*) FROM res), 0) * 10) / 10 AS share_pct,
+    count(useful_verdict) AS judged,
+    count(*) FILTER (WHERE useful_verdict) AS useful,
+    round(100.0 * count(*) FILTER (WHERE useful_verdict)
+          / nullif(count(useful_verdict), 0) * 10) / 10 AS useful_rate_pct,
+    round(avg(result_rank) * 100) / 100 AS avg_rank,
+    count(*) FILTER (WHERE in_memory) AS with_memory,
+    count(*) FILTER (WHERE in_memory AND useful_verdict) AS memory_useful
+FROM res
+GROUP BY tier
+ORDER BY CASE tier WHEN 'phrase' THEN 1 WHEN 'near' THEN 2 WHEN 'and' THEN 3 WHEN 'or' THEN 4 ELSE 5 END,
+         tier`,
+	},
+	{
 		Name:    "trend",
 		Summary: "One row per ISO week: volume, mode mix, feedback coverage, hit rate, MRR and latency.",
 		Help: "One row per ISO week (weeks start on Monday at 00:00 UTC). searches is the week's volume\n" +

@@ -171,10 +171,15 @@ func (ev *evidence) apply(cands []Candidate) {
 	}
 	sort.Slice(cands, func(i, j int) bool { return fusedBefore(cands[i], cands[j]) })
 	if assert.Enabled {
-		for i := 1; i < len(cands); i++ {
-			assert.Post(fusedBefore(cands[i-1], cands[i]), "applyPrior: cands[%d] (chunk %d) does not sort before cands[%d] (chunk %d)",
-				i-1, cands[i-1].ChunkID, i, cands[i].ChunkID)
-		}
+		assertPriorSorted(cands)
+	}
+}
+
+// assertPriorSorted checks apply's postcondition: cands are in Fuse's strict order.
+func assertPriorSorted(cands []Candidate) {
+	for i := 1; i < len(cands); i++ {
+		assert.Post(fusedBefore(cands[i-1], cands[i]), "applyPrior: cands[%d] (chunk %d) does not sort before cands[%d] (chunk %d)",
+			i-1, cands[i-1].ChunkID, i, cands[i].ChunkID)
 	}
 }
 

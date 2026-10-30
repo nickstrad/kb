@@ -32,8 +32,9 @@ type Params struct {
 	// (PLAN 5.3); 1 leaves the order alone.
 	SupersedePenalty float64 `json:"supersede_penalty"`
 	// Prior is [prior] (PLAN 6.2): the feedback prior that multiplies the fused score once enough
-	// searches are judged. It is part of the settings JSON and hash.
-	Prior prior.Params `json:"prior"`
+	// searches are judged. It is not marshalled here: the settings JSON and hash come from
+	// config.EffectiveJSON, which carries [prior] itself.
+	Prior prior.Params `json:"-"`
 }
 
 // ParamsFrom maps [search] onto Params. The config must already be validated.

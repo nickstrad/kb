@@ -26,6 +26,7 @@ func dropVectorsCLI(t *testing.T, root string) {
 // exits 2 (FTS only) but its warning names the missing vectors and the fix rather than blaming the
 // embedder, and doctor does not call a database with entries "empty".
 func TestNoVectorsMessages(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "a.md"), validFrontMatter("Alpha", "alpha summary"))
@@ -55,6 +56,7 @@ func TestNoVectorsMessages(t *testing.T) {
 // TestDoctorEntryNounPlural (Q29) checks the entry/entries noun and is/are verb in the doctor
 // embed_meta line at the singular/plural boundary: 1 entry, then 2 entries.
 func TestDoctorEntryNounPlural(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	for _, tc := range []struct {
 		n    int

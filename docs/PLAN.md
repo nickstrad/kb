@@ -1025,7 +1025,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Carried from W9 pass: recount 92 `testDeps` swaps, 54 `t.Chdir`, 68 `useRoot`, 397 text checks vs 26 kind checks in internal/cli tests. File-fault rows waiting on a shared seam: eval baseline write/chmod/close (Q91); timing rows for `fts_ms` (Q89).
 - Carried from W8 pass: `openRows` (show_open_test.go) now reads through `store.JudgedLog`, and the stats fixture places searches with `Searcher.Now` (no `UPDATE searches SET ts`). Left for step 5: `feedbackRows` (checks notes and raw row counts, which `Judged` collapses), `disableSearchLog`, `settings_log_test`, `index_hooks_test`, `report_test`, `edit_regression_test`, `fanout_test` (`openRaw`), `search_test.dbOf`, `reindex_test.countRows`. Rows a scan or `rows.Err` fails mid-iteration are untestable without a row-level fault in the shared driver (judged.go, `entriesByPath` survivors).
 - Model: Sonnet (mechanical test refactor); review: Opus via testability-check
-- Status: planned. Schedule: its own wave after W8 (it touches every cli test file).
+- Status: done except the follow-ups below (T1 run). Steps 1-5 and the `--debug` half of step 6 landed: per-test `depsFor(t)` and `chdir` (no `t.Chdir`), 317 of 321 CLI tests parallel, `executeErr`/`runErr`/`wantKind`, doctor records `[]doctorCheck`, `internal/sqlfault` + `cache.OpenWith`, `sqlitetest` + `failingLog`, `kb --debug reindex` progress lines with `sigint-mid-reindex` waiting on them. Follow-ups: Q151-Q155 (stats fixture `.DB()`, search log tests' raw SQL, `t.Setenv` tests, migrate decision tests to `runErr`) and the migrate-interrupt sleeps (H23).
 - Steps:
   1. `newTestDeps(t)`, with the cwd set through `workspaceEnv`. Move per-run caches out of `deps`, so CLI tests can use `t.Parallel`.
   2. An `execute` variant that returns the typed error, so decision tests assert kind and cause. Keep one wording test per message family.
@@ -1111,6 +1111,7 @@ title: Tmux logout
 
 **E3 Quality loop and later-feature journeys**
 - Model: Sonnet; review: Opus via testing-standards-pass (it spans eval, explain, synonyms and prior)
+- Status: done (W14). prior.txt (J17), phrase-tier.txt (J18), tuning-loop sweep (J16).
 - Files: `internal/e2e/testdata/journeys/{lexical-quality,links-and-stale,prior}.txt`, plus extensions to `tuning-loop.txt` (J16) and J9 (`kb context`).
 - Steps: J13, J14, J16, J17, J18. Fold `kb context` into J9. Each W10–W13 item already added its own journey (TESTING §10 step 7), so E3 adds only the *cross-feature* flows: tune with synonyms and prior on, eval-compare, then sweep.
 - Accept: `kb eval --sweep`, `kb related`, `kb stale`, `kb synonyms`, `kb context` and `prior.enabled` appear in a journey; the tuning loop shows a baseline written, then a compare.
@@ -1128,6 +1129,7 @@ title: Tmux logout
 
 **E5 Journey audit and README cross-check**
 - Model: Haiku (mechanical); review: Sonnet
+- Status: done (W14). audit_test.go + readme_test.go; TESTING §11.7.
 - Files: `internal/e2e/readme_test.go` (`//go:build e2e`), README example markers.
 - Steps:
   1. A command-coverage check: every leaf command from `kb help` (walked through `kb <cmd> --help`) appears in at least one journey, or in an explicit allow-list (`completion`, `help`, `version`).

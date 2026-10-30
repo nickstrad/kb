@@ -10,19 +10,19 @@ import (
 )
 
 // globalLocationRoot is where --global points under the test home.
-func globalLocationRoot() string {
-	return filepath.Join(testDeps.workspaceEnv().Home, ".local", "share", "kb")
+func globalLocationRoot(t *testing.T) string {
+	return filepath.Join(depsFor(t).workspaceEnv().Home, ".local", "share", "kb")
 }
 
 // useGlobalLocation makes the global location (under the test home) with the given default store
 // and the stores default and adr, and removes it after the test.
 func useGlobalLocation(t *testing.T, def string) string {
 	t.Helper()
-	root := globalLocationRoot()
+	root := globalLocationRoot(t)
 	makeLocationFile(t, root, def)
 	addStore(t, root, "default")
 	addStore(t, root, "adr")
-	t.Cleanup(func() { os.RemoveAll(filepath.Join(testDeps.workspaceEnv().Home, ".local")) })
+	t.Cleanup(func() { os.RemoveAll(filepath.Join(depsFor(t).workspaceEnv().Home, ".local")) })
 	return root
 }
 
@@ -31,6 +31,7 @@ func useGlobalLocation(t *testing.T, def string) string {
 // name, global}) x kb.toml's default_store ({a store, a name with no store}). It checks the store
 // `kb config --path` reports, or the error.
 func TestStoreResolutionDecisions(t *testing.T) {
+	t.Parallel()
 	type outcome struct {
 		kind string // "ok", "notfound", "usage"
 		msg  string
@@ -52,13 +53,13 @@ func TestStoreResolutionDecisions(t *testing.T) {
 					args := []string{}
 					switch mode {
 					case "root":
-						t.Chdir(realTempDir(t))
+						chdir(t, realTempDir(t))
 						args = append(args, "--root", loc)
 					case "global":
-						t.Chdir(loc) // discovery must lose to --global
+						chdir(t, loc) // discovery must lose to --global
 						args = append(args, "--global")
 					case "discovered":
-						t.Chdir(loc)
+						chdir(t, loc)
 					}
 					if flag != "" {
 						args = append(args, "--store", flag)
@@ -135,6 +136,7 @@ func makeLocationFile(t *testing.T, root, def string) {
 }
 
 func TestBrokenLocationFile(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, body, want string }{
 		{"unknown key", "colour = 1\n", `unknown key "colour"`},
 		{"bad store name", "default_store = \"../x\"\n", "default_store"},
@@ -152,6 +154,7 @@ func TestBrokenLocationFile(t *testing.T) {
 }
 
 func TestStoreFlagWithRootFlagMissingLocation(t *testing.T) {
+	t.Parallel()
 	// --root at a directory with no kb.toml: NotFound saying kb init; also for a named store.
 	dir := realTempDir(t)
 	_, stderr, code := run(t, "--root", dir, "--store", "adr", "list")
@@ -161,6 +164,7 @@ func TestStoreFlagWithRootFlagMissingLocation(t *testing.T) {
 }
 
 func TestStoresText(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	writeConfig(t, root, "[embed]\nmodel = \"none\"\n")
 	addStore(t, root, "adr")
@@ -174,7 +178,7 @@ func TestStoresText(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d stderr %q", code, stderr)
 	}
-	home := testDeps.workspaceEnv().Home
+	home := depsFor(t).workspaceEnv().Home
 	want := `STORE      MODEL                  ENTRIES  DATABASE
 adr        BAAI/bge-base-en-v1.5  -        not indexed
 default *  none                   -        not indexed
@@ -190,6 +194,7 @@ aliases:
 }
 
 func TestStoresJSONAndIndexed(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	useNoneModel(t, root)
@@ -230,6 +235,7 @@ func TestStoresJSONAndIndexed(t *testing.T) {
 }
 
 func TestStoresProblemsAreRowsNotAborts(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	addStore(t, root, "adr")
 	writeFile(t, filepath.Join(root, ".kb", "stores", "adr", "config.toml"), "colour = 1\n")
@@ -258,6 +264,7 @@ func TestStoresProblemsAreRowsNotAborts(t *testing.T) {
 }
 
 func TestStoresUnreadableStoresDir(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	if err := os.RemoveAll(filepath.Join(root, ".kb", "stores")); err != nil {
 		t.Fatal(err)
@@ -269,6 +276,7 @@ func TestStoresUnreadableStoresDir(t *testing.T) {
 }
 
 func TestStoresDefaultStoreMissingWarns(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	makeLocationFile(t, root, "ghost")
 	stdout, _, code := run(t, "stores")
@@ -278,7 +286,8 @@ func TestStoresDefaultStoreMissingWarns(t *testing.T) {
 }
 
 func TestStoresOutsideLocation(t *testing.T) {
-	t.Chdir(realTempDir(t))
+	t.Parallel()
+	chdir(t, realTempDir(t))
 	_, stderr, code := run(t, "stores")
 	if code != ExitUsage || !strings.Contains(stderr, "no kb location found") {
 		t.Fatalf("exit %d stderr %q", code, stderr)
@@ -286,6 +295,7 @@ func TestStoresOutsideLocation(t *testing.T) {
 }
 
 func TestHumanBytes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		n    int64
 		want string

@@ -28,6 +28,11 @@ migrate up backs the file up first, and the search log survives the upgrade.
   [stderr] kb doctor: 1 check(s) failed
   [exit 1]
 
+kb version works on any file version, so it runs before the upgrade.
+
+  $ kb version
+  kb (version)
+
   $ kb migrate status
   SCOPE          FILE         VERSION   STATE                         PATH
   location       location     v1        current                       $WORK/proj/.kb/kb.toml
@@ -81,6 +86,11 @@ needed).
   store default  config       v1       current          $WORK/proj/.kb/stores/default/config.toml
   store default  index        v9       current          $WORK/proj/.kb/stores/default/kb.sqlite
   cache          embed-cache  -        not created yet  $WORK/home/Library/Caches/kb/embed-cache.sqlite
+
+With many stores, --all covers every store of the location (and the global location); nothing is pending now.
+
+  $ kb migrate up --all
+  everything is up to date
 
 The fixture's seven logged searches are still there: the new search is number 8, and the
 overview counts all eight.

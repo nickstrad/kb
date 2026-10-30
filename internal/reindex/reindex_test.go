@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"github.com/nickstrad/kb/internal/store/sqlite"
+	"github.com/nickstrad/kb/internal/store/sqlite/sqlitetest"
 	"io"
 	"math"
 	"os"
@@ -333,11 +334,7 @@ func appendToSection(t *testing.T, path, heading, line string) {
 // countRows runs a "SELECT count(*) FROM ..." query and returns the result.
 func countRows(t *testing.T, s *sqlite.Store, query string) int {
 	t.Helper()
-	var n int
-	if err := s.DB().QueryRow(query).Scan(&n); err != nil {
-		t.Fatalf("query %q: %v", query, err)
-	}
-	return n
+	return sqlitetest.CountRows(t, s, query)
 }
 
 // TestReindexChunkSplitFailureIsPerEntry: a plain (non-ValidationError) error from chunk.Split,

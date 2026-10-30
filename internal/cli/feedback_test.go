@@ -72,6 +72,7 @@ func onSearch(search string) func(store.FeedbackRow) bool {
 // TestFeedbackArgValidation: every malformed invocation is a usage error (exit 1) with a message
 // that says how to fix it, and none of them writes a row.
 func TestFeedbackArgValidation(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	id := searchID(t, "widget", "--caller", "claude")
@@ -114,6 +115,7 @@ func TestFeedbackArgValidation(t *testing.T) {
 
 // TestFeedbackByID records a hit verdict, and a whole-search verdict on a zero-result search.
 func TestFeedbackByID(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
@@ -152,6 +154,7 @@ func TestFeedbackByID(t *testing.T) {
 // TestFeedbackLast: --last resolves the caller exactly as kb search does (flag, then [agent] caller),
 // picks that caller's newest search, and says which search it judged.
 func TestFeedbackLast(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
@@ -204,6 +207,7 @@ func TestFeedbackLast(t *testing.T) {
 // hit rate and an MRR of 0 (100% coverage, 100% zero-result), where before it was unjudged and its
 // hit rate NULL.
 func TestFeedbackNoneCountsInStats(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
@@ -248,6 +252,7 @@ func TestFeedbackNoneCountsInStats(t *testing.T) {
 // TestFeedbackHelpNamesEveryVerdict: kb help and kb search --help show the feedback command forms
 // as optional, and the feedback help names every verdict form and the --last limitation.
 func TestFeedbackHelpNamesEveryVerdict(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{{"help"}, {"search", "--help"}} {
 		stdout, stderr, exit := runKB(t, args)
 		if exit != 0 {
@@ -274,11 +279,12 @@ func TestFeedbackHelpNamesEveryVerdict(t *testing.T) {
 // TestLogUsesInjectedClock (Q78, Q81): searches, verdicts and opens are stamped with deps.now, so
 // a test can place them at an exact time.
 func TestLogUsesInjectedClock(t *testing.T) {
+	t.Parallel()
 	root := openRepo(t)
 	at := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
-	orig := testDeps.now
-	t.Cleanup(func() { testDeps.now = orig })
-	testDeps.now = func() time.Time { return at }
+	orig := depsFor(t).now
+	t.Cleanup(func() { depsFor(t).now = orig })
+	depsFor(t).now = func() time.Time { return at }
 	id := searchID(t, "foo")
 	mustKB(t, "feedback", id, "1", "--useful")
 	mustKB(t, "show", "data/foo.md")

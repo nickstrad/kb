@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/sqlfault"
 	"github.com/nickstrad/kb/internal/store"
 )
 
@@ -143,7 +144,7 @@ func TestJudgedDriverFailures(t *testing.T) {
 		})
 		for _, mode := range []struct {
 			name string
-			m    rowFault
+			m    sqlfault.RowFault
 		}{{"next", rowsIter}, {"scan", rowsScan}} {
 			t.Run(match+" "+mode.name, func(t *testing.T) {
 				st := judgedLog(t, faultDriverName)

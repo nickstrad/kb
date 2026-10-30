@@ -8,6 +8,7 @@ import (
 // TestSearchUsesConfigSettings: [search] reaches the searcher. With rrf_k = 1 the top FTS hit
 // scores exactly 1/(1+1); with the default rrf_k it would print 0.0164.
 func TestSearchUsesConfigSettings(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	writeConfig(t, root, "[embed]\nmodel = \""+testModel768+"\"\n[search]\nrrf_k = 1\n")

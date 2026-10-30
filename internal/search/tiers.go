@@ -137,6 +137,9 @@ func (s *Searcher) mainList(ctx context.Context, terms []string, alts map[string
 	var sources []tierSource
 	var runs []TierRun
 	for _, t := range tierOps {
+		if t.tier == store.TierNear && len(sources) > 0 && len(sources[0].rows) >= p.ListLimit {
+			break // the phrase rows already fill the list: assembleTiers would cut every NEAR row
+		}
 		r, err := s.Store.FTS(ctx, store.FTSQuery{Terms: terms, Op: t.op, Near: store.NearDistance, Tag: tag,
 			Limit: p.ListLimit, Weights: &weights})
 		if err != nil {

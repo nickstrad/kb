@@ -22,6 +22,7 @@ func (unavailableAddEmbedder) Embed(context.Context, []string) ([][]float32, err
 }
 
 func TestAddRejectsMissingFrontMatterBeforeCopy(t *testing.T) {
+	t.Parallel()
 	for _, dir := range []bool{false, true} {
 		t.Run(map[bool]string{false: "file", true: "dir"}[dir], func(t *testing.T) {
 			root := newTempRoot(t)
@@ -51,11 +52,12 @@ func TestAddRejectsMissingFrontMatterBeforeCopy(t *testing.T) {
 }
 
 func TestAddRollsBackCopiedFilesOnFailure(t *testing.T) {
+	t.Parallel()
 	for _, dir := range []bool{false, true} {
 		for _, inPlace := range []bool{false, true} {
 			t.Run(map[bool]string{false: "file", true: "dir"}[dir]+map[bool]string{false: "-copy", true: "-inplace"}[inPlace], func(t *testing.T) {
 				useFakeEmbedder(t)
-				testDeps.embedder = func(config.Embed) (embed.Embedder, error) { return unavailableAddEmbedder{}, nil }
+				depsFor(t).embedder = func(config.Embed) (embed.Embedder, error) { return unavailableAddEmbedder{}, nil }
 				root := newTempRoot(t)
 				sourceRoot := t.TempDir()
 				if inPlace {
@@ -101,6 +103,7 @@ func TestAddRollsBackCopiedFilesOnFailure(t *testing.T) {
 }
 
 func TestAddDirectoryCopyPolicy(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	src := filepath.Join(t.TempDir(), "copy-policy")
@@ -138,6 +141,7 @@ func TestAddDirectoryCopyPolicy(t *testing.T) {
 }
 
 func TestAddRejectsBinaryCompanionBeforeCopy(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	src := filepath.Join(t.TempDir(), "binary-topic")
@@ -153,6 +157,7 @@ func TestAddRejectsBinaryCompanionBeforeCopy(t *testing.T) {
 }
 
 func TestAddDestinationAdvice(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	src := filepath.Join(t.TempDir(), "duplicate.md")
@@ -181,6 +186,7 @@ func TestAddDestinationAdvice(t *testing.T) {
 }
 
 func TestAddSecretPatternsAllowLocationProse(t *testing.T) {
+	t.Parallel()
 	for _, text := range []string{"password: stored elsewhere", "API key: stored in a protected file", "xoxb-"} {
 		if hits := scanSecrets([]byte(text)); len(hits) > 0 {
 			t.Errorf("rejected prose %q", text)
@@ -194,6 +200,7 @@ func TestAddSecretPatternsAllowLocationProse(t *testing.T) {
 }
 
 func TestAddDoesNotDependOnMarkdownExport(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	src := filepath.Join(t.TempDir(), "index-failure.md")

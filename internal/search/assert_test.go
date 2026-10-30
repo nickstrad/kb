@@ -28,6 +28,8 @@ func TestSearchAssertionsFire(t *testing.T) {
 	b := Candidate{ChunkID: 2, FTSRank: &two, RRFScore: 0.4}
 	mustViolate(t, "precondition", func() { applyCap(nil, nil, 0, PerEntryCap) })
 	mustViolate(t, "precondition", func() { applyCap(nil, nil, MaxK+1, PerEntryCap) })
+	mustViolate(t, "postcondition", func() { assertPriorSorted([]Candidate{b, a}) }) // prior.apply out of order
+	assertPriorSorted([]Candidate{a, b})
 	mustViolate(t, "postcondition", func() { assertFused([]Candidate{b, a}, CandidateLimit) }) // out of order
 	mustViolate(t, "postcondition", func() { assertFused([]Candidate{a, a}, CandidateLimit) }) // duplicate
 	mustViolate(t, "postcondition", func() {                                                   // ordered, but chunk 1 twice

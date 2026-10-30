@@ -60,7 +60,7 @@ func TestWrapAfterCancelIsInterrupted(t *testing.T) {
 	if err := wrap(ctx, sql.ErrTxDone, "/x", "op", "commit failed"); errs.KindOf(err) != errs.Interrupted || !errors.Is(err, sql.ErrTxDone) {
 		t.Errorf("wrap after cancel = %v (kind %v), want Interrupted", err, errs.KindOf(err))
 	}
-	if err := wrap(context.TODO(), sql.ErrTxDone, "/x", "op", "close failed"); errs.KindOf(err) != errs.Internal {
+	if err := wrap(context.TODO(), sql.ErrTxDone, "/x", "op", "close failed"); err == nil || errs.KindOf(err) != errs.Internal {
 		t.Errorf("wrap with nil ctx = kind %v, want Internal", errs.KindOf(err))
 	}
 }

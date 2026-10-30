@@ -151,7 +151,7 @@ func TestDBErrors(t *testing.T) {
 		}, "ok usage"},
 		{"Run bad SQL is Internal", func() error {
 			_, err := db.Run(ctx, Query{Name: "broken", SQL: "SELEKT 1"}, Filter{})
-			if errs.KindOf(err) != errs.Internal {
+			if err == nil || errs.KindOf(err) != errs.Internal {
 				return fmt.Errorf("kind %v", errs.KindOf(err))
 			}
 			return errors.New("ok internal")

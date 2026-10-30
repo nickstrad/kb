@@ -17,9 +17,9 @@ import (
 func withCountingEmbedder(t *testing.T) (builds *int, calls *atomic.Int64) {
 	t.Helper()
 	builds, calls = new(int), new(atomic.Int64)
-	orig := testDeps.embedder
-	t.Cleanup(func() { testDeps.embedder = orig })
-	testDeps.embedder = func(config.Embed) (embed.Embedder, error) {
+	orig := depsFor(t).embedder
+	t.Cleanup(func() { depsFor(t).embedder = orig })
+	depsFor(t).embedder = func(config.Embed) (embed.Embedder, error) {
 		*builds++
 		return countingEmbedder{fake.New(testModel768, testDim768), calls, new(atomic.Int64)}, nil
 	}
@@ -30,6 +30,7 @@ func withCountingEmbedder(t *testing.T) (builds *int, calls *atomic.Int64) {
 // replayed in hybrid mode with each query embedded once for the whole sweep (vector reuse); the
 // human form has its header and table; the log is never written.
 func TestEvalSweepWiring(t *testing.T) {
+	t.Parallel()
 	root := useRoot(t, newExplainRepo(t))
 	queries := []string{"tmux logout", "docker volumes", "git rebase", "build cache layers"}
 	for _, q := range queries {
@@ -75,6 +76,7 @@ func TestEvalSweepWiring(t *testing.T) {
 // TestEvalSweepGate: below [eval] min_judged the sweep is refused before the model is loaded;
 // lowering the threshold in the config lets it run.
 func TestEvalSweepGate(t *testing.T) {
+	t.Parallel()
 	root := useRoot(t, newExplainRepo(t))
 	mustKB(t, "feedback", searchID(t, "tmux logout"), "1", "--useful")
 	builds, _ := withCountingEmbedder(t)
@@ -91,6 +93,7 @@ func TestEvalSweepGate(t *testing.T) {
 // TestEvalSweepFlagErrors: flags --sweep does not combine with, and bad sweeps, are usage errors
 // before any replay.
 func TestEvalSweepFlagErrors(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newExplainRepo(t))
 	for _, tc := range []struct {
 		name string
@@ -119,6 +122,7 @@ func TestEvalSweepFlagErrors(t *testing.T) {
 // TestEvalSweepFallbackExits2: with the model unavailable the sweep's replays fall back to fts;
 // the report is printed, the fallback is a warning and the exit is 2.
 func TestEvalSweepFallbackExits2(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	writeConfig(t, root, "[embed]\nmodel = \""+testModel768+"\"\n[eval]\nmin_judged = 1\n")
@@ -134,6 +138,7 @@ func TestEvalSweepFallbackExits2(t *testing.T) {
 // TestRenderSweep: the three endings (adopt the best, the current is best, overfitting), the
 // held-out columns and a report with nothing held out.
 func TestRenderSweep(t *testing.T) {
+	t.Parallel()
 	est := func(m float64) eval.Estimate { return eval.Estimate{Mean: m, Lo: m - 0.1, Hi: m + 0.1} }
 	split := func(m float64) *eval.SplitScore { return &eval.SplitScore{Queries: 3, MRR: est(m)} }
 	diff := &eval.VariantDiff{Paired: 3, Metrics: []eval.MetricDiff{{Name: "mrr", Delta: 0.25, Lo: -0.05, Hi: 0.5, Wins: 2, Ties: 1, P: 0.5}}}
@@ -189,6 +194,7 @@ func TestRenderSweep(t *testing.T) {
 
 // TestEvalSweepNoIndex: with no index the sweep is NotFound, after the grid is checked.
 func TestEvalSweepNoIndex(t *testing.T) {
+	t.Parallel()
 	useRoot(t, t.TempDir())
 	if _, stderr, exit := runKB(t, []string{"eval", "--sweep", "search.rrf_k=10"}); exit != ExitUsage || !strings.Contains(stderr, "no index at") {
 		t.Errorf("exit %d stderr %q", exit, stderr)

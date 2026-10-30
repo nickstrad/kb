@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/store/sqlite"
+	"github.com/nickstrad/kb/internal/store/sqlite/sqlitetest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -768,4 +769,4 @@ func TestSearchClampsK(t *testing.T) {
 }
 
 // dbOf is the raw handle behind a test Searcher, for asserting on the rows it wrote.
-func dbOf(s *Searcher) *sql.DB { return s.Store.(*sqlite.Store).DB() }
+func dbOf(s *Searcher) *sql.DB { return sqlitetest.RawDB(s.Store) }

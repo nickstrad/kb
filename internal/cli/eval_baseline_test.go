@@ -32,6 +32,7 @@ func baselineFile(root, name string) string {
 // baseline, --json; the file holds the settings, the hash, the model and the per-query ranks, and
 // the log is untouched.
 func TestEvalBaselineFlow(t *testing.T) {
+	t.Parallel()
 	root := judgedRepo(t)
 	before := feedbackRows(t, root)
 
@@ -105,6 +106,7 @@ func TestEvalBaselineFlow(t *testing.T) {
 
 // TestEvalBaselineFailures: each bad use is one error, exit 1, with nothing written.
 func TestEvalBaselineFailures(t *testing.T) {
+	t.Parallel()
 	root := judgedRepo(t)
 	write := func(name, body string) {
 		t.Helper()
@@ -147,6 +149,7 @@ func TestEvalBaselineFailures(t *testing.T) {
 // TestEvalFallbackDoesNotSaveBaseline: a run whose replays fell back to fts exits 2, prints its
 // report, and writes no baseline; --compare still prints.
 func TestEvalFallbackDoesNotSaveBaseline(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	countingEmbedders(t, false)
@@ -169,6 +172,7 @@ func TestEvalFallbackDoesNotSaveBaseline(t *testing.T) {
 
 // TestRenderCompare: the table rows, the empty case and the optional lines.
 func TestRenderCompare(t *testing.T) {
+	t.Parallel()
 	m := func(name string, w, l, ties int, p float64) eval.MetricDiff {
 		return eval.MetricDiff{Name: name, Baseline: 0.5, Current: 0.75, Delta: 0.25, Lo: 0.05, Hi: 0.45, Wins: w, Losses: l, Ties: ties, P: p}
 	}
@@ -241,12 +245,13 @@ type plainStore struct{ store.Store }
 // TestEvalStoreFaults (Q86): errors from the store reach the user with their kind, and a store
 // without the optional interfaces is handled.
 func TestEvalStoreFaults(t *testing.T) {
+	t.Parallel()
 	judgedRepo(t)
 	boom := errs.New(errs.Conflict, "test", "disk exploded")
-	orig := testDeps.openStore
-	t.Cleanup(func() { testDeps.openStore = orig })
+	orig := depsFor(t).openStore
+	t.Cleanup(func() { depsFor(t).openStore = orig })
 	wrap := func(f func(store.Store) store.Store) {
-		testDeps.openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
+		depsFor(t).openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
 			st, err := orig(ctx, path, ro)
 			if err != nil {
 				return nil, err
@@ -278,6 +283,7 @@ func TestEvalStoreFaults(t *testing.T) {
 // TestEvalEnvironmentFailures (Q86): failures around the index and the baseline directory are
 // the command's errors, never a report or a half-written baseline.
 func TestEvalEnvironmentFailures(t *testing.T) {
+	t.Parallel()
 	root := judgedRepo(t)
 	if _, stderr, exit := runKB(t, []string{"eval", "--set", "embed.model=no-such-model", "--compare"}); exit != ExitUsage || !strings.Contains(stderr, "no-such-model") {
 		t.Errorf("--set to an unknown model: exit %d %q", exit, stderr)
@@ -294,9 +300,9 @@ func TestEvalEnvironmentFailures(t *testing.T) {
 	}
 	os.Remove(dir)
 
-	orig := testDeps.openStore
-	t.Cleanup(func() { testDeps.openStore = orig })
-	testDeps.openStore = func(context.Context, string, bool) (store.Store, error) {
+	orig := depsFor(t).openStore
+	t.Cleanup(func() { depsFor(t).openStore = orig })
+	depsFor(t).openStore = func(context.Context, string, bool) (store.Store, error) {
 		return nil, errs.New(errs.Conflict, "test", "database damaged")
 	}
 	if stdout, stderr, exit := runKB(t, []string{"eval"}); exit != ExitUsage || stdout != "" || !strings.Contains(stderr, "database damaged") {
@@ -309,6 +315,7 @@ func TestEvalEnvironmentFailures(t *testing.T) {
 // The baseline's settings carry exact_list=true, the variant has another hash, the gold that the
 // exact list put at rank 1 drops, and the comparison counts it as a loss.
 func TestEvalCompareExactListOff(t *testing.T) {
+	t.Parallel()
 	root := useRoot(t, newExplainRepoWith(t, identEntries))
 	stdout, _, exit := runKB(t, []string{"search", "--mode", "fts", "--json", "reindex_test"})
 	var res struct {

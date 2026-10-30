@@ -10,6 +10,7 @@ import (
 // (maxSinceDays and one above it, which would overflow time.Duration), negative durations, and
 // date forms. The CLI tests only check that --since reaches the filter.
 func TestParseSince(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.FixedZone("x", 3600)) // not UTC: the bound must come back in UTC
 	for _, tc := range []struct {
 		name    string

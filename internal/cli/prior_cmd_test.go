@@ -32,6 +32,7 @@ func priorHits(t *testing.T, flags ...string) []map[string]json.RawMessage {
 // "prior" field; once M searches are judged the prior applies (a "prior" field per hit, a term in
 // explain) and --no-prior turns it off for one search.
 func TestPriorEndToEnd(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	writeConfig(t, root, "[embed]\nmodel = \""+testModel768+"\"\n[prior]\nenabled = true\nmin_judged = 2\n")
@@ -115,6 +116,7 @@ func TestPriorEndToEnd(t *testing.T) {
 // TestPriorOffByDefault: the default config shows nothing about the prior and applies none, even
 // with judged searches.
 func TestPriorOffByDefault(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	priorHits(t)
@@ -135,6 +137,7 @@ func TestPriorOffByDefault(t *testing.T) {
 // TestPriorBadSettings: an out-of-range [prior] value is a Usage error (exit 1) naming the key, on
 // both the --set path and a config file, and a --no-prior with a value is a flag error.
 func TestPriorBadSettings(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	_, stderr, exit := runKB(t, []string{"explain", "widget", "--mode", "fts", "--set", "prior.half_life_days=0"})
@@ -157,6 +160,7 @@ func TestPriorBadSettings(t *testing.T) {
 // memory rank and the key; another query is unchanged. The prior's own boost is off
 // (max_boost = 0) so the order is the memory list's doing.
 func TestQueryMemoryEndToEnd(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	writeConfig(t, root, "[embed]\nmodel = \""+testModel768+"\"\n[prior]\nenabled = true\nmin_judged = 1\nmax_boost = 0\nquery_memory = true\n")

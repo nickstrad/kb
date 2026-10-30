@@ -35,13 +35,13 @@ func (c countingEmbedder) Embed(ctx context.Context, texts []string) ([][]float3
 // useEmbedCache turns the shared cache on at path for one test and counts model calls.
 func useEmbedCache(t *testing.T, path string) (calls, texts *atomic.Int64) {
 	t.Helper()
-	origE, origP := testDeps.embedder, testDeps.embedCachePath
-	t.Cleanup(func() { testDeps.embedder, testDeps.embedCachePath = origE, origP })
+	origE, origP := depsFor(t).embedder, depsFor(t).embedCachePath
+	t.Cleanup(func() { depsFor(t).embedder, depsFor(t).embedCachePath = origE, origP })
 	calls, texts = new(atomic.Int64), new(atomic.Int64)
-	testDeps.embedder = func(config.Embed) (embed.Embedder, error) {
+	depsFor(t).embedder = func(config.Embed) (embed.Embedder, error) {
 		return countingEmbedder{fake.New("fake-cache-test", 16), calls, texts}, nil
 	}
-	testDeps.embedCachePath = func() (string, error) { return path, nil }
+	depsFor(t).embedCachePath = func() (string, error) { return path, nil }
 	return calls, texts
 }
 
@@ -68,6 +68,7 @@ func reportedEmbedCalls(t *testing.T, stdout string) string {
 // TestEmbedCacheSharedAcrossStores is the 3.3 acceptance: a second store with the same documents
 // reindexes with zero model calls, and says so.
 func TestEmbedCacheSharedAcrossStores(t *testing.T) {
+	t.Parallel()
 	calls, texts := useEmbedCache(t, filepath.Join(t.TempDir(), "cache", "embed-cache.sqlite"))
 
 	first := newTempRoot(t)
@@ -103,6 +104,7 @@ func TestEmbedCacheSharedAcrossStores(t *testing.T) {
 // TestEmbedCacheDegrades: a cache that cannot be used is a warning, never a failure; the command
 // embeds without it and exits as it would have.
 func TestEmbedCacheDegrades(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		make func(t *testing.T) string // returns the cache path
@@ -135,7 +137,7 @@ func TestEmbedCacheDegrades(t *testing.T) {
 			path := tc.make(t)
 			calls, _ := useEmbedCache(t, path)
 			if path == "" {
-				testDeps.embedCachePath = func() (string, error) { return embedCacheFile("") }
+				depsFor(t).embedCachePath = func() (string, error) { return embedCacheFile("") }
 			}
 			before, _ := os.ReadFile(path)
 			root := newTempRoot(t)
@@ -176,6 +178,7 @@ func TestEmbedCacheDegrades(t *testing.T) {
 // TestEmbedCacheGoesOffMidRun: a cache that fails after it opened (its table is gone) is
 // reported once after the command, which still succeeds.
 func TestEmbedCacheGoesOffMidRun(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "c.sqlite")
 	c, err := cache.Open(context.Background(), path)
 	if err != nil {
@@ -205,9 +208,10 @@ func TestEmbedCacheGoesOffMidRun(t *testing.T) {
 }
 
 func TestModelCacheCommand(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "kb", "embed-cache.sqlite")
 	useEmbedCache(t, path)
-	t.Chdir(realTempDir(t))
+	chdir(t, realTempDir(t))
 
 	t.Run("missing cache", func(t *testing.T) {
 		for _, args := range [][]string{{"model", "cache"}, {"model", "cache", "--stats"}, {"model", "cache", "--clear"}} {
@@ -264,7 +268,7 @@ func TestModelCacheCommand(t *testing.T) {
 		}
 	})
 	t.Run("no cache configured", func(t *testing.T) {
-		testDeps.embedCachePath = nil
+		depsFor(t).embedCachePath = nil
 		if _, errOut, code := run(t, "model", "cache"); code != ExitUsage || !strings.Contains(errOut, "not available") {
 			t.Errorf("%d %q", code, errOut)
 		}
@@ -273,8 +277,9 @@ func TestModelCacheCommand(t *testing.T) {
 
 // TestWithEmbedCacheWrapping is the decision table of which embedders get the cache.
 func TestWithEmbedCacheWrapping(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "c.sqlite")
-	d := productionDeps()
+	d := productionDeps().forRun()
 	d.embedCachePath = func() (string, error) { return path, nil }
 	t.Cleanup(func() { d.finishEmbedCaches(os.Stderr) })
 	cmdNamed := func(n string) *cobra.Command { return &cobra.Command{Use: n} }
@@ -306,6 +311,7 @@ func TestWithEmbedCacheWrapping(t *testing.T) {
 }
 
 func TestModelCallsPrefersTheCachedCount(t *testing.T) {
+	t.Parallel()
 	if got := modelCalls(fake.New("m", 4), 7); got != 7 {
 		t.Errorf("uncached: %d, want the caller's 7", got)
 	}
@@ -326,6 +332,7 @@ func TestModelCallsPrefersTheCachedCount(t *testing.T) {
 }
 
 func TestEmbedCacheFile(t *testing.T) {
+	t.Parallel()
 	if got, err := embedCacheFile("/c"); err != nil || got != "/c/kb/embed-cache.sqlite" {
 		t.Errorf("embedCacheFile = %q, %v", got, err)
 	}
@@ -338,6 +345,7 @@ func TestEmbedCacheFile(t *testing.T) {
 // at once (each with its own deps, as each process has) and all succeed, quietly. Run it with
 // -race.
 func TestEmbedCacheConcurrentReindex(t *testing.T) {
+	t.Parallel()
 	_, texts := useEmbedCache(t, filepath.Join(t.TempDir(), "c.sqlite"))
 	const n = 4
 	roots := make([]string, n)
@@ -351,8 +359,7 @@ func TestEmbedCacheConcurrentReindex(t *testing.T) {
 	}
 	results := make(chan result, n)
 	for _, root := range roots {
-		d := *testDeps
-		d.caches = &embedCaches{}
+		d := *depsFor(t)
 		go func() {
 			var out, errBuf strings.Builder
 			code := execute(context.Background(), &d, []string{"--root", root, "reindex", "--all"}, &out, &errBuf)

@@ -2,7 +2,7 @@
 > The fault-injecting driver is unexported and test-only, so other packages fake disk errors with tricks or leave their OS/driver error paths as "unreachable" survivors.
 
 - **Smell:** untestable error path
-- **Status:** needs work
+- **Status:** resolved (2026-10-30)
 - **Where:** `internal/store/sqlite/fault_test.go` (`faultDriver`, `fail(t, sql, nth)`), `sqlite.go:Options.driver` (unexported), `internal/embed/cache/cache.go:Open` (own SQLite file, no seam), `internal/config/config.go:readCapped`
 - **Symptoms in tests:**
   - `cli/report_test.go:TestDiskFullIsExit1` produces SQLITE_FULL by pinning `PRAGMA max_page_count` through `st.DB()` with one connection. It works for plain tables only, so the sqlite-vec full-disk path (Q47) has no test at all.
@@ -15,4 +15,5 @@
 - **Remedy:** (1) Move the fault driver into an internal test-support package (`internal/store/sqlite/sqlitetest`, or `internal/sqlfault` shared by sqlite and cache). (2) Let `cache.Open` take an options value with the same driver hook. (3) Leave `readCapped` as triaged unless an `open func` seam comes almost free. (4) DONE: the driver fails the nth `Rows.Next` or Scan of a matched query (a `driver.Rows` wrapper). Remaining: 1-3. → **new item** (Sonnet), or the cache's leverage next-check. Do it before 3.2 adds more log writes.
 - **Cost/benefit:** small to medium. The cache's degrade-never-corrupt claim becomes testable per statement, and cli tests stop needing PRAGMA tricks.
 - **W12 pass:** `TestJudgedDriverFailures` now also fails the scan and the iteration of each of `Judged`'s three reads with `failRows`, killing the four `judgedVerdicts`/`judgedOpens` err-check survivors the W12 mutation run left (the table-row route the Q125 note predicted). New W12 adapter `LocateChunks` has its query fault-tested only through the search layer's `failLocator` double (fine: one `QueryRow` per ref). Remedies 1–3 unchanged.
-- **Last reviewed:** 2026-10-30 · W12 wave-end pass
+- **Resolution:** T1 step 4: the driver moved to `internal/sqlfault` (per-instance state, `Register(name)`, `Fail/FailAlways/SetHook/Rewrite/FailRows`); `store/sqlite/fault_test.go` keeps thin wrappers over it, and `cache.OpenWith(ctx, path, cache.Options{Driver})` gives the embedding cache the same hook (`TestOpenStatementFaults`, `TestPutGetStatementFaults`). `readCapped` stays triaged as defensive. Filesystem faults (eval baseline write/chmod/close, Q91) are not SQL and still wait for an `fs` seam; the vec full-disk path was covered by Q47.
+- **Last reviewed:** 2026-10-30 · T1 (archived)

@@ -34,6 +34,7 @@ func newRefWorld(t *testing.T) refWorld {
 // TestStoreRefDecisions: every ref form x {--root, --global, discovered} x {exists, missing}. It
 // checks the config path of the store the ref resolved to, or the error kind and message.
 func TestStoreRefDecisions(t *testing.T) {
+	t.Parallel()
 	type want struct {
 		path string // config.toml of the expected store, "" for an error
 		msg  string
@@ -88,16 +89,16 @@ func TestStoreRefDecisions(t *testing.T) {
 				args := []string{"--store", f.ref}
 				switch mode {
 				case "discovered":
-					t.Chdir(filepath.Join(w.loc))
+					chdir(t, filepath.Join(w.loc))
 				case "root":
-					t.Chdir(realTempDir(t))
+					chdir(t, realTempDir(t))
 					args = append(args, "--root", w.loc)
 				case "global":
-					t.Chdir(w.loc)
+					chdir(t, w.loc)
 					args = append(args, "--global")
 				}
 				if f.name == "relative path" {
-					t.Chdir(w.loc) // ../<other> from the location
+					chdir(t, w.loc) // ../<other> from the location
 				}
 				stdout, stderr, code := run(t, append(args, "config", "--path")...)
 				if exp.path != "" {
@@ -115,6 +116,7 @@ func TestStoreRefDecisions(t *testing.T) {
 }
 
 func TestStoreRefMalformedIsUsage(t *testing.T) {
+	t.Parallel()
 	newRefWorld(t)
 	for _, ref := range []string{"Bad", "a b", "adr@", "~bob/x", "docs/x", "c:x"} {
 		_, stderr, code := run(t, "--store", ref, "config", "--path")
@@ -126,26 +128,28 @@ func TestStoreRefMalformedIsUsage(t *testing.T) {
 
 // A bare word with no location and no matching global alias reports the missing location.
 func TestStoreRefNoLocation(t *testing.T) {
+	t.Parallel()
 	useGlobalLocation(t, "default")
-	t.Chdir(realTempDir(t))
+	chdir(t, realTempDir(t))
 	if _, stderr, code := run(t, "--store", "adr", "config", "--path"); code != ExitUsage || !strings.Contains(stderr, "no kb location found") {
 		t.Errorf("bare word, no location: exit %d %q", code, stderr)
 	}
 	// A global alias works from outside any location.
-	writeFile(t, filepath.Join(globalLocationRoot(), ".kb", "kb.toml"),
+	writeFile(t, filepath.Join(globalLocationRoot(t), ".kb", "kb.toml"),
 		"version = 1\ndefault_store = \"default\"\n[aliases]\ntop = \"adr\"\n")
 	stdout, stderr, code := run(t, "--store", "top", "config", "--path")
-	want := filepath.Join(globalLocationRoot(), ".kb", "stores", "adr", "config.toml")
+	want := filepath.Join(globalLocationRoot(t), ".kb", "stores", "adr", "config.toml")
 	if code != 0 || strings.TrimSpace(stdout) != want {
 		t.Errorf("global alias: exit %d %q %q; want %s", code, stdout, stderr, want)
 	}
 }
 
 func TestStoreRefShadowWarning(t *testing.T) {
+	t.Parallel()
 	w := newRefWorld(t)
 	writeFile(t, filepath.Join(w.loc, ".kb", "kb.toml"),
 		"version = 1\ndefault_store = \"default\"\n[aliases]\nadr = \"adr@"+w.other+"\"\n")
-	t.Chdir(w.loc)
+	chdir(t, w.loc)
 	stdout, stderr, code := run(t, "--store", "adr", "config", "--path")
 	if code != 0 || strings.TrimSpace(stdout) != filepath.Join(w.loc, ".kb", "stores", "adr", "config.toml") {
 		t.Fatalf("exit %d %q %q: the local store must win", code, stdout, stderr)
@@ -161,19 +165,20 @@ func TestStoreRefShadowWarning(t *testing.T) {
 }
 
 func TestStoresAliasRows(t *testing.T) {
+	t.Parallel()
 	w := newRefWorld(t)
-	writeFile(t, filepath.Join(globalLocationRoot(), ".kb", "kb.toml"),
+	writeFile(t, filepath.Join(globalLocationRoot(t), ".kb", "kb.toml"),
 		"version = 1\ndefault_store = \"default\"\n[aliases]\nal = \"adr\"\ntop = \"adr\"\n")
-	t.Chdir(w.loc)
+	chdir(t, w.loc)
 	text, stderr, code := run(t, "stores")
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d %q", code, stderr)
 	}
 	for _, want := range []string{
-		"-> adr@" + globalLocationRoot() + "  (global)",
+		"-> adr@" + globalLocationRoot(t) + "  (global)",
 		"BROKEN: no kb location at " + w.other + "/nowhere",
 		"(overridden by an alias of this location)",
-		"-> adr@" + globalLocationRoot(),
+		"-> adr@" + globalLocationRoot(t),
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("kb stores lacks %q:\n%s", want, text)
@@ -193,6 +198,7 @@ func TestStoresAliasRows(t *testing.T) {
 // TestOpenStoreReadOnly: the helper 3.2 fans out through. An indexed store opens with its embedder
 // record; every way a store can be unusable is a warning and a nil result; a malformed ref is Usage.
 func TestOpenStoreReadOnly(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	w := newRefWorld(t)
 	useNoneModel(t, w.other)
@@ -201,13 +207,13 @@ func TestOpenStoreReadOnly(t *testing.T) {
 	if _, stderr, code := run(t, "--root", w.other, "add", src); code != 0 {
 		t.Fatalf("add: %d %q", code, stderr)
 	}
-	t.Chdir(w.loc)
-	cmd := newRootCmd(testDeps, os.Stdout, os.Stderr)
+	chdir(t, w.loc)
+	cmd := newRootCmd(depsFor(t), os.Stdout, os.Stderr)
 	var errBuf strings.Builder
 	cmd.SetErr(&errBuf)
 	cmd.SetContext(context.Background())
 
-	open := func(ref string) (*openedStore, error) { errBuf.Reset(); return testDeps.openStoreReadOnly(cmd, ref) }
+	open := func(ref string) (*openedStore, error) { errBuf.Reset(); return depsFor(t).openStoreReadOnly(cmd, ref) }
 
 	got, err := open("default@" + w.other)
 	if err != nil || got == nil {
@@ -240,8 +246,8 @@ func TestOpenStoreReadOnly(t *testing.T) {
 	}
 
 	// Schema problems: an older and a newer database are refused by the open and skipped here.
-	orig := testDeps.openStore
-	t.Cleanup(func() { testDeps.openStore = orig })
+	orig := depsFor(t).openStore
+	t.Cleanup(func() { depsFor(t).openStore = orig })
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -251,7 +257,7 @@ func TestOpenStoreReadOnly(t *testing.T) {
 		{"newer schema", errs.New(errs.Conflict, "test", "database x is at schema version 9; use a newer kb"), "use a newer kb"},
 	} {
 		errBuf.Reset()
-		testDeps.openStore = func(context.Context, string, bool) (store.Store, error) { return nil, tc.err }
+		depsFor(t).openStore = func(context.Context, string, bool) (store.Store, error) { return nil, tc.err }
 		s, err := open("default@" + w.other)
 		if err != nil || s != nil || !strings.Contains(errBuf.String(), tc.want) {
 			t.Errorf("%s: %v %v stderr %q", tc.name, s, err, errBuf.String())
@@ -260,7 +266,7 @@ func TestOpenStoreReadOnly(t *testing.T) {
 			t.Errorf("a newer schema got the migrate hint: %q", errBuf.String())
 		}
 	}
-	testDeps.openStore = func(context.Context, string, bool) (store.Store, error) {
+	depsFor(t).openStore = func(context.Context, string, bool) (store.Store, error) {
 		return nil, errs.New(errs.Internal, "test", "boom")
 	}
 	if _, err := open("default@" + w.other); err == nil {
@@ -271,8 +277,9 @@ func TestOpenStoreReadOnly(t *testing.T) {
 // TestStoresWithAliasListsItsLocation: a command that needs no store (kb stores) given an alias
 // runs in the alias target's location, not the current one.
 func TestStoresWithAliasListsItsLocation(t *testing.T) {
+	t.Parallel()
 	w := newRefWorld(t)
-	t.Chdir(w.loc)
+	chdir(t, w.loc)
 	for _, tc := range []struct{ ref, want string }{{"al", w.other}, {"adr", w.loc}} {
 		out, stderr, code := run(t, "--store", tc.ref, "stores", "--json")
 		var doc struct {

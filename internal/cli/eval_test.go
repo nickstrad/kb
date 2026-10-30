@@ -18,6 +18,7 @@ import (
 // TestEvalWiring: a judged fts search is replayed and scored; --mode, -k, --caller and --since
 // reach the service; the human form has the PLAN headline; eval never writes the log.
 func TestEvalWiring(t *testing.T) {
+	t.Parallel()
 	root := useRoot(t, newExplainRepo(t))
 	id := searchID(t, "tmux logout", "--caller", "claude")
 	if _, stderr, exit := runKB(t, []string{"feedback", id, "1", "--useful"}); exit != 0 {
@@ -72,6 +73,7 @@ func TestEvalWiring(t *testing.T) {
 // TestEvalErrors: bad flags are usage errors before anything is opened; a missing index is
 // NotFound. All exit 1.
 func TestEvalErrors(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -102,6 +104,7 @@ func TestEvalErrors(t *testing.T) {
 // counted as other stores' gold and never scored against this index; kb eval replays this store
 // only.
 func TestEvalCountsOtherStoreGold(t *testing.T) {
+	t.Parallel()
 	newFanOutWorld(t)
 	stdout, stderr, code := run(t, "search", "zebracorn", "--stores", "notes", "--json")
 	if code != 0 {
@@ -145,6 +148,7 @@ func TestEvalCountsOtherStoreGold(t *testing.T) {
 
 // TestRenderEvalLines: which lines the human report has for which report shape.
 func TestRenderEvalLines(t *testing.T) {
+	t.Parallel()
 	est := &eval.Estimate{Mean: 0.5, Lo: 0.25, Hi: 0.75}
 	scored := eval.Variant{Queries: 2, HitAtK: est, MRR: est, NDCG: est}
 	one := eval.Variant{Queries: 1, HitAtK: est, MRR: est, NDCG: est}
@@ -188,6 +192,7 @@ func TestRenderEvalLines(t *testing.T) {
 // TestRenderEvalPerQuery: the per-query columns are the first gold rank, "-" for gold missed in
 // the top k and "." for a variant with no gold.
 func TestRenderEvalPerQuery(t *testing.T) {
+	t.Parallel()
 	rep := eval.Report{K: 8, PerQuery: []eval.Result{{
 		Text: "tmux logout", SearchIDs: []int64{1, 2},
 		Chunk: &eval.Score{FirstRank: 3}, Entry: &eval.Score{}, Opens: nil,
@@ -201,14 +206,14 @@ func TestRenderEvalPerQuery(t *testing.T) {
 	}
 }
 
-// countingEmbedders makes testDeps.embedder build fake embedders and counts the builds; down makes
+// countingEmbedders makes depsFor(t).embedder build fake embedders and counts the builds; down makes
 // every Embed call fail as Unavailable (a model that cannot load).
 func countingEmbedders(t *testing.T, down bool) *int {
 	t.Helper()
 	n := 0
-	orig := testDeps.embedder
-	t.Cleanup(func() { testDeps.embedder = orig })
-	testDeps.embedder = func(e config.Embed) (embed.Embedder, error) {
+	orig := depsFor(t).embedder
+	t.Cleanup(func() { depsFor(t).embedder = orig })
+	depsFor(t).embedder = func(e config.Embed) (embed.Embedder, error) {
 		n++
 		if down {
 			return unavailableEmbedder{fake.New(e.Model, 768)}, nil
@@ -227,6 +232,7 @@ func (unavailableEmbedder) Embed(context.Context, []string) ([][]float32, error)
 // TestEvalLoadsModelOnlyToReplay: the embedder is built only when some query has gold of this
 // store to replay; an empty or unjudged log needs none (the slow part of kb eval).
 func TestEvalLoadsModelOnlyToReplay(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	builds := countingEmbedders(t, false)
@@ -244,6 +250,7 @@ func TestEvalLoadsModelOnlyToReplay(t *testing.T) {
 // TestEvalFallbackExits2: with the model unavailable a hybrid replay falls back to FTS; the
 // report is still printed, a warning says how many replays fell back, and the exit is 2.
 func TestEvalFallbackExits2(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	countingEmbedders(t, false)
@@ -259,6 +266,7 @@ func TestEvalFallbackExits2(t *testing.T) {
 // TestEvalOpenFailures: each failure before the replay is the command's error, never a report.
 // An older or newer index is in TestCommandsOnIndexStates.
 func TestEvalOpenFailures(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		setup func(t *testing.T, root string)
@@ -288,6 +296,7 @@ func TestEvalOpenFailures(t *testing.T) {
 // TestEvalLoadsSynonyms: a store with synonyms.txt is evaluated with them, as search does: the
 // settings hash (and so a baseline) differs from the same run without the file.
 func TestEvalLoadsSynonyms(t *testing.T) {
+	t.Parallel()
 	root := useRoot(t, newExplainRepo(t))
 	searchID(t, "tmux logout")
 	hash := func() string {

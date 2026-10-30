@@ -84,10 +84,14 @@ func reindexRun(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, all bool,
 	if err != nil {
 		return reindex.Summary{}, err
 	}
+	var idx store.Index = st
+	if debugFlag(cmd) {
+		idx = &progressIndex{Index: st, w: stderr}
+	}
 	opts := reindex.Options{
 		Root:      root,
 		Sources:   cfg.Sources,
-		Store:     st,
+		Store:     idx,
 		Embedder:  embedder,
 		BatchSize: cfg.Embed.Batch,
 		Stdout:    stdout,
@@ -160,4 +164,22 @@ func ensureEmbedMetaForReindex(ctx context.Context, st store.Index, embedder emb
 // usable. Ping is optional, so it is not part of embed.Embedder.
 type pinger interface {
 	Ping(ctx context.Context) error
+}
+
+// progressIndex prints "reindex: entry N" on stderr (--debug) after each entry is written, one
+// line per entry, so a caller (the adversarial harness) can wait for a point inside the run
+// instead of guessing a delay.
+type progressIndex struct {
+	store.Index
+	w io.Writer
+	n int
+}
+
+func (p *progressIndex) ReplaceEntry(ctx context.Context, e store.EntryInput, chunks []store.ChunkInput) (int64, error) {
+	id, err := p.Index.ReplaceEntry(ctx, e, chunks)
+	if err == nil {
+		p.n++
+		fmt.Fprintf(p.w, "reindex: entry %d\n", p.n)
+	}
+	return id, err
 }

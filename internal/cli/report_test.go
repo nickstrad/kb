@@ -21,6 +21,7 @@ import (
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/store"
 	"github.com/nickstrad/kb/internal/store/sqlite"
+	"github.com/nickstrad/kb/internal/store/sqlite/sqlitetest"
 )
 
 var incidentIDRe = regexp.MustCompile(`internal error \(id ([0-9a-f]{8})\)`)
@@ -49,6 +50,7 @@ func readIncidents(t *testing.T, path string) []incident {
 // TestReportDecision is the branch table for report: one row per outcome (silent, interrupted,
 // well-formed by kind, bug).
 func TestReportDecision(t *testing.T) {
+	t.Parallel()
 	canceledInternal := errs.Wrap(fmt.Errorf("query: %w", context.Canceled), errs.Internal, "sqlite.FTS", "full-text search failed")
 	for _, tc := range []struct {
 		name       string
@@ -73,7 +75,7 @@ func TestReportDecision(t *testing.T) {
 				t.Fatal(err)
 			}
 			var stderr bytes.Buffer
-			code := report(&stderr, testDeps, nil, []string{"x"}, tc.err)
+			code := report(&stderr, depsFor(t), nil, []string{"x"}, tc.err)
 			if code != tc.wantCode {
 				t.Fatalf("code = %d, want %d", code, tc.wantCode)
 			}
@@ -102,11 +104,12 @@ func TestReportDecision(t *testing.T) {
 // TestInternalErrorFromStoreExits3: a store failure nobody classified reaches the top as a bug:
 // exit 3, an incident in <root>/.kb/kb.log, and --debug prints the chain.
 func TestInternalErrorFromStoreExits3(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
-	orig := testDeps.openStore
-	t.Cleanup(func() { testDeps.openStore = orig })
-	testDeps.openStore = func(context.Context, string, bool) (store.Store, error) {
+	orig := depsFor(t).openStore
+	t.Cleanup(func() { depsFor(t).openStore = orig })
+	depsFor(t).openStore = func(context.Context, string, bool) (store.Store, error) {
 		return nil, errs.Wrap(errors.New("disk I/O error"), errs.Internal, "sqlite.Open", "could not open the database")
 	}
 	_, stderr, code := run(t, "reindex", "--all", "--debug")
@@ -124,6 +127,7 @@ func TestInternalErrorFromStoreExits3(t *testing.T) {
 // TestPanicExits3: the single recover turns any panic, an assertion or a runtime one, into an
 // incident and exit 3 (never Go's exit 2).
 func TestPanicExits3(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		value    any
@@ -135,13 +139,14 @@ func TestPanicExits3(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := newTempRoot(t)
 			useNoneModel(t, root)
-			orig := testDeps.openStore
-			t.Cleanup(func() { testDeps.openStore = orig })
-			testDeps.openStore = func(context.Context, string, bool) (store.Store, error) { panic(tc.value) }
-			_, stderr, code := run(t, "reindex", "--all")
+			orig := depsFor(t).openStore
+			t.Cleanup(func() { depsFor(t).openStore = orig })
+			depsFor(t).openStore = func(context.Context, string, bool) (store.Store, error) { panic(tc.value) }
+			_, stderr, code, err := runErr(t, "reindex", "--all")
 			if code != ExitInternal || !incidentIDRe.MatchString(stderr) || strings.Contains(stderr, "goroutine") {
 				t.Fatalf("exit %d, stderr %q; want 3, an incident id and no stack", code, stderr)
 			}
+			wantKind(t, err, errs.Internal) // executeErr reports the panic as an Internal error
 			incidents := readIncidents(t, filepath.Join(root, ".kb", "kb.log"))
 			if len(incidents) != 1 {
 				t.Fatalf("%d incidents, want 1", len(incidents))
@@ -156,6 +161,7 @@ func TestPanicExits3(t *testing.T) {
 // TestCobraErrorsAreUsage: errors cobra produces before a command runs are usage errors (exit 1)
 // prefixed with the command, not bugs.
 func TestCobraErrorsAreUsage(t *testing.T) {
+	t.Parallel()
 	newTempRoot(t)
 	for _, tc := range []struct {
 		args []string
@@ -175,6 +181,7 @@ func TestCobraErrorsAreUsage(t *testing.T) {
 // TestAppendTrimmed: the log is cut back to the last max bytes at a line boundary once it grows
 // past max, and left alone at or below it.
 func TestAppendTrimmed(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "sub", "kb.log")
 	for i := 0; i < 5; i++ {
 		if err := appendTrimmed(path, []byte(fmt.Sprintf("line%d\n", i)), 18); err != nil {
@@ -239,6 +246,7 @@ func TestAppendTrimmed(t *testing.T) {
 
 // TestExitCode pins the CLI contract.
 func TestExitCode(t *testing.T) {
+	t.Parallel()
 	want := map[errs.Kind]int{errs.Usage: 1, errs.NotFound: 1, errs.Conflict: 1, errs.Interrupted: 1, errs.Unavailable: 2, errs.Internal: 3}
 	for k, code := range want {
 		if got := exitCode(k); got != code {
@@ -250,17 +258,18 @@ func TestExitCode(t *testing.T) {
 // TestIncidentWithoutStoreGoesToCacheDir: with no <root>/.kb the incident goes to the user cache
 // dir, and kb never creates a store directory just to log.
 func TestIncidentWithoutStoreGoesToCacheDir(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir()) // a directory that is not a store
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(root)
+	chdir(t, root)
 	cache := t.TempDir()
-	orig := testDeps.userCacheDir
-	t.Cleanup(func() { testDeps.userCacheDir = orig })
-	testDeps.userCacheDir = func() (string, error) { return cache, nil }
+	orig := depsFor(t).userCacheDir
+	t.Cleanup(func() { depsFor(t).userCacheDir = orig })
+	depsFor(t).userCacheDir = func() (string, error) { return cache, nil }
 	var stderr bytes.Buffer
-	if code := report(&stderr, testDeps, nil, nil, errors.New("bug")); code != ExitInternal {
+	if code := report(&stderr, depsFor(t), nil, nil, errors.New("bug")); code != ExitInternal {
 		t.Fatalf("code = %d", code)
 	}
 	if n := len(readIncidents(t, filepath.Join(cache, "kb", "kb.log"))); n != 1 {
@@ -269,9 +278,9 @@ func TestIncidentWithoutStoreGoesToCacheDir(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".kb")); !os.IsNotExist(err) {
 		t.Errorf("report created %s/.kb", root)
 	}
-	testDeps.userCacheDir = func() (string, error) { return "", errors.New("no home") }
+	depsFor(t).userCacheDir = func() (string, error) { return "", errors.New("no home") }
 	stderr.Reset()
-	if code := report(&stderr, testDeps, nil, nil, errors.New("bug")); code != ExitInternal || !strings.Contains(stderr.String(), "unavailable (no home)") {
+	if code := report(&stderr, depsFor(t), nil, nil, errors.New("bug")); code != ExitInternal || !strings.Contains(stderr.String(), "unavailable (no home)") {
 		t.Errorf("unwritable log: code %d stderr %q", code, stderr.String())
 	}
 }
@@ -280,18 +289,19 @@ func TestIncidentWithoutStoreGoesToCacheDir(t *testing.T) {
 // line; with no command (a panic before cobra picked one) the prefix is plain "kb"; and an
 // incident log that cannot be written still gives the user an id.
 func TestReportPanicDebugAndNoCmd(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
-	orig := testDeps.openStore
-	t.Cleanup(func() { testDeps.openStore = orig })
-	testDeps.openStore = func(context.Context, string, bool) (store.Store, error) { panic("boom") }
+	orig := depsFor(t).openStore
+	t.Cleanup(func() { depsFor(t).openStore = orig })
+	depsFor(t).openStore = func(context.Context, string, bool) (store.Store, error) { panic("boom") }
 	_, stderr, code := run(t, "reindex", "--all", "--debug")
 	if code != ExitInternal || !strings.Contains(stderr, "boom") || !strings.Contains(stderr, "goroutine") {
 		t.Fatalf("exit %d, stderr %q; want 3 with the panic value and stack", code, stderr)
 	}
 
 	var buf bytes.Buffer
-	if code := reportPanic(&buf, testDeps, nil, nil, "boom"); code != ExitInternal ||
+	if code := reportPanic(&buf, depsFor(t), nil, nil, "boom"); code != ExitInternal ||
 		!strings.HasPrefix(buf.String(), "kb: internal error (id ") || strings.Contains(buf.String(), "goroutine") {
 		t.Errorf("reportPanic(nil cmd) = %d, %q", code, buf.String())
 	}
@@ -300,11 +310,11 @@ func TestReportPanicDebugAndNoCmd(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(root, ".kb")); err != nil {
 		t.Fatal(err)
 	}
-	origCache := testDeps.userCacheDir
-	t.Cleanup(func() { testDeps.userCacheDir = origCache })
-	testDeps.userCacheDir = func() (string, error) { return "", errors.New("no cache dir") }
+	origCache := depsFor(t).userCacheDir
+	t.Cleanup(func() { depsFor(t).userCacheDir = origCache })
+	depsFor(t).userCacheDir = func() (string, error) { return "", errors.New("no cache dir") }
 	buf.Reset()
-	if code := report(&buf, testDeps, nil, nil, errors.New("bug")); code != ExitInternal ||
+	if code := report(&buf, depsFor(t), nil, nil, errors.New("bug")); code != ExitInternal ||
 		!incidentIDRe.MatchString(buf.String()) || !strings.Contains(buf.String(), "unavailable (no cache dir)") {
 		t.Errorf("report with no log = %d, %q", code, buf.String())
 	}
@@ -313,9 +323,9 @@ func TestReportPanicDebugAndNoCmd(t *testing.T) {
 	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	testDeps.userCacheDir = func() (string, error) { return blocker, nil }
+	depsFor(t).userCacheDir = func() (string, error) { return blocker, nil }
 	buf.Reset()
-	if code := report(&buf, testDeps, nil, nil, errors.New("bug")); code != ExitInternal ||
+	if code := report(&buf, depsFor(t), nil, nil, errors.New("bug")); code != ExitInternal ||
 		!incidentIDRe.MatchString(buf.String()) || !strings.Contains(buf.String(), "Details: unavailable (") {
 		t.Errorf("report with an unwritable log = %d, %q", code, buf.String())
 	}
@@ -324,6 +334,7 @@ func TestReportPanicDebugAndNoCmd(t *testing.T) {
 // TestAppendTrimmedBoundaryAtIncidentLogMax: at the real 1 MiB limit, a log that ends exactly at
 // max or below is left alone; one byte above is cut back to whole lines within max, newest kept.
 func TestAppendTrimmedBoundaryAtIncidentLogMax(t *testing.T) {
+	t.Parallel()
 	const lineLen = 100
 	mk := func(c byte, n int) []byte { return append(bytes.Repeat([]byte{c}, n-1), '\n') }
 	newest := mk('n', lineLen)
@@ -388,6 +399,7 @@ func TestAppendTrimmedBoundaryAtIncidentLogMax(t *testing.T) {
 // race with appends) never lose or tear a line: every line of the final log is one whole line and
 // without trimming (large max) all of them are there.
 func TestAppendTrimmedConcurrentWriters(t *testing.T) {
+	t.Parallel()
 	const writers, perWriter = 8, 50
 	path := filepath.Join(t.TempDir(), "kb.log")
 	var wg sync.WaitGroup
@@ -441,6 +453,7 @@ func TestAppendTrimmedConcurrentWriters(t *testing.T) {
 // TestAppendTrimmedTwoProcesses: separate processes (this test binary re-run as a writer) append
 // to one log at the same time; no line is lost.
 func TestAppendTrimmedTwoProcesses(t *testing.T) {
+	t.Parallel()
 	if p := os.Getenv("KB_TEST_LOG_WRITER"); p != "" {
 		id := os.Getenv("KB_TEST_LOG_ID")
 		for i := 0; i < 100; i++ {
@@ -487,6 +500,7 @@ func checkLines(t *testing.T, path string, want int) {
 // TestReplaceFileIsAtomicRename: the trim goes through a temp file and rename, so the log
 // path never holds a truncated file (the rename target is replaced whole).
 func TestReplaceFileIsAtomicRename(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "kb.log")
 	if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
@@ -514,24 +528,18 @@ func TestReplaceFileIsAtomicRename(t *testing.T) {
 // only plain tables; a full disk met inside a sqlite-vec insert is classified by the store's probe
 // (sqlite TestVecInsertDiskFullIsUsage).
 func TestDiskFullIsExit1(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	id := searchID(t, "widget")
-	orig := testDeps.openStore
-	t.Cleanup(func() { testDeps.openStore = orig })
-	testDeps.openStore = func(ctx context.Context, path string, readOnly bool) (store.Store, error) {
+	orig := depsFor(t).openStore
+	t.Cleanup(func() { depsFor(t).openStore = orig })
+	depsFor(t).openStore = func(ctx context.Context, path string, readOnly bool) (store.Store, error) {
 		st, err := sqlite.Open(ctx, path, sqlite.Options{ReadOnly: readOnly})
 		if err != nil || readOnly {
 			return st, err
 		}
-		st.DB().SetMaxOpenConns(1) // max_page_count is per connection
-		var pages int
-		if err := st.DB().QueryRow("PRAGMA page_count").Scan(&pages); err != nil {
-			return nil, err
-		}
-		if _, err := st.DB().Exec(fmt.Sprintf("PRAGMA max_page_count = %d", pages)); err != nil {
-			return nil, err
-		}
+		sqlitetest.LimitPages(t, st)
 		return st, nil
 	}
 	_, stderr, code := runKB(t, []string{"feedback", id, "1", "--useful", "--note", strings.Repeat("x", 256<<10)})
@@ -548,13 +556,14 @@ func TestDiskFullIsExit1(t *testing.T) {
 // an incident lands in the store the command ran on, chosen the way the command chose it, and
 // falls back to the user cache dir when no store with a .kb directory resolves.
 func TestIncidentLogPathDecision(t *testing.T) {
+	t.Parallel()
 	discovered := newTempRoot(t) // cwd; has .kb/config.toml
 	named := realTempDir(t)
 	writeFile(t, filepath.Join(named, ".kb", "config.toml"), "")
 	bare := filepath.Join(realTempDir(t), "no-kb-yet") // --root that names a store not created yet
-	home := testDeps.workspaceEnv().Home
+	home := depsFor(t).workspaceEnv().Home
 	globalKB := filepath.Join(home, ".local", "share", "kb", ".kb")
-	cache, err := testDeps.userCacheDir()
+	cache, err := depsFor(t).userCacheDir()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +588,7 @@ func TestIncidentLogPathDecision(t *testing.T) {
 		{name: "no command: discovery from cwd", cwd: discovered, noCmd: true, want: filepath.Join(discovered, ".kb", "kb.log")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Chdir(tc.cwd)
+			chdir(t, tc.cwd)
 			if tc.global {
 				if err := os.MkdirAll(globalKB, 0o755); err != nil {
 					t.Fatal(err)
@@ -588,12 +597,12 @@ func TestIncidentLogPathDecision(t *testing.T) {
 			}
 			var cmd *cobra.Command
 			if !tc.noCmd {
-				cmd = newRootCmd(testDeps, io.Discard, io.Discard)
+				cmd = newRootCmd(depsFor(t), io.Discard, io.Discard)
 				if err := cmd.ParseFlags(tc.args); err != nil {
 					t.Fatal(err)
 				}
 			}
-			got, err := incidentLogPath(testDeps, cmd)
+			got, err := incidentLogPath(depsFor(t), cmd)
 			if err != nil || got != tc.want {
 				t.Fatalf("incidentLogPath = %q, %v; want %q", got, err, tc.want)
 			}
@@ -614,6 +623,7 @@ func (panicFTSStore) FTS(context.Context, store.FTSQuery) (store.FTSResult, erro
 // TestSearchWorkerPanicExitsInternal: kb search runs each store's search in a goroutine; a panic
 // there still exits 3 with an incident, and --debug shows the worker's own stack.
 func TestSearchWorkerPanicExitsInternal(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	src := filepath.Join(t.TempDir(), "a.md")
@@ -621,9 +631,9 @@ func TestSearchWorkerPanicExitsInternal(t *testing.T) {
 	if _, stderr, code := run(t, "add", src); code != 0 {
 		t.Fatal(stderr)
 	}
-	orig := testDeps.openStore
-	t.Cleanup(func() { testDeps.openStore = orig })
-	testDeps.openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
+	orig := depsFor(t).openStore
+	t.Cleanup(func() { depsFor(t).openStore = orig })
+	depsFor(t).openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
 		st, err := orig(ctx, path, ro)
 		return panicFTSStore{st}, err
 	}

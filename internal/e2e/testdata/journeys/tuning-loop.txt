@@ -54,7 +54,8 @@ Tags match case-insensitively: --tag Docker finds an entry tagged docker.
   Detach tmux and the session survives logout. Run the container image of the shell tools inside it.
   search_id=2
 
-Judge a few searches. Each query has a gold chunk marked useful.
+Judge a few searches. Each query has one hit marked useful, always the one at rank 1 (for "nightly backup" that is the
+entry-level chunk, for "container image" the intro chunk that holds the phrase).
 
   $ kb feedback --last 1 --useful --caller claude
   recorded: search 2 rank 1 useful=1 (newest search for claude, (time): "container image")
@@ -216,6 +217,40 @@ Try a setting against the baseline. Nothing changes order here, so every query t
     hit@8        1.000    1.000   +0.000  [+0.000, +0.000]  0/0/6     1.000
   ...
   ~ small sample: 6 paired queries < eval.min_judged 30; .*
+
+What the exact list and the phrase tier are worth, on this log (the README's examples).
+
+  $ kb eval --mode fts --set search.exact_list=false --compare
+  ~ compare · baseline "default" \(.*\)
+  ...
+  ~ small sample: 6 paired queries < eval.min_judged 30; .*
+
+  $ kb eval --mode fts --set search.phrase_boost=false --compare
+  ~ compare · baseline "default" \(.*\)
+  ...
+  ~ small sample: 6 paired queries < eval.min_judged 30; .*
+
+Sweep a grid of settings. Six judged queries are under eval.min_judged, so the sweep refuses;
+--force runs it anyway (the answer is only as good as the sample): 2 settings, 2 replays, 6 judged,
+and a warning on stderr.
+
+  $ kb eval --mode fts --sweep search.rrf_k=20,60
+  [stderr] kb eval: need ≥30 judged queries (have 6); use --force
+  [exit 1]
+
+  $ kb eval --mode fts --sweep search.rrf_k=20,60 --force --json
+  {
+    "mode": "fts",
+  ...
+    "settings": 2,
+    "replays": 2,
+    "judged": 6,
+    "min_judged": 30,
+  ...
+    "overfit": false,
+  ...
+  }
+  [stderr] warning: forced below eval.min_judged: 6 judged queries < 30; the best setting is mostly noise
 
 Adopt a setting by writing it to the store's config, then search once more: the log now holds
 two settings, and kb stats settings lists one row for each.

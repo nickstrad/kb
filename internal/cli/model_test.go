@@ -12,16 +12,16 @@ import (
 	"github.com/nickstrad/kb/internal/errs"
 )
 
-// stubPull replaces testDeps.pullModel for one test with a stub that records each pull in calls and, when
+// stubPull replaces depsFor(t).pullModel for one test with a stub that records each pull in calls and, when
 // fail is nil, writes the files that make the model count as cached.
 func stubPull(t *testing.T, fail error) (cache string, calls *[]string) {
 	t.Helper()
 	cache = t.TempDir()
-	origDir, origPull := testDeps.modelCacheDir, testDeps.pullModel
-	t.Cleanup(func() { testDeps.modelCacheDir, testDeps.pullModel = origDir, origPull })
+	origDir, origPull := depsFor(t).modelCacheDir, depsFor(t).pullModel
+	t.Cleanup(func() { depsFor(t).modelCacheDir, depsFor(t).pullModel = origDir, origPull })
 	calls = new([]string)
-	testDeps.modelCacheDir = func() (string, error) { return cache, nil }
-	testDeps.pullModel = func(_ context.Context, spec local.Spec, dir string) error {
+	depsFor(t).modelCacheDir = func() (string, error) { return cache, nil }
+	depsFor(t).pullModel = func(_ context.Context, spec local.Spec, dir string) error {
 		*calls = append(*calls, spec.ID)
 		if fail != nil {
 			return fail
@@ -41,6 +41,7 @@ func stubPull(t *testing.T, fail error) (cache string, calls *[]string) {
 }
 
 func TestModelPull(t *testing.T) {
+	t.Parallel()
 	_, calls := stubPull(t, nil)
 
 	out, errOut, code := run(t, "model", "pull")
@@ -82,6 +83,7 @@ func useModel768(t *testing.T, root string) {
 // TestModelPullFollowsConfig: kb model pull downloads the configured model, refuses "none", and
 // outside any store pulls the default.
 func TestModelPullFollowsConfig(t *testing.T) {
+	t.Parallel()
 	t.Run("none has nothing to pull", func(t *testing.T) {
 		_, calls := stubPull(t, nil)
 		useNoneModel(t, newTempRoot(t))
@@ -92,7 +94,7 @@ func TestModelPullFollowsConfig(t *testing.T) {
 	})
 	t.Run("no store: the default model", func(t *testing.T) {
 		_, calls := stubPull(t, nil)
-		t.Chdir(realTempDir(t))
+		chdir(t, realTempDir(t))
 		if _, _, code := run(t, "model", "pull"); code != 0 || len(*calls) != 1 || (*calls)[0] != local.DefaultModel {
 			t.Fatalf("exit %d, pulls %v, want one pull of %s", code, *calls, local.DefaultModel)
 		}
@@ -100,6 +102,7 @@ func TestModelPullFollowsConfig(t *testing.T) {
 }
 
 func TestModelPullFailureIsUnavailable(t *testing.T) {
+	t.Parallel()
 	stubPull(t, errors.New("download model x: no network"))
 	_, errOut, code := run(t, "model", "pull")
 	if code != ExitEmbedder || !strings.Contains(errOut, "kb model pull: download model x: no network") {
@@ -110,6 +113,7 @@ func TestModelPullFailureIsUnavailable(t *testing.T) {
 // TestOnlyIndexingCommandsDownload: reindex and add pull a missing model (with a note on stderr);
 // search and doctor never do, and say how to get it.
 func TestOnlyIndexingCommandsDownload(t *testing.T) {
+	t.Parallel()
 	t.Run("reindex pulls", func(t *testing.T) {
 		_, calls := stubPull(t, nil)
 		useModel768(t, newTempRoot(t))
@@ -149,6 +153,7 @@ func TestOnlyIndexingCommandsDownload(t *testing.T) {
 // TestRootHelpNamesNoEnvEmbedders guards the help text against the removed embedder env vars and
 // services.
 func TestRootHelpNamesNoEnvEmbedders(t *testing.T) {
+	t.Parallel()
 	out, _, code := run(t, "--help")
 	if code != 0 {
 		t.Fatalf("help exit %d", code)
@@ -167,9 +172,10 @@ func TestRootHelpNamesNoEnvEmbedders(t *testing.T) {
 }
 
 func TestModelCommandsCacheDirFailure(t *testing.T) {
-	origDir := testDeps.modelCacheDir
-	t.Cleanup(func() { testDeps.modelCacheDir = origDir })
-	testDeps.modelCacheDir = func() (string, error) { return "", errs.New(errs.Usage, "test", "no home") }
+	t.Parallel()
+	origDir := depsFor(t).modelCacheDir
+	t.Cleanup(func() { depsFor(t).modelCacheDir = origDir })
+	depsFor(t).modelCacheDir = func() (string, error) { return "", errs.New(errs.Usage, "test", "no home") }
 	for _, sub := range []string{"pull", "list"} {
 		if _, errOut, code := run(t, "model", sub); code != ExitUsage || !strings.Contains(errOut, "kb model "+sub+": no home") {
 			t.Errorf("model %s with no cache dir: %d %q", sub, code, errOut)

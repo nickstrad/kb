@@ -10,6 +10,7 @@ import (
 // TestRmReresolvesLinks (Q105): removing the entry a [[wikilink]] resolved to re-points the link at
 // the next match (an alias here) instead of leaving it dangling until the next reindex.
 func TestRmReresolvesLinks(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "src.md"), validFrontMatter("Src", "Links to note.")+"\nSee [[note]].\n")
@@ -47,11 +48,12 @@ func TestRmReresolvesLinks(t *testing.T) {
 // TestIndexLastReviewedUsesInjectedClock (Q96): the "Last reviewed" date is the clock's, so a
 // pinned clock pins index.md.
 func TestIndexLastReviewedUsesInjectedClock(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "a.md"), validFrontMatter("A", "An entry."))
-	orig := testDeps.now
-	t.Cleanup(func() { testDeps.now = orig })
-	testDeps.now = func() time.Time { return time.Date(2031, 2, 3, 23, 0, 0, 0, time.UTC) }
+	orig := depsFor(t).now
+	t.Cleanup(func() { depsFor(t).now = orig })
+	depsFor(t).now = func() time.Time { return time.Date(2031, 2, 3, 23, 0, 0, 0, time.UTC) }
 	if out, errOut, code := run(t, "index"); code != 0 {
 		t.Fatalf("index: %d %q %q", code, out, errOut)
 	}

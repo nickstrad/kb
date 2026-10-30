@@ -2,10 +2,10 @@ package cli
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/store/sqlite/sqlitetest"
 	"github.com/nickstrad/kb/internal/workspace"
 	"github.com/spf13/cobra"
 	"os"
@@ -51,7 +51,7 @@ func newFanOutWorld(t *testing.T) fanOutWorld {
 		}
 	}
 	installIndex(t, filepath.Join(w.loc, ".kb", "stores", "old", "kb.sqlite"), sqlite.SchemaVersion()-1)
-	t.Chdir(w.loc)
+	chdir(t, w.loc)
 	return w
 }
 
@@ -61,6 +61,7 @@ func newFanOutWorld(t *testing.T) fanOutWorld {
 // warning each, the search exits 0 with the good stores' hits tagged, and only the primary logs,
 // with each hit's canonical store.
 func TestSearchFanOut(t *testing.T) {
+	t.Parallel()
 	w := newFanOutWorld(t)
 	adrDB := filepath.Join(w.loc, ".kb", "stores", "adr", "kb.sqlite")
 	adrBefore := readFileBytes(t, adrDB)
@@ -89,7 +90,7 @@ func TestSearchFanOut(t *testing.T) {
 		t.Errorf("the ensemble hit appears more than once:\n%s", stdout)
 	}
 
-	db := openRaw(t, testDBPath(w.loc))
+	db := testDBPath(w.loc)
 	rows := queryStrings(t, db, "SELECT coalesce(store, 'NULL') || ' ' || entry_path FROM search_results ORDER BY rank")
 	if !slices.Contains(rows, "NULL data/wal.md") || !slices.Contains(rows, "default@"+w.other+" data/far.md") {
 		t.Errorf("search_results = %v", rows)
@@ -150,6 +151,7 @@ func TestSearchFanOut(t *testing.T) {
 // TestSearchStoresDefaultAndOff: [search] stores is the default fan-out; --stores ” turns it off;
 // all means every store here (the primary and the duplicates drop out).
 func TestSearchStoresDefaultAndOff(t *testing.T) {
+	t.Parallel()
 	w := newFanOutWorld(t)
 	writeConfig(t, w.loc, "[search]\nstores = [\"notes\"]\n")
 	if out, stderr, _ := run(t, "search", "zebracorn"); !strings.Contains(out, "notes:data/far.md") {
@@ -167,6 +169,7 @@ func TestSearchStoresDefaultAndOff(t *testing.T) {
 // TestSearchStoresLimit: more than search.MaxExtraStores distinct stores is a Usage error before
 // any is opened; exactly the limit is fine. Duplicates do not count.
 func TestSearchStoresLimit(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	var names []string
@@ -194,6 +197,7 @@ func TestSearchStoresLimit(t *testing.T) {
 }
 
 func TestFanOutRefs(t *testing.T) {
+	t.Parallel()
 	cfg := []string{"notes"}
 	for _, tc := range []struct {
 		set  bool
@@ -214,6 +218,7 @@ func TestFanOutRefs(t *testing.T) {
 
 // TestEmbedderSet: one embedder per distinct [embed] config; models lists the distinct real ones.
 func TestEmbedderSet(t *testing.T) {
+	t.Parallel()
 	built := 0
 	build := func(m string) func() (embed.Embedder, error) {
 		return func() (embed.Embedder, error) { built++; return fake.New(m, 8), nil }
@@ -253,40 +258,19 @@ func readFileBytes(t *testing.T, path string) []byte {
 	return b
 }
 
-func openRaw(t *testing.T, path string) *sql.DB {
+// queryStrings runs a one-column query against the store database at path (read-only).
+func queryStrings(t *testing.T, path, q string) []string {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), path, sqlite.Options{ReadOnly: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return st.DB()
-}
-
-func queryStrings(t *testing.T, db *sql.DB, q string) []string {
-	t.Helper()
-	rows, err := db.Query(q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var s string
-		if err := rows.Scan(&s); err != nil {
-			t.Fatal(err)
-		}
-		out = append(out, s)
-	}
-	return out
+	return sqlitetest.Strings(t, path, q)
 }
 
 // TestSearchManyModelsWarns: a search whose stores load more than two distinct models warns once
 // and still answers (design N14).
 func TestSearchManyModelsWarns(t *testing.T) {
-	orig := testDeps.embedder
-	t.Cleanup(func() { testDeps.embedder = orig })
-	testDeps.embedder = func(e config.Embed) (embed.Embedder, error) { return fake.New(e.Model, 8), nil }
+	t.Parallel()
+	orig := depsFor(t).embedder
+	t.Cleanup(func() { depsFor(t).embedder = orig })
+	depsFor(t).embedder = func(e config.Embed) (embed.Embedder, error) { return fake.New(e.Model, 8), nil }
 	var roots []string
 	for _, m := range []string{"BAAI/bge-small-en-v1.5", "BAAI/bge-base-en-v1.5", "nomic-ai/nomic-embed-text-v1.5"} {
 		root := realTempDir(t)
@@ -299,7 +283,7 @@ func TestSearchManyModelsWarns(t *testing.T) {
 		}
 		roots = append(roots, root)
 	}
-	t.Chdir(roots[0])
+	chdir(t, roots[0])
 	_, stderr, code := run(t, "search", "alpha", "--stores", roots[1]+","+roots[2])
 	if code != 0 || strings.Count(stderr, "loads 3 embedding models") != 1 {
 		t.Errorf("exit %d, stderr %q; want one 3-model warning", code, stderr)
@@ -319,6 +303,7 @@ func TestSearchManyModelsWarns(t *testing.T) {
 // TestExplainDoesNotFanOut: explain covers the primary store only, even with [search] stores set,
 // and says so in its help.
 func TestExplainDoesNotFanOut(t *testing.T) {
+	t.Parallel()
 	w := newFanOutWorld(t)
 	writeConfig(t, w.loc, "[search]\nstores = [\"notes\"]\n")
 	out, stderr, code := run(t, "explain", "zebracorn", "--mode", "fts")
@@ -333,6 +318,7 @@ func TestExplainDoesNotFanOut(t *testing.T) {
 // TestShowTargetDecisions is showTarget's decision table: which args are store-qualified
 // (REF:path), which stay plain paths, and which are errors.
 func TestShowTargetDecisions(t *testing.T) {
+	t.Parallel()
 	w := newFanOutWorld(t)
 	// kb add refuses a colon in a name, but a file written by hand is still an entry.
 	writeFile(t, filepath.Join(w.loc, "data", "nope:odd.md"), validFrontMatter("Odd", "A colon in the name."))
@@ -366,6 +352,7 @@ func TestShowTargetDecisions(t *testing.T) {
 // config is broken is skipped with one warning naming it (the search goes on); kb show of that
 // store's REF:path fails on the same config.
 func TestFanOutSkipAndKeepDecisions(t *testing.T) {
+	t.Parallel()
 	w := newFanOutWorld(t)
 	out, stderr, code := run(t, "search", "zebracorn", "--stores", "all,notes")
 	if code != 0 || !strings.Contains(out, "notes:data/far.md") {
@@ -385,10 +372,11 @@ func TestFanOutSkipAndKeepDecisions(t *testing.T) {
 // (DEFAULTS 175/206); an Internal one is also an incident named in the warning (a kb bug is not a
 // store problem), and --debug adds the chain.
 func TestSkipExtraDecisions(t *testing.T) {
+	t.Parallel()
 	cache := t.TempDir()
-	orig := testDeps.userCacheDir
-	t.Cleanup(func() { testDeps.userCacheDir = orig })
-	testDeps.userCacheDir = func() (string, error) { return cache, nil }
+	orig := depsFor(t).userCacheDir
+	t.Cleanup(func() { depsFor(t).userCacheDir = orig })
+	depsFor(t).userCacheDir = func() (string, error) { return cache, nil }
 	for _, tc := range []struct {
 		name     string
 		err      error
@@ -406,7 +394,7 @@ func TestSkipExtraDecisions(t *testing.T) {
 			cmd.Flags().Bool("debug", tc.debug, "")
 			var buf strings.Builder
 			cmd.SetErr(&buf)
-			testDeps.skipExtra(cmd, "adr", tc.err)
+			depsFor(t).skipExtra(cmd, "adr", tc.err)
 			got := buf.String()
 			if !strings.HasPrefix(got, "warning: skipping store adr: ") || strings.Count(got, "warning: skipping store") != 1 {
 				t.Fatalf("stderr %q: want one skip warning naming adr", got)
@@ -432,13 +420,14 @@ func TestSkipExtraDecisions(t *testing.T) {
 // TestFanOutHardErrors: a store list that cannot be read, a malformed ref and a hard open failure of
 // an extra store (not a schema Conflict) fail the search; none is skipped.
 func TestFanOutHardErrors(t *testing.T) {
+	t.Parallel()
 	w := newFanOutWorld(t)
 	if _, stderr, code := run(t, "search", "zebracorn", "--stores", "Bad"); code != 1 || !strings.Contains(stderr, "Bad") {
 		t.Errorf("malformed ref = %d %q", code, stderr)
 	}
-	orig := testDeps.openStore
-	t.Cleanup(func() { testDeps.openStore = orig })
-	testDeps.openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
+	orig := depsFor(t).openStore
+	t.Cleanup(func() { depsFor(t).openStore = orig })
+	depsFor(t).openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
 		if strings.Contains(path, filepath.Join("stores", "adr")) {
 			return nil, errs.New(errs.Internal, "test", "adr exploded")
 		}
@@ -447,7 +436,7 @@ func TestFanOutHardErrors(t *testing.T) {
 	if _, stderr, code := run(t, "search", "zebracorn", "--stores", "adr"); code != 3 || strings.Contains(stderr, "skipping store adr") {
 		t.Errorf("hard open error of an extra store = %d %q, want exit 3 and no skip", code, stderr)
 	}
-	testDeps.openStore = orig
+	depsFor(t).openStore = orig
 
 	// expandAll: the stores directory cannot be listed.
 	loc, err := workspace.ResolveLocation(w.loc, false, workspace.Env{})

@@ -1,0 +1,163 @@
+prior: let past verdicts move a page up, and measure it before turning it on (PLAN J17; 6.2-6.4).
+
+The feedback prior is off by default. Two judged queries are the whole evidence here: "runbook"
+found the release runbook, and a later query, "deploy", wanted the same page but met the release
+notes first. kb eval replays each query as of its own time and without its own feedback, so the
+runbook's first verdict can lift the second query; it can never lift the first one.
+
+  $ kb init --model fake:8
+  created location $WORK/proj/.kb
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ kb add $WORK/notes/runbook.md
+  added data/runbook.md (2 chunks)
+  $ kb add $WORK/notes/notes.md
+  added data/notes.md (2 chunks)
+  $ kb add $WORK/notes/backup.md
+  added data/backup.md (2 chunks)
+
+The synonyms file makes "deploy" and "release" the same word.
+
+  $ write .kb/stores/default/synonyms.txt @synonyms
+
+First query, then the verdict.
+
+  $ kb search runbook --mode fts --caller agent
+  search 1 · 2 hits
+  [1] data/runbook.md · updated 2026-02-01
+  Release runbook: How the release is rolled out.
+
+  [2] data/runbook.md › (intro) · updated 2026-02-01
+  Release runbook › (intro)
+  # Release runbook
+
+  Roll out each release in stages and watch the dashboards.
+  search_id=1
+  $ kb feedback --last 1 --useful --caller agent
+  recorded: search 1 rank 1 useful=1 (newest search for agent, (time): "runbook")
+
+Verdicts count only for searches after them, and the log keeps whole seconds: move the clock on
+between a verdict and the next search.
+
+  $ env KB_HARNESS_NOW=+5m
+  $ kb search deploy --mode fts --caller agent
+  search 2 · 4 hits
+  [1] data/notes.md · updated 2026-02-02
+  Release notes: What changed in each release.
+
+  [2] data/runbook.md · updated 2026-02-01
+  Release runbook: How the release is rolled out.
+
+  [3] data/notes.md › (intro) · updated 2026-02-02
+  Release notes › (intro)
+  # Release notes
+
+  Release notes list every release, its date and its release owner.
+
+  [4] data/runbook.md › (intro) · updated 2026-02-01
+  Release runbook › (intro)
+  # Release runbook
+
+  Roll out each release in stages and watch the dashboards.
+  search_id=2
+  $ kb feedback 2 2 --useful --caller agent
+  recorded: search 2 rank 2 useful=1
+  $ env KB_HARNESS_NOW=+10m
+
+Off by default: explain shows no prior line and the notes lead, and eval scores the log as it is
+(the runbook is rank 2 for "deploy", so MRR is 0.750).
+
+  $ kb explain deploy --mode fts
+  ~ explain "deploy" · mode fts · k 8 · settings [0-9a-f]{12}
+  ...
+  synonyms: deploy = release
+  lists: fts 4 rows · vec 0 rows · 4 candidates
+  ...
+  ~ #1  rrf [0-9.]+  data/notes.md  \[returned as hit #1\]
+  ...
+  ~ #2  rrf [0-9.]+  data/runbook.md  \[returned as hit #2\]
+  ...
+
+  $ kb eval --mode fts --save-baseline
+  ~ eval · mode fts · k 8 · settings [0-9a-f]{12}
+  searches: 2 logged · 2 useful · 0 --none · 0 not-useful only · 0 unjudged · 0 with opens
+  queries=2 hit@8=1.000 [1.000, 1.000] mrr=0.750 [0.500, 1.000] ndcg@8=0.815 [0.631, 1.000]
+  ...
+  ~ saved baseline "default" \(2 queries, settings [0-9a-f]{12}\) to \$WORK/proj/\.kb/stores/default/eval/default\.json
+
+Try the prior against that baseline (prior.min_judged=1 because the log is tiny).
+
+  $ kb eval --mode fts --set prior.enabled=true --set prior.min_judged=1 --compare
+  ~ compare · baseline "default" \(.*\)
+  ~         now \(mode fts · settings [0-9a-f]{12} · fake:8 · 3 entries\) · k 8
+  ...
+  chunk: 2 paired queries (0 only in the baseline, 0 only now)
+  ...
+    mrr          0.750    1.000   +0.250  [+0.000, +0.500]  1/0/1     1.000
+  ...
+  entry: 2 paired queries (0 only in the baseline, 0 only now)
+  ...
+  ~ small sample: 2 paired queries < eval.min_judged 30; .*
+  prior: active in 1/2 replays · query memory placed hits in 0 (each replay as of its search's time, without its own query's feedback)
+
+The first query could not use the prior (nothing was known before it), the second did: the
+runbook, rank 2 without the prior, is rank 1 with it (+0.250 MRR). Two queries are a demo, not
+evidence; the small-sample line says so.
+
+Query memory is the second switch the README names.
+
+  $ kb eval --mode fts --set prior.enabled=true --set prior.query_memory=true --set prior.min_judged=1 --compare
+  ~ compare · baseline "default" \(.*\)
+  ...
+  ~ small sample: 2 paired queries < eval.min_judged 30; .*
+  ~ prior: active in .* replays · query memory placed hits in .* \(.*\)
+
+explain shows the prior term for the same setting.
+
+  $ kb explain deploy --mode fts --set prior.enabled=true --set prior.min_judged=1
+  ~ explain "deploy" · mode fts · k 8 · settings [0-9a-f]{12}
+  ...
+  prior: active · 2/1 judged searches · half-life 90 days · max boost 0.2
+  lists: fts 4 rows · vec 0 rows · 4 candidates
+  ...
+  ~ #1  rrf [0-9.]+  data/runbook.md  \[returned as hit #1\]
+  ...
+  ~     prior  x1\.0[0-9]+
+  ...
+  ~ #2  rrf [0-9.]+  data/notes.md  \[returned as hit #2\]
+  ...
+      prior  x1.0000
+  ...
+
+-- notes/runbook.md --
+---
+title: Release runbook
+summary: How the release is rolled out.
+tags: [ops]
+updated: 2026-02-01
+---
+# Release runbook
+
+Roll out each release in stages and watch the dashboards.
+-- notes/notes.md --
+---
+title: Release notes
+summary: What changed in each release.
+tags: [ops]
+updated: 2026-02-02
+---
+# Release notes
+
+Release notes list every release, its date and its release owner.
+-- notes/backup.md --
+---
+title: Backup schedule
+summary: When the backups run.
+tags: [ops]
+updated: 2026-02-03
+---
+# Backup schedule
+
+Backups run nightly and are kept for a month.
+-- @synonyms --
+deploy, release

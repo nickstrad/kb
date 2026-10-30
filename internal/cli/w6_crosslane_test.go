@@ -24,10 +24,11 @@ import (
 // pending, passes Verify (integrity and the schema of a fresh database), and records the
 // embedder exactly.
 func TestInitIndexIsAtMigrateTarget(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"default", "adr"} {
 		t.Run(name, func(t *testing.T) {
 			root := realTempDir(t)
-			t.Chdir(root)
+			chdir(t, root)
 			withHome(t, realTempDir(t))
 			args := []string{"init", "--model", "none"}
 			if name != "default" {
@@ -79,6 +80,7 @@ func setUserVersion(t *testing.T, path string, v int) {
 // or newer schema is a problem in that store's row (with the fix), never an abort and never a
 // write; kb doctor reports a newer database as a FAIL and leaves it alone.
 func TestStoresAndDoctorOnOtherSchemaVersions(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		version int
@@ -143,6 +145,7 @@ func TestStoresAndDoctorOnOtherSchemaVersions(t *testing.T) {
 // TestDoctorDriverFailsOnGarbageDatabase: a database the driver cannot open is one FAIL line
 // (driver) and a failing exit, and the other checks still run.
 func TestDoctorDriverFailsOnGarbageDatabase(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	writeFile(t, testDBPath(root), "this is not a sqlite database, just text that is long enough to have a header")
@@ -179,6 +182,7 @@ func (zeroDim) Dim() int { return 0 }
 // the configured embedder only when model and dim match and the recorded width is storable
 // (1..MaxVecDim, or 0 for the FTS-only "none").
 func TestCheckEmbedMetaDecisions(t *testing.T) {
+	t.Parallel()
 	m4 := fake.New("m", 4)
 	wide := fake.New("w", sqlite.MaxVecDim+1)
 	maxw := fake.New("w", sqlite.MaxVecDim)
@@ -201,12 +205,9 @@ func TestCheckEmbedMetaDecisions(t *testing.T) {
 		{"dim 0 for a real model is not storable", doctorMetaIndex{meta: store.EmbedMeta{Model: "z", Dim: 0}, ok: true}, zeroDim{fake.New("z", 1)}, "FAIL embed_meta: database has z (0 dims)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var buf strings.Builder
-			d := &doctorState{stdout: &buf}
+			d := &doctorState{}
 			checkEmbedMeta(context.Background(), d, tc.idx, tc.e)
-			if !strings.HasPrefix(buf.String(), tc.want) {
-				t.Errorf("got %q, want prefix %q", buf.String(), tc.want)
-			}
+			wantCheck(t, tc.name, d, tc.want)
 		})
 	}
 }
@@ -215,10 +216,11 @@ func TestCheckEmbedMetaDecisions(t *testing.T) {
 // store's [embed]; a --store or default_store that names no store is NotFound (exit 1), not a
 // silent fallback to the default model.
 func TestModelCommandsNeedTheNamedStore(t *testing.T) {
+	t.Parallel()
 	cache := t.TempDir()
-	orig := testDeps.modelCacheDir
-	t.Cleanup(func() { testDeps.modelCacheDir = orig })
-	testDeps.modelCacheDir = func() (string, error) { return cache, nil }
+	orig := depsFor(t).modelCacheDir
+	t.Cleanup(func() { depsFor(t).modelCacheDir = orig })
+	depsFor(t).modelCacheDir = func() (string, error) { return cache, nil }
 	root := newTempRoot(t)
 	addStore(t, root, "adr")
 	writeFile(t, filepath.Join(root, ".kb", "stores", "adr", "config.toml"), "[embed]\nmodel = \"none\"\n"+dataSourceTOML)
@@ -241,6 +243,7 @@ func TestModelCommandsNeedTheNamedStore(t *testing.T) {
 // TestSearchSettingsArePerStore: each named store has its own [search]. The same corpus searched
 // through a store with rrf_k = 1 and through one with the defaults gives the two scores.
 func TestSearchSettingsArePerStore(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	addStore(t, root, "adr")

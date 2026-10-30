@@ -80,12 +80,29 @@ type Cache struct {
 // in WAL mode and applies the schema. A file that is not a SQLite database, or has a newer schema
 // (ErrNewerSchema), is an error.
 func Open(ctx context.Context, path string) (*Cache, error) {
+	return OpenWith(ctx, path, Options{})
+}
+
+// Options configure OpenWith.
+type Options struct {
+	// Driver is the database/sql driver name to open through; "" is the real SQLite driver.
+	// Tests pass a sqlfault driver to fail a statement, so the open error paths and the
+	// degrade-never-corrupt claim are testable per statement.
+	Driver string
+}
+
+// OpenWith is Open with options.
+func OpenWith(ctx context.Context, path string, opts Options) (*Cache, error) {
+	drv := opts.Driver
+	if drv == "" {
+		drv = "sqlite3"
+	}
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("open embedding cache: create directory %s: %w", dir, err)
 		}
 	}
-	db, err := sql.Open("sqlite3", dsn(path, false))
+	db, err := sql.Open(drv, dsn(path, false))
 	if err != nil {
 		return nil, fmt.Errorf("open embedding cache %s: %w", path, err)
 	}

@@ -10,6 +10,7 @@ import (
 )
 
 func TestFakeModel(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		id  string
 		dim int
@@ -25,6 +26,7 @@ func TestFakeModel(t *testing.T) {
 }
 
 func TestHarnessClock(t *testing.T) {
+	t.Parallel()
 	pinned := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name, val string

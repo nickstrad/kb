@@ -6,6 +6,7 @@ import (
 )
 
 func TestFormatVersion(t *testing.T) {
+	t.Parallel()
 	devel := func(settings ...debug.BuildSetting) *debug.BuildInfo {
 		return &debug.BuildInfo{Main: debug.Module{Version: "(devel)"}, Settings: settings}
 	}

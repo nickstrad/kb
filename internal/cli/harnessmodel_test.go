@@ -7,6 +7,7 @@ import "testing"
 // TestNoFakeModelInReleaseBuilds: without the harnessfake tag the fake model does not exist, so
 // a release binary refuses fake:<dim> like any unknown model (DEFAULTS #189).
 func TestNoFakeModelInReleaseBuilds(t *testing.T) {
+	t.Parallel()
 	if harnessModel != nil {
 		t.Fatal("harnessModel is set in a build without the harnessfake tag")
 	}

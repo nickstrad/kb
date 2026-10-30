@@ -11,6 +11,7 @@ import (
 )
 
 func TestConfigCommand(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 
 	out, errOut, code := run(t, "config")
@@ -70,13 +71,15 @@ func TestConfigCommand(t *testing.T) {
 }
 
 func TestConfigNoStore(t *testing.T) {
-	t.Chdir(realTempDir(t))
+	t.Parallel()
+	chdir(t, realTempDir(t))
 	if _, errOut, code := run(t, "config"); code != ExitUsage || !strings.Contains(errOut, "no kb location found") {
 		t.Errorf("exit %d stderr %q", code, errOut)
 	}
 }
 
 func TestSearchKFromConfig(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	count := func(args ...string) int {
@@ -105,6 +108,7 @@ func TestSearchKFromConfig(t *testing.T) {
 // TestShowOpenWindowFromConfig: the window kb show looks back over is [log] open_window. (The
 // search log stores whole seconds, so a tiny window cannot show the difference; the message does.)
 func TestShowOpenWindowFromConfig(t *testing.T) {
+	t.Parallel()
 	root := openRepo(t)
 	for _, tc := range []struct{ window, want string }{{"", "last 30m0s"}, {"2h", "last 2h0m0s"}} {
 		if tc.window != "" {
@@ -123,14 +127,15 @@ func TestShowOpenWindowFromConfig(t *testing.T) {
 }
 
 func TestEditorFromConfigReachesDeps(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	writeConfig(t, root, "[edit]\neditor = \"my-editor --wait\"\n")
 	writeFile(t, filepath.Join(root, "data", "e.md"), validFrontMatter("E", "Original."))
 	var got string
-	orig := testDeps.editor
-	t.Cleanup(func() { testDeps.editor = orig })
-	testDeps.editor = func(_ context.Context, configured, _ string) error { got = configured; return nil }
+	orig := depsFor(t).editor
+	t.Cleanup(func() { depsFor(t).editor = orig })
+	depsFor(t).editor = func(_ context.Context, configured, _ string) error { got = configured; return nil }
 	if _, errOut, code := run(t, "edit", "e.md"); code != 0 {
 		t.Fatalf("exit %d %s", code, errOut)
 	}
@@ -140,6 +145,7 @@ func TestEditorFromConfigReachesDeps(t *testing.T) {
 }
 
 func TestDoctorReportsConfig(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	if out, _, _ := run(t, "doctor"); !strings.Contains(out, "ok   config: "+testWS(root).ConfigPath) {
@@ -164,6 +170,7 @@ func TestDoctorReportsConfig(t *testing.T) {
 // TestEnvReadsStayInTheAllowedPlaces guards the no-env-vars rule: os.Getenv and friends appear only
 // in workspace.OSEnv and the $EDITOR read in runEditor (and rembed's cache variable in local.Pull), plus KB_HARNESS_NOW in harnessfake.go (never compiled into release builds).
 func TestEnvReadsStayInTheAllowedPlaces(t *testing.T) {
+	t.Parallel()
 	allowed := map[string]bool{
 		"internal/workspace/workspace.go": true,
 		"internal/cli/edit.go":            true,

@@ -632,3 +632,43 @@ func (f *failRescore) FTS(ctx context.Context, q store.FTSQuery) (store.FTSResul
 	}
 	return f.Retriever.FTS(ctx, q)
 }
+
+// TestMainListSkipsNearWhenPhraseFills: when the phrase tier alone returns list_limit rows the
+// NEAR query is not run (every row it added would be cut); below the limit it runs.
+func TestMainListSkipsNearWhenPhraseFills(t *testing.T) {
+	base := indexedSearcher(t, tierCorpus()).Store
+	terms := []string{"red", "apple"}
+	for _, tc := range []struct {
+		name     string
+		limit    int
+		wantNear bool
+	}{
+		{"phrase fills the list", 1, false},
+		{"phrase below the limit", 20, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := DefaultParams()
+			p.ListLimit = tc.limit
+			o := &opRetriever{Retriever: base}
+			ml, err := (&Searcher{Store: o}).mainList(context.Background(), terms, nil, "", p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var phrase, near int
+			for _, c := range o.calls {
+				switch c.Op {
+				case store.OpPhrase:
+					phrase++
+				case store.OpNear:
+					near++
+				}
+			}
+			if phrase != 1 || (near == 1) != tc.wantNear || near > 1 {
+				t.Errorf("phrase queries %d, near queries %d; want 1 phrase, near run = %v (runs %+v)", phrase, near, tc.wantNear, ml.runs)
+			}
+			if len(ml.res.Rows) == 0 || ml.res.Rows[0].Tier != store.TierPhrase {
+				t.Errorf("rows %+v: want the phrase row first", ml.res.Rows)
+			}
+		})
+	}
+}

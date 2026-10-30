@@ -77,33 +77,63 @@ func doctorUnresolved(stdout io.Writer, check, detail string, cause error) error
 	return errs.Wrap(cause, errs.KindOf(cause), "cli.doctor", "1 check(s) failed")
 }
 
-// doctorState accumulates the ok/FAIL/warn lines doctor prints and the counts that decide its
-// exit code and final summary line.
+// doctorLevel is a check's verdict.
+type doctorLevel string
+
+const (
+	levelOK   doctorLevel = "ok"
+	levelWarn doctorLevel = "warn"
+	levelFail doctorLevel = "FAIL"
+)
+
+// doctorCheck is one check's verdict: what was checked, how it went, and the detail line. Tests
+// assert (Name, Level), and Detail only where its wording is the contract.
+type doctorCheck struct {
+	Name   string
+	Level  doctorLevel
+	Detail string
+}
+
+// String is the line doctor prints for the check.
+func (c doctorCheck) String() string { return fmt.Sprintf("%-4s %s: %s", c.Level, c.Name, c.Detail) }
+
+// doctorState records the checks in the order they ran. Nothing is printed until print, once at
+// the end, so a check is a function from inputs to recorded verdicts.
 type doctorState struct {
-	stdout io.Writer
-	failed int
-	warned int
+	checks []doctorCheck
 }
 
-func (d *doctorState) ok(check, detail string) {
-	fmt.Fprintf(d.stdout, "ok   %s: %s\n", check, detail)
+func (d *doctorState) add(level doctorLevel, check, detail string) {
+	d.checks = append(d.checks, doctorCheck{Name: check, Level: level, Detail: detail})
 }
 
-func (d *doctorState) fail(check, detail string) {
-	fmt.Fprintf(d.stdout, "FAIL %s: %s\n", check, detail)
-	d.failed++
+func (d *doctorState) ok(check, detail string)   { d.add(levelOK, check, detail) }
+func (d *doctorState) fail(check, detail string) { d.add(levelFail, check, detail) }
+func (d *doctorState) warn(check, detail string) { d.add(levelWarn, check, detail) }
+
+// count is the number of recorded checks at level.
+func (d *doctorState) count(level doctorLevel) (n int) {
+	for _, c := range d.checks {
+		if c.Level == level {
+			n++
+		}
+	}
+	return n
 }
 
-func (d *doctorState) warn(check, detail string) {
-	fmt.Fprintf(d.stdout, "warn %s: %s\n", check, detail)
-	d.warned++
+// print writes every check line and the final "doctor: N failed, M warnings" line.
+func (d *doctorState) print(w io.Writer) {
+	for _, c := range d.checks {
+		fmt.Fprintln(w, c)
+	}
+	fmt.Fprintf(w, "doctor: %d failed, %d warnings\n", d.count(levelFail), d.count(levelWarn))
 }
 
 // runDoctor runs every check in turn and prints the final "doctor: N failed, M warnings" line.
 // It returns a non-nil error (ExitUsage) only when at least one check FAILed. defaultStore is the
 // location's default_store, from the kb.toml ref resolution read: index.md is checked only for it.
 func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writer, ws *workspace.Workspace, defaultStore string) error {
-	d := &doctorState{stdout: stdout}
+	d := &doctorState{}
 	root, dbPath := ws.Root, ws.DBPath
 
 	// A broken config is a FAIL, not an abort. The checks that read nothing from it (database,
@@ -143,9 +173,9 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 	}
 	checkVersion(d)
 
-	fmt.Fprintf(stdout, "doctor: %d failed, %d warnings\n", d.failed, d.warned)
-	if d.failed > 0 {
-		return usageErr("%d check(s) failed", d.failed)
+	d.print(stdout)
+	if n := d.count(levelFail); n > 0 {
+		return usageErr("%d check(s) failed", n)
 	}
 	return nil
 }

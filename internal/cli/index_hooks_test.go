@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nickstrad/kb/internal/store/sqlite/sqlitetest"
 )
 
 func assertIndexContains(t *testing.T, root, text string, want bool) {
@@ -19,6 +21,7 @@ func assertIndexContains(t *testing.T, root, text string, want bool) {
 }
 
 func TestMutationCommandsLeaveOptionalIndexAlone(t *testing.T) {
+	t.Parallel()
 	for _, exported := range []bool{false, true} {
 		t.Run(map[bool]string{false: "absent", true: "existing-snapshot"}[exported], func(t *testing.T) {
 			useFakeEmbedder(t)
@@ -63,6 +66,7 @@ func TestMutationCommandsLeaveOptionalIndexAlone(t *testing.T) {
 }
 
 func TestIndexCanBeReproducedWithoutDatabase(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "export.md"), validFrontMatter("Export", "Reproducible from source."))
 	for range 2 {
@@ -81,6 +85,7 @@ func TestIndexCanBeReproducedWithoutDatabase(t *testing.T) {
 }
 
 func TestDoctorDetectsIndependentDrift(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"clean", "changed", "missing", "unindexed", "index", "invalid", "model", "dimension", "database"} {
 		t.Run(kind, func(t *testing.T) {
 			useFakeEmbedder(t)
@@ -111,12 +116,10 @@ func TestDoctorDetectsIndependentDrift(t *testing.T) {
 				want = "FAIL entry:"
 			case "model", "dimension":
 				st := openTestStore(t, root)
-				sql := "UPDATE embed_meta SET model='different'"
 				if kind == "dimension" {
-					sql = "UPDATE embed_meta SET dim=4"
-				}
-				if _, err := st.DB().Exec(sql); err != nil {
-					t.Fatal(err)
+					sqlitetest.ForceEmbedDim(t, st, 4)
+				} else {
+					sqlitetest.ForceEmbedModel(t, st, "different")
 				}
 				want = "FAIL embed_meta:"
 			case "database":
@@ -142,6 +145,7 @@ func TestDoctorDetectsIndependentDrift(t *testing.T) {
 }
 
 func TestIndexReportsInvalidEntryAndWritesValidRows(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "valid.md"), validFrontMatter("Valid", "Included."))
 	writeFile(t, filepath.Join(root, "data", "invalid.md"), "---\ntitle: Invalid\n---\n")
@@ -157,6 +161,7 @@ func TestIndexReportsInvalidEntryAndWritesValidRows(t *testing.T) {
 // default store, so kb index for another store is refused and leaves it alone, and doctor run on
 // another store does not judge it (W7 pass: a files-only store wrote "(0 entries)" over it).
 func TestIndexNamedStoreDoesNotClobber(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	writeFile(t, filepath.Join(root, "data", "a.md"), validFrontMatter("A", "a"))

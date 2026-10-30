@@ -10,6 +10,7 @@ import (
 // TestRootHelpMentionsShowAndOptionalFeedback: kb help is what agents learn kb from, so it must
 // teach the search → show loop and present feedback as optional, not as a required step.
 func TestRootHelpMentionsShowAndOptionalFeedback(t *testing.T) {
+	t.Parallel()
 	out, errOut, code := run(t, "help")
 	if code != 0 {
 		t.Fatalf("kb help: exit %d, stderr %q", code, errOut)
@@ -30,6 +31,7 @@ func TestRootHelpMentionsShowAndOptionalFeedback(t *testing.T) {
 // no store above it the not-found message is printed and the exit code is 1; --root overrides
 // discovery; --root with --global is a usage error.
 func TestWorkspaceDiscoveryCLI(t *testing.T) {
+	t.Parallel()
 	useFakeEmbedder(t)
 	root := newTempRoot(t)
 	writeFile(t, filepath.Join(root, "data", "one.md"), validFrontMatter("One", "First entry."))
@@ -37,14 +39,14 @@ func TestWorkspaceDiscoveryCLI(t *testing.T) {
 	writeFile(t, filepath.Join(sub, ".keep"), "")
 
 	t.Run("success from a nested subdirectory", func(t *testing.T) {
-		t.Chdir(sub)
+		chdir(t, sub)
 		out, errOut, code := run(t, "list")
 		if code != 0 || !strings.Contains(out, "one.md") {
 			t.Fatalf("exit %d stdout %q stderr %q", code, out, errOut)
 		}
 	})
 	t.Run("failure outside any store", func(t *testing.T) {
-		t.Chdir(realTempDir(t))
+		chdir(t, realTempDir(t))
 		out, errOut, code := run(t, "list")
 		want := `kb list: no kb location found in`
 		if code != 1 || out != "" || !strings.Contains(errOut, want) ||
@@ -53,7 +55,7 @@ func TestWorkspaceDiscoveryCLI(t *testing.T) {
 		}
 	})
 	t.Run("root flag overrides the working directory", func(t *testing.T) {
-		t.Chdir(realTempDir(t))
+		chdir(t, realTempDir(t))
 		out, errOut, code := run(t, "--root", root, "list")
 		if code != 0 || !strings.Contains(out, "one.md") {
 			t.Fatalf("exit %d stdout %q stderr %q", code, out, errOut)
@@ -66,10 +68,10 @@ func TestWorkspaceDiscoveryCLI(t *testing.T) {
 		}
 	})
 	t.Run("global reaches the store under home", func(t *testing.T) {
-		t.Chdir(sub) // inside another store: --global must still win
+		chdir(t, sub) // inside another store: --global must still win
 		src := filepath.Join(realTempDir(t), "global-entry.md")
 		writeFile(t, src, validFrontMatter("Global", "Created through --global."))
-		home := testDeps.workspaceEnv().Home
+		home := depsFor(t).workspaceEnv().Home
 		globalRoot := filepath.Join(home, ".local", "share", "kb")
 		makeLocation(t, globalRoot, "default")
 		writeFile(t, filepath.Join(globalRoot, ".kb", "stores", "default", "config.toml"), "[embed]\nmodel = \"none\"\n"+dataSourceTOML)
@@ -86,7 +88,7 @@ func TestWorkspaceDiscoveryCLI(t *testing.T) {
 		}
 	})
 	t.Run("debug names the chosen store and how", func(t *testing.T) {
-		t.Chdir(sub)
+		chdir(t, sub)
 		for _, tc := range []struct {
 			args []string
 			want string

@@ -97,7 +97,7 @@ func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg st
 	if err != nil {
 		var ve *entry.ValidationError
 		if errors.As(err, &ve) {
-			return usageErr("%s: %s", srcArg, ve.Reason)
+			return usageErr("%s: %s", srcArg, ve) // the ValidationError stays in the chain
 		}
 		return usageErr("%s: %s", srcArg, err)
 	}

@@ -125,15 +125,18 @@ kb reads no environment variables except `$EDITOR`.
 
 ## Searching
 
+<!-- journey: agent-workflow -->
 ```
-$ kb search "embed meta" --caller claude
-search 7 · 2 hits
-[1] data/a.md
-Embed meta: How EnsureEmbedMeta records the model
+$ kb search "restart the worker" --caller claude
+search 7 · 7 hits
+[1] data/worker.md · updated 2026-02-01
+Restarting the worker: How to restart the background worker safely.
 
-[2] data/a.md › Details
-Embed meta › Details
-EnsureEmbedMeta records the embedding model and dim. Use reindex_test to check.
+[2] data/worker.md › Rollback · updated 2026-02-01
+Restarting the worker › Rollback
+If the worker does not come back, start the previous release with `systemctl start kb-worker@prev`.
+
+...
 search_id=7
 ```
 
@@ -142,6 +145,7 @@ read is recorded as an "open" of the search. Agents and scripts should use `--js
 with `rank`, `rrf_score`, `fts_rank`, `vec_rank`, `exact_rank` (omitted when the chunk was not in
 the exact list), `path`, `heading` and `text`, plus the exact `kb feedback` commands for that search.
 
+<!-- journey: agent-workflow, named-stores, links-and-stale, prior, tuning-loop, phrase-tier, first-run -->
 - `--mode hybrid|fts|vec` (default hybrid). `-k N`, `--tag T`. Tags match without regard to case:
   `--tag Docker` finds an entry tagged `docker`. An entry's `aliases` are searched like its title.
 - `--budget N` caps the human output at about N tokens (`ceil(chars/4)`): lower-ranked hits are
@@ -185,7 +189,8 @@ the exact list), `path`, `heading` and `text`, plus the exact `kb feedback` comm
   `reindex_test` above one that says "reindex test". `exact_list = false` in `[search]` turns it
   off (`kb eval --set search.exact_list=false --compare` shows what that costs). A query that
   starts with `-` goes after the flags and `--`: `kb search --json -- --embed-model`.
-- **Phrases.** A query of two or more words puts the chunks that hold the words as a phrase first,
+- **Phrases.** This is automatic for any query of two or more words; quotes change nothing (kb strips them,
+  so `"disk quota"` runs the same search as `disk quota`). The search puts the chunks that hold the words as a phrase first,
   then those that hold them within 8 words of each other, then the chunks that hold all of them
   (`kb explain` shows a `tiers:` line and the tier of each candidate). Synonyms and spell
   corrections do not apply inside the phrase and NEAR tiers. `phrase_boost = false` in `[search]`
@@ -239,9 +244,10 @@ when nothing helped; `--last` targets your newest search, `--note` adds a reason
   every fused candidate: its rank in each list (FTS with per-column bm25 scores, vector, exact),
   each reciprocal-rank-fusion term, and whether it was returned, dropped by the per-entry cap or
   cut by k. `--set` tries a setting; `--json` is machine-readable. It covers one store.
-- `kb stats [overview|sources|trend|entries|gaps|settings]` reads the search log: coverage, hit
-  rate, MRR, latency, which list each hit came from (`sources`: both, fts-only, vec-only,
-  exact-only, and `with_exact`), what was never answered (`gaps`), and results per settings hash.
+- `kb stats [overview|sources|tiers|trend|entries|gaps|settings]` reads the search log: coverage,
+  hit rate, MRR, latency, which list each hit came from (`sources`: both, fts-only, vec-only,
+  exact-only, and `with_exact`), which full-text tier placed it (`tiers`), what was never
+  answered (`gaps`), and results per settings hash.
   `--since 7d`, `--caller`, `--json`; `--sql` runs read-only SQL on the log.
 - `kb eval` replays every query that has a useful verdict and scores the ranking (hit@k, MRR,
   nDCG@k with 95% bootstrap intervals; per path+heading, per entry, and opens apart). It reads the
@@ -294,6 +300,7 @@ Run that command. It copies each file to `<file>.bak-v<N>-<time>` beside it (the
 kept, and `.kb/.gitignore` ignores them), upgrades it, and ends with `needs: kb reindex` when a
 step cleared derived data (`kb reindex` rebuilds it; entries are never lost).
 
+<!-- journey: upgrade -->
 ```bash
 kb migrate status                 # versions and pending steps; exit 1 if any are pending
 kb migrate up --dry-run           # the plan and the backups it would write; nothing changes
@@ -324,6 +331,7 @@ Errors are one line on stderr starting with `kb`; warnings go to stderr too, nev
 
 Paste this block into the project's `CLAUDE.md` or `AGENTS.md`:
 
+<!-- journey: agent-workflow, first-run -->
 ```markdown
 ## Knowledge store (kb)
 

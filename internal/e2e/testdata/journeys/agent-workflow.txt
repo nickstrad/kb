@@ -183,6 +183,20 @@ kb context prints the hits as Markdown, ready to paste into a prompt.
   More: kb show data/worker.md
   search 6 · kb feedback 6 RANK --useful or --not-useful
 
+The plain human output, the example at the top of the README's Searching section.
+
+  $ kb search "restart the worker" --caller claude
+  search 7 · 7 hits
+  [1] data/worker.md · updated 2026-02-01
+  Restarting the worker: How to restart the background worker safely.
+
+  [2] data/worker.md › Rollback · updated 2026-02-01
+  Restarting the worker › Rollback
+  If the worker does not come back, start the previous release with `systemctl start kb-worker@prev`.
+
+  ...
+  search_id=7
+
 -- notes/worker.md --
 ---
 title: Restarting the worker

@@ -58,6 +58,7 @@ func newLinkedRepo(t *testing.T) string {
 }
 
 func TestRelatedCommand(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newLinkedRepo(t))
 
 	t.Run("human, depth 1", func(t *testing.T) {
@@ -104,6 +105,7 @@ func TestRelatedCommand(t *testing.T) {
 }
 
 func TestRelatedErrors(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newLinkedRepo(t))
 	for _, tc := range []struct {
 		name string
@@ -157,6 +159,7 @@ func TestRelatedErrors(t *testing.T) {
 // shows the penalty, --neighbors appends the Related: section without the hits and without
 // logging anything, and search.supersede_penalty=1 restores the plain order.
 func TestSearchSupersedeAndNeighbors(t *testing.T) {
+	t.Parallel()
 	root := useRoot(t, newLinkedRepo(t))
 	withFixtureEmbedder(t)
 
@@ -200,6 +203,7 @@ func TestSearchSupersedeAndNeighbors(t *testing.T) {
 }
 
 func TestSearchNeighbors(t *testing.T) {
+	t.Parallel()
 	root := useRoot(t, newLinkedRepo(t))
 	withFixtureEmbedder(t)
 
@@ -248,6 +252,7 @@ func TestSearchNeighbors(t *testing.T) {
 }
 
 func TestRelatedDepthBoundsAndStore(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newLinkedRepo(t))
 	if stdout, _ := mustKB(t, "related", "ssh.md", "--depth", "3"); !strings.Contains(stdout, "ssh.md · 4 links") {
 		t.Errorf("depth 3 stdout:\n%s", stdout)
@@ -277,6 +282,7 @@ func (r *relaterStub) Superseded(context.Context, []string) (map[string]bool, er
 // it, another store's hit is not asked, a removed entry is skipped, other errors surface, and a
 // dangling or self link is no neighbour.
 func TestNeighborLines(t *testing.T) {
+	t.Parallel()
 	boom := errs.New(errs.Internal, "test", "boom")
 	hits := []search.Hit{
 		{Rank: 1, Path: "a.md"}, {Rank: 2, Path: "a.md"}, {Rank: 3, Store: "x", Path: "x.md"}, {Rank: 4, Path: "gone.md"},

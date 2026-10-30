@@ -46,7 +46,8 @@ type deps struct {
 	modelCacheDir func() (string, error)
 	// embedCachePath is the shared embedding cache file; nil turns the cache off (tests).
 	embedCachePath func() (string, error)
-	// caches are the embedding caches the running command opened; execute closes them.
+	// caches are the embedding caches the running command opened; execute closes them. It is
+	// per-run state: forRun gives every run its own, and productionDeps leaves it nil.
 	caches    *embedCaches
 	pullModel func(ctx context.Context, spec local.Spec, cacheDir string) error
 	openStore func(ctx context.Context, path string, readOnly bool) (store.Store, error)
@@ -81,7 +82,6 @@ var harnessNow func() time.Time
 // productionDeps are the real implementations.
 func productionDeps() *deps {
 	d := &deps{
-		caches:       &embedCaches{},
 		pullModel:    local.Pull,
 		openStore:    openSQLite,
 		editor:       runEditor,
@@ -203,22 +203,46 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return execute(ctx, productionDeps(), args, stdout, stderr)
 }
 
-// execute is Execute with explicit deps. It holds the codebase's only recover: any panic (an
-// assert.Violation or a runtime error) becomes an incident and ExitInternal, never a crash with
-// Go's exit 2, which would read as "embedder unavailable".
+// execute is Execute with explicit deps: executeErr, with the error dropped.
 func execute(ctx context.Context, d *deps, args []string, stdout, stderr io.Writer) (code int) {
+	code, _ = executeErr(ctx, d, args, stdout, stderr)
+	return code
+}
+
+// forRun is d with the state of one run made fresh: the embedding caches the run opens and the
+// memo of the global synonyms path. A deps value given to execute therefore holds only
+// factories, never per-run state, and two runs over one value (or two tests) cannot see each
+// other's caches.
+func (d *deps) forRun() *deps {
+	rd := *d
+	rd.caches = &embedCaches{}
+	rd.globalSyn.cmd, rd.globalSyn.path = nil, ""
+	return &rd
+}
+
+// executeErr is execute that also returns the error the command ended with, as report saw it: a
+// typed error for a well-formed failure (its kind and cause chain intact), the usageErr that
+// wraps a cobra parse failure, the error a panic became, and nil on success. Tests use it to
+// assert the kind and the cause instead of the stderr wording.
+//
+// It holds the codebase's only recover: any panic (an assert.Violation or a runtime error)
+// becomes an incident and ExitInternal, never a crash with Go's exit 2, which would read as
+// "embedder unavailable".
+func executeErr(ctx context.Context, d *deps, args []string, stdout, stderr io.Writer) (code int, runErr error) {
+	d = d.forRun()
 	cmd := newRootCmd(d, stdout, stderr)
 	cmd.SetArgs(args)
 	ran := cmd
 	defer func() {
 		if r := recover(); r != nil {
 			code = reportPanic(stderr, d, ran, args, r)
+			runErr = errs.New(errs.Internal, "cli.execute", "panic: %v", r)
 		}
 	}()
 	ran, err := cmd.ExecuteContextC(ctx)
 	d.finishEmbedCaches(stderr)
 	if err == nil {
-		return ExitOK
+		return ExitOK, nil
 	}
 	var re runError
 	if !errors.As(err, &re) {
@@ -227,7 +251,7 @@ func execute(ctx context.Context, d *deps, args []string, stdout, stderr io.Writ
 	} else {
 		err = re.err
 	}
-	return report(stderr, d, ran, args, err)
+	return report(stderr, d, ran, args, err), err
 }
 
 // runError marks an error returned by a command's RunE, as opposed to one cobra produced while

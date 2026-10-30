@@ -329,7 +329,7 @@ func TestRunStopsAtFirstError(t *testing.T) {
 // TestRunStatusErrorWithoutPath: an artefact that cannot say where it is gets no outcome row.
 func TestRunStatusErrorWithoutPath(t *testing.T) {
 	rep, err := Run(context.Background(), []Artefact{pathless{}}, Options{})
-	if errs.KindOf(err) != errs.Internal || len(rep.Artefacts) != 0 {
+	if err == nil || errs.KindOf(err) != errs.Internal || len(rep.Artefacts) != 0 {
 		t.Fatalf("rep %+v err %v", rep, err)
 	}
 }

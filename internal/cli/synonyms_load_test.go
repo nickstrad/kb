@@ -33,6 +33,7 @@ func synHits(t *testing.T, query string) (paths []string, stderr string, exit in
 // TestSearchSynonyms: a synonyms.txt in the store directory makes "signout" find the "logout"
 // entry, kb explain shows the expanded match, and without the file the search finds nothing.
 func TestSearchSynonyms(t *testing.T) {
+	t.Parallel()
 	root := newExplainRepo(t)
 	useRoot(t, root)
 	withFixtureEmbedder(t)
@@ -71,8 +72,9 @@ func TestSearchSynonyms(t *testing.T) {
 // TestSearchSynonymsLookupOrder: the store's file wins over the global store's, the global one is
 // used when the store has none, and search.synonyms names the one file used.
 func TestSearchSynonymsLookupOrder(t *testing.T) {
+	t.Parallel()
 	useGlobalLocation(t, "default")
-	global := filepath.Join(globalLocationRoot(), ".kb", "stores", "default", "synonyms.txt")
+	global := filepath.Join(globalLocationRoot(t), ".kb", "stores", "default", "synonyms.txt")
 	root := newExplainRepo(t)
 	useRoot(t, root)
 	withFixtureEmbedder(t)
@@ -97,6 +99,7 @@ func TestSearchSynonymsLookupOrder(t *testing.T) {
 // TestSearchSynonymsFailures: a named file that is missing, and a file that is too big or not a
 // plain file, fail the search with exit 1 and a message naming the file.
 func TestSearchSynonymsFailures(t *testing.T) {
+	t.Parallel()
 	root := newExplainRepo(t)
 	useRoot(t, root)
 	withFixtureEmbedder(t)
@@ -128,6 +131,7 @@ func TestSearchSynonymsFailures(t *testing.T) {
 // (present, absent, unreadable, no global location, a broken global kb.toml). Len is the number
 // of terms that expand: own "a, b" has 2, global "c, d, e" has 3.
 func TestLoadSynonymsLookup(t *testing.T) {
+	t.Parallel()
 	const (
 		absent = iota
 		present
@@ -176,7 +180,7 @@ func TestLoadSynonymsLookup(t *testing.T) {
 				}
 			}
 			place(filepath.Join(ws.StoreDir, "synonyms.txt"), tc.own, "a, b\n")
-			place(filepath.Join(globalLocationRoot(), ".kb", "stores", "default", "synonyms.txt"), tc.global, "c, d, e\n")
+			place(filepath.Join(globalLocationRoot(t), ".kb", "stores", "default", "synonyms.txt"), tc.global, "c, d, e\n")
 			switch tc.named {
 			case present:
 				writeFile(t, filepath.Join(root, "named.txt"), "w, x\ny, z\n")
@@ -187,7 +191,7 @@ func TestLoadSynonymsLookup(t *testing.T) {
 			var stderr strings.Builder
 			cmd := &cobra.Command{}
 			cmd.SetErr(&stderr)
-			syn, err := testDeps.loadSynonyms(cmd, ws, cfg)
+			syn, err := depsFor(t).loadSynonyms(cmd, ws, cfg)
 			if tc.wantKind != 0 {
 				if errs.KindOf(err) != tc.wantKind {
 					t.Fatalf("err = %v (kind %v), want kind %v", err, errs.KindOf(err), tc.wantKind)
@@ -208,6 +212,7 @@ func TestLoadSynonymsLookup(t *testing.T) {
 // opened, each earn one warning per command however many stores load synonyms (a --stores
 // fan-out), and the failed lookup is no synonyms.
 func TestGlobalSynonymsWarnsOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		setup func(t *testing.T, groot string)
@@ -226,7 +231,7 @@ func TestGlobalSynonymsWarnsOnce(t *testing.T) {
 			cmd := &cobra.Command{}
 			cmd.SetErr(&stderr)
 			for range 3 {
-				syn, err := testDeps.loadSynonyms(cmd, testWS(root), config.Config{})
+				syn, err := depsFor(t).loadSynonyms(cmd, testWS(root), config.Config{})
 				if err != nil || syn.Len() != 0 {
 					t.Fatalf("Len = %d, err %v; want no synonyms", syn.Len(), err)
 				}

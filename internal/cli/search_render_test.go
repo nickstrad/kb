@@ -11,6 +11,7 @@ import (
 // TestSearchBudgetElastic: --budget shrinks the human output (tail line, no chunk text), the
 // first line and footer stay, [output] budget is the default, and the flag overrides it.
 func TestSearchBudgetElastic(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 
@@ -57,6 +58,7 @@ func bodyOf(s string) string {
 }
 
 func TestSearchNegativeBudgetIsUsageError(t *testing.T) {
+	t.Parallel()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)
 	stdout, stderr, exit := runKB(t, []string{"search", "widget", "--mode", "fts", "--budget", "-1"})

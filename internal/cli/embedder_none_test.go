@@ -13,6 +13,7 @@ import (
 // config says [embed] model = "none", through the real newEmbedder (no fake hook): nothing is embedded, a default (hybrid) search runs
 // as plain fts and exits 0, and --mode vec is refused.
 func TestNoneEmbedderIndexesAndSearchesWithFTSOnly(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	src := filepath.Join(t.TempDir(), "lantern-notes.md")
@@ -59,6 +60,7 @@ func TestNoneEmbedderIndexesAndSearchesWithFTSOnly(t *testing.T) {
 // TestMissingConfigMeansDefaults: a store whose config.toml is empty uses the default model
 // whatever its index recorded, and says how to fix the mismatch.
 func TestMissingConfigMeansDefaults(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	src := filepath.Join(t.TempDir(), "lantern-notes.md")
@@ -79,6 +81,7 @@ func TestMissingConfigMeansDefaults(t *testing.T) {
 // TestBadEmbedConfig reports an unknown model or key in the config as a usage error naming file
 // and key, before touching the store or copying anything.
 func TestBadEmbedConfig(t *testing.T) {
+	t.Parallel()
 	root := newTempRoot(t)
 	src := filepath.Join(t.TempDir(), "x.md")
 	writeFile(t, src, validFrontMatter("X", "Y."))

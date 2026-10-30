@@ -12,6 +12,7 @@ import (
 // TestSearchSpellNote: a typo that finds nothing is also searched as its correction, the hits come
 // back and stderr says so; kb explain shows the fix, and search.spell=false turns it off.
 func TestSearchSpellNote(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newExplainRepo(t))
 	withFixtureEmbedder(t)
 
@@ -49,12 +50,13 @@ func TestSearchSpellNote(t *testing.T) {
 // TestSynonymsSuggest: a failed search reworded into one that was judged useful, a minute later
 // on a pinned clock, is suggested as a group with its evidence, in both forms.
 func TestSynonymsSuggest(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newExplainRepo(t))
 	withFixtureEmbedder(t)
 	at := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
-	orig := testDeps.now
-	t.Cleanup(func() { testDeps.now = orig })
-	testDeps.now = func() time.Time { return at }
+	orig := depsFor(t).now
+	t.Cleanup(func() { depsFor(t).now = orig })
+	depsFor(t).now = func() time.Time { return at }
 
 	searchID(t, "signout", "--caller", "agent")
 	at = at.Add(time.Minute)
@@ -104,6 +106,7 @@ func TestSynonymsSuggest(t *testing.T) {
 // TestSynonymsSuggestErrors: bad flags are usage errors (exit 1) and a store with no index is
 // NotFound, all before anything is printed on stdout.
 func TestSynonymsSuggestErrors(t *testing.T) {
+	t.Parallel()
 	useRoot(t, newExplainRepo(t))
 	for _, tc := range []struct {
 		args []string
@@ -131,6 +134,7 @@ func TestSynonymsSuggestErrors(t *testing.T) {
 // TestRenderSuggestions: the human form's branches: no groups, one group (plural/singular nouns,
 // both From directions, the typo note) and the gaps block.
 func TestRenderSuggestions(t *testing.T) {
+	t.Parallel()
 	group := func(typo bool) search.Suggestion {
 		return search.Suggestion{
 			Terms: [2]string{"login", "signin"}, Line: "login, signin", Pairs: 2, Callers: 1, Typo: typo,

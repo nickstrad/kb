@@ -397,6 +397,8 @@ Every versioned artefact (CODING_STYLE.md §6.1) has these, in its own package. 
 - **Time:** assert durations (`EmbedMs`, `TotalMs`) are `>= 0`, never exact. No `time.Sleep`. Synchronise with channels or `ctx`. Pin "now" through the injected clock (`deps.now`, `Searcher.Now`) or pass it as a value (`asOf`, `now`) to a pure function (CODING_STYLE.md §12.4). Never compute an expected value from `time.Now()`.
 - **Randomness:** seed explicitly and print the seed on failure. Map iteration order must never reach output (the total order in `Fuse` guarantees this for search).
 - **No host tools.** Tests never shell out to `sed`, `awk` or other host tools: an injected `deps.editor` (a Go func) replaces `$EDITOR`. Only the rows that test `runEditor` itself shell out (DEFAULTS #103).
+- **CLI test world (internal/cli).** `depsFor(t)` is the test's own `deps` (home, user cache, model cache and working directory under `t.TempDir()`; downloads fail; no shared embedding cache); a subtest shares its parent's. `chdir(t, dir)` / `useRoot` move the directory root discovery sees, not the process, so no CLI test calls `t.Chdir` and nearly all call `t.Parallel`. Only a test that needs `t.Setenv` stays serial. `run`/`runKB` return `(stdout, stderr, code)`; `runErr` also returns the typed error `report` saw, and `wantKind(t, err, kind)` plus `errors.As` assert a decision's kind and cause. Keep one stderr wording test per message family.
+- **Faults and raw SQL.** `internal/sqlfault` is the shared fault-injecting driver (`Register`, `Fail`, `FailAlways`, `SetHook`, `Rewrite`, `FailRows`); the sqlite store (`Options.driver`) and the embedding cache (`cache.OpenWith`) open through it. A driver's armed fault is shared by its connections, so a test that arms one is not parallel. Tests outside `internal/store/sqlite` never call `.DB()`: they use `internal/store/sqlite/sqlitetest` verbs (`ForceEmbedModel`, `LastSearch`, `LimitPages`, `Strings`, ...) or a wrapper such as `failingLog{store.Store}`.
 - **Env vars:** v2 reads none. Until then, tests that need one use `t.Setenv`. Note that `t.Setenv` and `t.Parallel` cannot be combined. Once config arrives through `deps`, these tests can run in parallel.
 
 ## 8. Build tags
@@ -502,7 +504,7 @@ layer. A survivor or a failed scenario becomes a test at the layer this section 
 
 ## 11. End-to-end journeys (L7)
 
-**Status: built (PLAN E1).** The runner, the `KB_HARNESS_NOW` clock seam and the first journeys (`first-run`, `offline-first-run`, `agent-workflow`, `entry-lifecycle`) are in `internal/e2e/`; the W10 pass added `lexical-quality` (J13). E2, E3 and E4 add the other journeys in W11 and W14, and E5 cross-checks the README. `make e2e` runs them (about 2 s warm, the kb build cached); `make e2e-update` rewrites expected output. Runner details beyond this section are in `internal/e2e/doc.go`.
+**Status: built (PLAN E1).** The runner, the `KB_HARNESS_NOW` clock seam and the first journeys (`first-run`, `offline-first-run`, `agent-workflow`, `entry-lifecycle`) are in `internal/e2e/`; the W10 pass added `lexical-quality` (J13). E2, E3 and E4 add the other journeys in W11 and W14, and E5 cross-checks the README (§11.7). `make e2e` runs them (about 2 s warm, the kb build cached); `make e2e-update` rewrites expected output. Runner details beyond this section are in `internal/e2e/doc.go`.
 
 ### 11.1 What a journey owns
 
@@ -529,6 +531,14 @@ Journeys are cram-style transcripts in `internal/e2e/testdata/journeys/<slug>.tx
 ### 11.5 Updating transcripts
 
 `make e2e-update` (or `go test -tags fts5,e2e ./internal/e2e -run 'TestJourneys/^<slug>$' -update`) rewrites the expected output in place and keeps prose, commands and still-matching `...`/`~` lines. Update one journey at a time and review the diff like code. A changed line must be explained by the change under review. Never update to make an unexplained failure pass: find the owning layer first (§10).
+
+### 11.7 Journey audit and README cross-check
+
+Two tests keep the journeys and the docs honest (PLAN E5):
+
+- **Command audit** (`audit_test.go`, tag `e2e`). It walks `kb --help` down to every leaf command of the built binary and fails when a leaf appears as `$ kb <command> ...` in no journey. Global flags (`--store X`, `--global`) are skipped when finding the command. `auditSkip` lists the exceptions with a reason (`help`, `completion`, `model pull`: needs the network, nightly job); an entry that a journey now covers, or that names no command, fails as stale. Flags are not audited.
+- **README cross-check** (`readme_test.go`, no tag, no binary). A comment `<!-- journey: a, b -->` before a fenced block, paragraph or list names the journeys behind it. Every `kb ...` command in the block (a fence line starting with `kb ` or `$ kb `, and every inline code span starting with `kb `) must be an ordered subsequence of some command of those journeys, so a journey may add flags such as `--json`, but a flag or word the README adds or misspells fails. A README token like `<path>` or `REF:path` matches any one non-flag token. `readmeSkip` lists commands no journey can carry (`kb help`). Marks are for what a reader copies: Searching (the example and the option list), Upgrading and Using kb from an agent. Output is not compared, but the Searching example is a real excerpt of `agent-workflow`; when you change that output, update the README.
+- Both fail with the command or README line and the journeys searched. To fix a failure, add the command to a journey (`make e2e-update` fills in its output) or correct the README; never widen a skip list to make it pass.
 
 ### 11.6 Cadence
 
