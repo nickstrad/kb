@@ -233,7 +233,7 @@ func runStale(cmd *cobra.Command, d *deps, stdout io.Writer, flagDays int, flagS
 		enc := json.NewEncoder(stdout)
 		enc.SetEscapeHTML(false)
 		enc.SetIndent("", "  ")
-		return enc.Encode(rep)
+		return encodeJSON(enc, rep, op)
 	}
 	renderStale(stdout, rep)
 	return nil

@@ -48,9 +48,10 @@ An unknown key in the store's config.toml.
 
   $ kb doctor
   ~ FAIL config: \$WORK/proj/\.kb/stores/default/config\.toml: unknown key "search\.rrf_kk"
-  ...
-  ~ doctor: \d+ failed, 0 warnings
-  [stderr] ~ kb doctor: \d+ check\(s\) failed
+  ~ ok   driver: .*
+  ~ ok   version: kb \(version\) at .*
+  doctor: 1 failed, 0 warnings
+  [stderr] kb doctor: 1 check(s) failed
   [exit 1]
 
   $ kb search tmux --mode fts

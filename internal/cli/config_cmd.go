@@ -76,10 +76,10 @@ func runConfig(cmd *cobra.Command, d *deps, stdout io.Writer, pathOnly, asJSON b
 		}
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(struct {
+		return encodeJSON(enc, struct {
 			Settings     json.RawMessage `json:"settings"`
 			SettingsHash string          `json:"settings_hash"`
-		}{data, hash})
+		}{data, hash}, "cli.config")
 	}
 	out, err := config.Save(cfg)
 	if err != nil {

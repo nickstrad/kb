@@ -50,15 +50,11 @@ func (d *deps) loadSynonyms(cmd *cobra.Command, ws *workspace.Workspace, cfg con
 // a warning here: the search itself does not need it). The answer, and so the warning, is resolved
 // once per command: a --stores fan-out loads synonyms for every store.
 func (d *deps) globalSynonymsPath(cmd *cobra.Command) (path string, ok bool) {
-	const key = "kb.global-synonyms"
-	if v, done := cmd.Annotations[key]; done {
-		return v, v != ""
+	if d.globalSyn.cmd == cmd {
+		return d.globalSyn.path, d.globalSyn.path != ""
 	}
 	path = d.resolveGlobalSynonyms(cmd)
-	if cmd.Annotations == nil {
-		cmd.Annotations = map[string]string{}
-	}
-	cmd.Annotations[key] = path
+	d.globalSyn.cmd, d.globalSyn.path = cmd, path
 	return path, path != ""
 }
 

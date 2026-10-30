@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -475,13 +473,7 @@ func (d *deps) openSearch(cmd *cobra.Command, ws *workspace.Workspace, cfg confi
 // openSearchWith is openSearch building its embedder through embs (nil: build a new one).
 func (d *deps) openSearchWith(cmd *cobra.Command, ws *workspace.Workspace, cfg config.Config, mode, op string, readOnly bool, embs embedderSet) (store.Store, embed.Embedder, string, error) {
 	ctx := cmd.Context()
-	if _, err := os.Stat(ws.DBPath); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil, "", errs.Wrap(err, errs.NotFound, op, "no index at %s; run kb reindex --all", ws.DBPath)
-		}
-		return nil, nil, "", errs.Wrap(err, errs.Usage, op, "cannot read the index %s: check the file and its permissions", ws.DBPath).With("path", ws.DBPath)
-	}
-	st, err := d.openStore(ctx, ws.DBPath, readOnly)
+	st, err := d.openIndex(ctx, ws.DBPath, op, readOnly)
 	if err != nil {
 		return nil, nil, "", err
 	}

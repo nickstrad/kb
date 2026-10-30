@@ -269,7 +269,7 @@ type point struct {
 // them share one query-vector memo (search.QueryMemo), so each query is embedded once whatever
 // the grid size. The judged queries are Split by opt.Holdout; the settings are ranked on the
 // train side by chunk MRR, then nDCG, then hit rate (ties within 1e-9), then the current settings
-// first, then grid order; the top ones are reported on both sides against the current config
+// first, then grid order; the top ones (one row per distinct setting) are reported on both sides against the current config
 // with Compare. It never writes, and its warnings are data. The judged log must not be empty:
 // callers run Gate first.
 func Sweep(ctx context.Context, p *Prepared, base config.Config, axes []Axis, grid []Combo,
@@ -352,9 +352,18 @@ func sweep(ctx context.Context, p *Prepared, base config.Config, axes []Axis, gr
 	ranked := slices.Clone(points)
 	slices.SortStableFunc(ranked, rankPoints)
 	sr.Current = row(curRep, curRep, inTrain, inTest, nil, curHash, true, opt)
-	for i, pt := range ranked[:min(opt.Top, len(ranked))] {
+	// Grid points with one settings hash (60 and 60.0) are one setting: Top lists the first.
+	seen := map[string]bool{}
+	for _, pt := range ranked {
+		if len(sr.Top) == opt.Top {
+			break
+		}
+		if seen[pt.hash] {
+			continue
+		}
+		seen[pt.hash] = true
 		r := row(curRep, pt.rep, inTrain, inTest, grid[pt.index].Set, pt.hash, pt.current, opt)
-		r.Rank = i + 1
+		r.Rank = len(sr.Top) + 1
 		sr.Top = append(sr.Top, r)
 	}
 

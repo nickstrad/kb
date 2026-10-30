@@ -5,6 +5,10 @@
 // entries/db-vs-files, index.md, version. A location or store that does not resolve is one
 // "FAIL location" / "FAIL store" line ("not initialised: run kb init").
 //
+// When the store's config.toml cannot be read, the config FAIL stands alone: sources discovery,
+// embed_meta, model, entries, entries/db-vs-files and index.md are skipped rather than computed
+// from defaults.
+//
 // Every check prints exactly one line while it runs — "ok   <check>: <detail>",
 // "FAIL <check>: <detail>" or "warn <check>: <detail>" — except entries/db-vs-files, which print
 // one FAIL or warn line per offending path plus a summary ok line when there were none. The
@@ -102,9 +106,11 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 	d := &doctorState{stdout: stdout}
 	root, dbPath := ws.Root, ws.DBPath
 
-	// A broken config is a FAIL, not an abort: the other checks still say what is wrong, run with
-	// the defaults.
+	// A broken config is a FAIL, not an abort. The checks that read nothing from it (database,
+	// migrate, driver, version) still run; the ones that need its settings are skipped, since
+	// defaults would only add FAILs that echo the real one (runConfigChecks).
 	cfg, err := dp.loadConfig(cmd, ws)
+	configOK := err == nil
 	if err != nil {
 		d.fail("config", err.Error())
 		cfg = config.Default()
@@ -132,6 +138,23 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 		d.warn("migrate", fmt.Sprintf("%d unfinished backup(s) from an interrupted migration, e.g. %s; delete them or run kb migrate up", len(partials), partials[0]))
 	}
 
+	if configOK {
+		runConfigChecks(ctx, cmd, d, dp, ws, cfg, st, defaultStore)
+	}
+	checkVersion(d)
+
+	fmt.Fprintf(stdout, "doctor: %d failed, %d warnings\n", d.failed, d.warned)
+	if d.failed > 0 {
+		return usageErr("%d check(s) failed", d.failed)
+	}
+	return nil
+}
+
+// runConfigChecks runs the checks that depend on the store's settings: source discovery, the
+// embedder against embed_meta, entry validity, db-vs-files and index.md. They are skipped when
+// the config is unreadable, since defaults would only produce FAILs that echo the real one.
+func runConfigChecks(ctx context.Context, cmd *cobra.Command, d *doctorState, dp *deps, ws *workspace.Workspace, cfg config.Config, st store.Store, defaultStore string) {
+	root := ws.Root
 	entries, skipped, err := entry.Discover(root, cfg.Sources)
 	if err != nil {
 		d.fail("sources", err.Error())
@@ -163,13 +186,6 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 	} else {
 		d.ok("index.md", fmt.Sprintf("not checked: it describes the default store %q", defaultStore))
 	}
-	checkVersion(d)
-
-	fmt.Fprintf(stdout, "doctor: %d failed, %d warnings\n", d.failed, d.warned)
-	if d.failed > 0 {
-		return usageErr("%d check(s) failed", d.failed)
-	}
-	return nil
 }
 
 // pendingMigration describes the steps an older index database still needs, "" when it is current,

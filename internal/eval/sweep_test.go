@@ -447,6 +447,26 @@ func TestSweepTopIsCapped(t *testing.T) {
 	}
 }
 
+// TestSweepTopCollapsesEqualSettings: values that differ as text but hash alike (1 and 1.0 for a
+// float key) are one setting: Top lists it once (the first in grid order), the Grid keeps both
+// points, and Replays counts the distinct settings.
+func TestSweepTopCollapsesEqualSettings(t *testing.T) {
+	w := &sweepWorld{n: 30, rank: byRRFK(map[int]int{60: 2})}
+	rep := mustSweep(t, w, SweepOptions{}, "search.bm25.title=3,1.0,1,2")
+	got := sets(rep.Top)
+	if slices.Contains(got, "search.bm25.title=1") || !slices.Contains(got, "search.bm25.title=1.0") || len(got) != 3 {
+		t.Errorf("top %q; want 3 rows, 1.0 listed once and 1 collapsed into it", got)
+	}
+	for i, r := range rep.Top {
+		if r.Rank != i+1 {
+			t.Errorf("top[%d] rank %d", i, r.Rank)
+		}
+	}
+	if len(rep.Grid) != 4 || rep.Settings != 4 || rep.Grid[1].SettingsHash != rep.Grid[2].SettingsHash {
+		t.Errorf("grid %+v settings %d", rep.Grid, rep.Settings)
+	}
+}
+
 // TestSweepTiesKeepCurrent: a setting that only ties the current config is not recommended; among
 // tied non-current settings, the grid's order decides.
 func TestSweepTiesKeepCurrent(t *testing.T) {

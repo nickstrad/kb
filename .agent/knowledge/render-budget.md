@@ -22,7 +22,7 @@ blank line, entry adds `## heading` lines). It lands in `render.Hit.Expanded`, t
 `--json` adds `expanded` per hit (no dedupe). Note: FTS drops hits for a term present in most
 chunks (bm25 ~0), so CLI tests query a rare tag word.
 
-**Why it matters.** 4.3 (`kb context`) reuses `expandHits` with `section`. 4.3 (`kb context`) should call `render.Render` with `output.context_budget`.
+**Why it matters.** `kb context` (4.3) reuses `expandHits` with `section` and renders with `output.context_budget` (see context-budget-frame.md).
 
 **How to apply.** Change wording: `go test -tags fts5 ./internal/render -update` and review goldens.
 

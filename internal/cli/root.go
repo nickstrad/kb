@@ -59,6 +59,12 @@ type deps struct {
 	workspaceEnv func() workspace.Env
 	// now is the clock searches and opens are logged with; nil is time.Now.
 	now func() time.Time
+	// globalSyn memoises globalSynonymsPath for the command that asked (a --stores fan-out asks
+	// once per store).
+	globalSyn struct {
+		cmd  *cobra.Command
+		path string
+	}
 }
 
 // clock is d.now, or the wall clock.

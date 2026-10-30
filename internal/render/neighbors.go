@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/nickstrad/kb/internal/assert"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // Link is one neighbour of a hit's entry: the entry on the other end of an edge, the edge's rel
@@ -82,7 +83,7 @@ func FormatNeighbors(lines []NeighborLine) string {
 		parts := make([]string, len(shown))
 		for i, k := range shown {
 			arrow := "→"
-			if k.Direction == "in" {
+			if k.Direction == store.DirIn {
 				arrow = "←"
 			}
 			parts[i] = fmt.Sprintf("%s %s (%s)", arrow, k.Path, k.Rel)

@@ -94,6 +94,71 @@ func (r *oneRow) Next(dest []driver.Value) error {
 	return nil
 }
 
+// Row faults (testability remedy 4): failRows makes the nth (1-based) row of the first query that
+// contains match fail, either at Rows.Next (rowsIter: Rows.Err reports it) or at Scan (rowsScan: the
+// row carries a value no destination accepts). It reaches the scan and iteration error branches
+// that a statement-level fault cannot.
+type rowFault int
+
+const (
+	rowsIter rowFault = iota + 1
+	rowsScan
+)
+
+var (
+	rowMatch string
+	rowNth   int
+	rowMode  rowFault
+)
+
+// failRows arms a row fault for the first query containing match; it disarms at cleanup.
+func failRows(t *testing.T, match string, nth int, mode rowFault) {
+	faultMu.Lock()
+	rowMatch, rowNth, rowMode = match, nth, mode
+	faultMu.Unlock()
+	t.Cleanup(func() {
+		faultMu.Lock()
+		rowMatch, rowNth, rowMode = "", 0, 0
+		faultMu.Unlock()
+	})
+}
+
+// wrapRows returns rows wrapped to fail at the armed row when query matches, and disarms.
+func wrapRows(query string, rows driver.Rows) driver.Rows {
+	faultMu.Lock()
+	defer faultMu.Unlock()
+	if rowMatch == "" || !strings.Contains(query, rowMatch) {
+		return rows
+	}
+	f := &faultRows{Rows: rows, nth: rowNth, mode: rowMode}
+	rowMatch, rowNth, rowMode = "", 0, 0
+	return f
+}
+
+type faultRows struct {
+	driver.Rows
+	nth  int
+	mode rowFault
+	seen int
+}
+
+func (r *faultRows) Next(dest []driver.Value) error {
+	if err := r.Rows.Next(dest); err != nil {
+		return err
+	}
+	r.seen++
+	if r.seen != r.nth {
+		return nil
+	}
+	if r.mode == rowsIter {
+		return errFault
+	}
+	for i := range dest {
+		dest[i] = struct{ bad bool }{true} // database/sql cannot convert this into any destination
+	}
+	return nil
+}
+
 func arm(match string, nth int) {
 	faultMu.Lock()
 	faultMatch, faultNth, faultSeen, faultHook = match, nth, 0, nil
@@ -168,7 +233,11 @@ func (f faultConn) QueryContext(ctx context.Context, q string, args []driver.Nam
 	if err := faulty(q); err != nil {
 		return nil, err
 	}
-	return f.c.QueryContext(ctx, q, args)
+	rows, err := f.c.QueryContext(ctx, q, args)
+	if err != nil {
+		return nil, err
+	}
+	return wrapRows(q, rows), nil
 }
 func (f faultConn) Ping(ctx context.Context) error { return f.c.Ping(ctx) }
 
@@ -206,7 +275,11 @@ func (s faultStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (
 	if err := faulty(s.q); err != nil {
 		return nil, err
 	}
-	return s.s.(driver.StmtQueryContext).QueryContext(ctx, args)
+	rows, err := s.s.(driver.StmtQueryContext).QueryContext(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	return wrapRows(s.q, rows), nil
 }
 
 // openFaulty opens a store through the fault driver with embed_meta recorded at dim.
@@ -457,6 +530,40 @@ func TestDriverFaultsOnReadsAndLog(t *testing.T) {
 				t.Fatalf("err = %v (kind %v), want the injected fault as Internal", err, errs.KindOf(err))
 			}
 		})
+	}
+}
+
+// TestDriverFaultsOnRows: a row that fails to scan, or an iteration that fails part-way, is an
+// Internal error that keeps the cause for every multi-row reader, never a short result.
+func TestDriverFaultsOnRows(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, match string
+		op          func(st *Store) error
+	}{
+		{"Related", "WITH RECURSIVE walk", func(st *Store) error { _, err := st.Related(ctx, "n0.md", 1); return err }},
+		{"Superseded", "rel = 'supersedes'", func(st *Store) error { _, err := st.Superseded(ctx, []string{"n1.md"}); return err }},
+		{"Edges", "LEFT JOIN entries AS dst", func(st *Store) error { _, err := st.Edges(ctx); return err }},
+		{"Entries", "FROM entries ORDER BY", func(st *Store) error { _, err := st.Entries(ctx); return err }},
+		{"Chunks", "FROM chunks WHERE entry_id", func(st *Store) error { _, err := st.Chunks(ctx, 1); return err }},
+	} {
+		for _, mode := range []struct {
+			name string
+			m    rowFault
+		}{{"next", rowsIter}, {"scan", rowsScan}} {
+			t.Run(tc.name+" "+mode.name, func(t *testing.T) {
+				st := openFaulty(t, 0)
+				relatedGraph(t, st, []byte{0, 1, 1})
+				failRows(t, tc.match, 1, mode.m)
+				err := tc.op(st)
+				if err == nil || errs.KindOf(err) != errs.Internal {
+					t.Fatalf("err = %v (kind %v), want an Internal error", err, errs.KindOf(err))
+				}
+				if mode.m == rowsIter && !errors.Is(err, errFault) {
+					t.Errorf("err = %v, want the injected fault kept as the cause", err)
+				}
+			})
+		}
 	}
 }
 

@@ -84,7 +84,7 @@ func newStoresCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			if asJSON {
 				enc := json.NewEncoder(stdout)
 				enc.SetIndent("", "  ")
-				return enc.Encode(doc)
+				return encodeJSON(enc, doc, "cli.stores")
 			}
 			return writeStoresText(stdout, doc)
 		},

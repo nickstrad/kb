@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/store"
 )
 
@@ -294,6 +296,61 @@ func TestRenderStale(t *testing.T) {
 			renderStale(&b, tc.rep)
 			if b.String() != tc.want {
 				t.Errorf("renderStale =\n%q\nwant\n%q", b.String(), tc.want)
+			}
+		})
+	}
+}
+
+// staleFaultStore fails Entries or Edges after a successful read-only open (Q126).
+type staleFaultStore struct {
+	store.Store
+	entries, edges error
+}
+
+func (s staleFaultStore) Entries(ctx context.Context) ([]store.EntryRow, error) {
+	if s.entries != nil {
+		return nil, s.entries
+	}
+	return s.Store.Entries(ctx)
+}
+
+func (s staleFaultStore) Edges(ctx context.Context) ([]store.EdgeRow, error) {
+	if s.edges != nil {
+		return nil, s.edges
+	}
+	return s.Store.Edges(ctx)
+}
+
+// TestStaleReadFaults (Q126): a read error after the index opened is the command's error with its
+// kind, never a partial or empty report.
+func TestStaleReadFaults(t *testing.T) {
+	useFakeEmbedder(t)
+	root := newTempRoot(t)
+	writeFile(t, filepath.Join(root, "data", "a.md"), validFrontMatter("A", "a summary"))
+	if _, stderr, code := run(t, "reindex", "--all"); code != ExitOK {
+		t.Fatalf("reindex: exit %d\n%s", code, stderr)
+	}
+	boom := errs.New(errs.Conflict, "test", "disk exploded")
+	orig := testDeps.openStore
+	t.Cleanup(func() { testDeps.openStore = orig })
+	for _, tc := range []struct {
+		name string
+		wrap func(store.Store) store.Store
+	}{
+		{"entries", func(s store.Store) store.Store { return staleFaultStore{Store: s, entries: boom} }},
+		{"edges", func(s store.Store) store.Store { return staleFaultStore{Store: s, edges: boom} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testDeps.openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
+				st, err := orig(ctx, path, ro)
+				if err != nil {
+					return nil, err
+				}
+				return tc.wrap(st), nil
+			}
+			stdout, stderr, exit := runKB(t, []string{"stale"})
+			if exit != ExitUsage || stdout != "" || !strings.Contains(stderr, "disk exploded") {
+				t.Errorf("exit %d stdout %q stderr %q; want %d, no report, the cause", exit, stdout, stderr, ExitUsage)
 			}
 		})
 	}

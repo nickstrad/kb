@@ -150,6 +150,15 @@ func TestDoctorReportsConfig(t *testing.T) {
 	if code != ExitUsage || !strings.Contains(out, "FAIL config: ") || !strings.Contains(out, `unknown key "bogus"`) {
 		t.Errorf("doctor with a bad config: %d\n%s", code, out)
 	}
+	// One FAIL for the cause: the checks that need the settings are skipped, not run on defaults.
+	if strings.Count(out, "FAIL ") != 1 || !strings.Contains(out, "doctor: 1 failed") {
+		t.Errorf("doctor with a bad config cascades:\n%s", out)
+	}
+	for _, skipped := range []string{"embed_meta:", "model:", "entries:", "db-vs-files:", "index.md:"} {
+		if strings.Contains(out, skipped) {
+			t.Errorf("doctor ran %s on the defaults of an unreadable config:\n%s", skipped, out)
+		}
+	}
 }
 
 // TestEnvReadsStayInTheAllowedPlaces guards the no-env-vars rule: os.Getenv and friends appear only
