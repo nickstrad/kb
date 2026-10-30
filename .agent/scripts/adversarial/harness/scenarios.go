@@ -54,7 +54,9 @@ var scenarios = []scenario{
 	{"sigint-mid-reindex", "SIGINT during reindex --all leaves a usable DB; a rerun converges", scSigint},
 	{"corrupt-db", "truncated and garbage kb.sqlite give a well-formed error, never a crash", scCorruptDB},
 	{"newer-schema", "a DB from a newer kb is refused and left byte-for-byte unchanged", scNewerSchema},
-	{"workspace-discovery", "no --root: discovery from nested and symlinked dirs, not-found outside any store, --global under HOME, relative --root, --root with --global", scWorkspaceDiscovery},
+	{"stores-layout", "init default and named stores, kb stores, --store, unknown and invalid stores, a missing default_store, a broken kb.toml, bare --root refusal", scStoresLayout},
+	{"search-settings", "[search] tuning keys change kb search: rrf_k/list_weights move the score, every key at its max works, out-of-range and nan/inf values exit 1 naming file and key, nothing logged", scSearchSettings},
+	{"workspace-discovery", "no --root: discovery from nested and symlinked dirs, not-found outside any store, kb init in a fresh dir, the $HOME guard (H28), --global under HOME, relative --root, --root with --global", scWorkspaceDiscovery},
 }
 
 // scWorkspaceDiscovery attacks "kb finds the right store, or none, and never creates one by
@@ -94,23 +96,137 @@ func scWorkspaceDiscovery(h *H) {
 		src := h.write(filepath.Join(h.outside, "nf.md"), entryText("NF", "## A\n\nx\n"))
 		for _, args := range [][]string{{"list"}, {"search", "x"}, {"add", src}, {"reindex", "--all"}, {"doctor"}} {
 			r := h.kbAt(none, withNone(args...)...)
-			if h.expect(r, 1) && !strings.Contains(r.Stderr, "no kb store found") {
-				h.fail("not-found message missing:\n%s", r)
+			want, got := "no kb location found", r.Stderr
+			if args[0] == "doctor" { // doctor reports it as a failed check on stdout
+				want, got = "not initialised: run kb init", r.Stdout
+			}
+			if h.expect(r, 1) && !strings.Contains(got, want) {
+				h.fail("not-found message %q missing:\n%s", want, r)
 			}
 		}
 		if _, err := os.Stat(filepath.Join(none, ".kb")); err == nil {
 			h.fail("a command run outside any store created %s/.kb", none)
 		}
+		// kb init is what creates one, in the working directory itself.
+		h.expect(h.kbAt(none, "init", "--model", "none"), 0)
+		if _, err := os.Stat(filepath.Join(none, ".kb", "kb.toml")); err != nil {
+			h.fail("kb init did not create %s/.kb/kb.toml: %v", none, err)
+		}
+		if r := h.kbAt(none, "list"); h.expect(r, 0) && !strings.Contains(r.Stdout, "no entries") {
+			h.fail("list on a fresh store should say no entries:\n%s", r)
+		}
+		r := h.kbAt(none, "init", "--model", "none")
+		if h.expect(r, 0) && !strings.Contains(r.Stdout, "already initialised") {
+			h.fail("a second kb init should say already initialised:\n%s", r)
+		}
 	}
+
+	// H28: a location at $HOME would capture every directory below it, so init refuses without
+	// --force and writes nothing. (HOME is the scenario's temp home.)
+	r := h.kbAt(h.home, "init", "--model", "none")
+	if h.expect(r, 1) && !strings.Contains(r.Stderr, "refusing to create a kb location at") {
+		h.fail("the home refusal is missing:\n%s", r)
+	}
+	if _, err := os.Stat(filepath.Join(h.home, ".kb")); err == nil {
+		h.fail("a refused kb init created %s/.kb", h.home)
+	}
+	h.expect(h.kbAt(h.outside, "--root", "/", "init", "--model", "none"), 1)
+	if _, err := os.Stat("/.kb"); err == nil {
+		h.fail("kb init --root / created /.kb")
+	}
+	h.expect(h.kbAt(h.home, "init", "--model", "none", "--force"), 0)
 
 	// --global lives under HOME (XDG_DATA_HOME is unset in the scenario env), whatever the cwd.
 	src := h.write(filepath.Join(h.outside, "glob.md"), entryText("G", "## A\n\nglobalword\n"))
 	h.expect(h.kbAt(nested, withNone("--global", "add", src)...), 0)
-	if _, err := os.Stat(filepath.Join(h.home, ".local", "share", "kb", ".kb", "kb.sqlite")); err != nil {
-		h.fail("--global add did not create the store under $HOME/.local/share/kb: %v", err)
+	if _, err := os.Stat(filepath.Join(h.home, ".local", "share", "kb", ".kb", "stores", "default", "kb.sqlite")); err != nil {
+		h.fail("--global add did not write the global store's database under $HOME/.local/share/kb: %v", err)
 	}
 	if r := h.kbAt(nested, withNone("list")...); h.expect(r, 0) && strings.Contains(r.Stdout, "glob.md") {
 		h.fail("--global add wrote into the discovered store:\n%s", r)
+	}
+}
+
+// scStoresLayout attacks the location/store layout: names, resolution, a broken kb.toml, and the
+// rule that only kb init creates anything. The scenario root is already initialised (default store).
+func scStoresLayout(h *H) {
+	h.write("data/s.md", entryText("S", "## A\n\nstoreword\n"))
+	h.expect(h.kb("init", "--name", "adr", "--model", "none"), 0)
+	if r := h.kb("stores"); h.expect(r, 0) && (!strings.Contains(r.Stdout, "default *") || !strings.Contains(r.Stdout, "adr")) {
+		h.fail("kb stores should list default (marked) and adr:\n%s", r)
+	}
+	if r := h.kb("stores", "--json"); h.expect(r, 0) && !json.Valid([]byte(r.Stdout)) {
+		h.fail("kb stores --json is not valid JSON:\n%s", r)
+	}
+	h.must(h.kb("reindex", "--all").Code == 0, "index the default store")
+	h.must(h.kb("--store", "adr", "reindex", "--all").Code == 0, "index the adr store")
+	for _, store := range []string{"default", "adr"} {
+		if _, err := os.Stat(filepath.Join(h.root, ".kb", "stores", store, "kb.sqlite")); err != nil {
+			h.fail("store %s has no database of its own: %v", store, err)
+		}
+		if r := h.kb("--store", store, "search", "storeword"); h.expect(r, 0) && !strings.Contains(r.Stdout, "data/s.md") {
+			h.fail("store %s did not find the entry:\n%s", store, r)
+		}
+	}
+	h.expect(h.kb("init", "--name", "adr", "--model", "none"), 0) // already initialised
+
+	// Unknown and invalid stores.
+	if r := h.kb("--store", "nope", "list"); h.expect(r, 1) && !strings.Contains(r.Stderr, "stores: adr, default") {
+		h.fail("an unknown store should list the existing ones:\n%s", r)
+	}
+	for _, bad := range []string{"../x", "A", "a/b", "a@b", strings.Repeat("z", 33), "-x"} {
+		h.expect(h.kb("--store", bad, "list"), 1)
+		h.expect(h.kb("init", "--name", bad, "--model", "none"), 1)
+	}
+	h.expect(h.kb("init", "--name", "global", "--model", "none"), 1)
+	h.expect(h.kb("--store", "global", "list"), 1) // with --root: global names the global location
+	if entries, _ := os.ReadDir(filepath.Join(h.root, ".kb", "stores")); len(entries) != 2 {
+		h.fail("invalid names created store directories: %d entries under .kb/stores, want 2", len(entries))
+	}
+
+	// A default_store naming no store is NotFound naming kb.toml; a named store still works.
+	tomlPath := filepath.Join(h.root, ".kb", "kb.toml")
+	h.write(tomlPath, "version = 1\ndefault_store = \"ghost\"\n")
+	if r := h.kb("list"); h.expect(r, 1) && !strings.Contains(r.Stderr, "kb.toml") {
+		h.fail("a missing default_store should name kb.toml:\n%s", r)
+	}
+	h.expect(h.kb("--store", "adr", "list"), 0)
+	h.expect(h.kb("stores"), 0)
+	if r := h.kb("doctor"); h.expect(r, 1) && !strings.Contains(r.Stdout, "FAIL store") {
+		h.fail("doctor should fail the store check:\n%s", r)
+	}
+
+	// A broken or hostile kb.toml is a well-formed error, never a crash or exit 3.
+	for name, body := range map[string]string{
+		"unknown key":    "colour = 1\n",
+		"bad store name": "default_store = \"../../etc\"\n",
+		"newer version":  "version = 99\n",
+		"garbage":        "\x00\x01 not toml [[[",
+		"huge":           "# " + strings.Repeat("x", 2<<20) + "\n",
+	} {
+		h.write(tomlPath, body)
+		if r := h.kb("list"); !h.expect(r, 1) {
+			h.note("kb.toml %s: unexpected result", name)
+		}
+	}
+	h.must(os.Remove(tomlPath) == nil, "remove kb.toml")
+	h.must(os.Mkdir(tomlPath, 0o755) == nil, "kb.toml as a directory")
+	h.expect(h.kb("list"), 1)
+	h.must(os.Remove(tomlPath) == nil, "remove kb.toml dir")
+	h.write(tomlPath, "version = 1\ndefault_store = \"default\"\n")
+	h.expect(h.kb("list"), 0)
+
+	// Only kb init creates a location or a store: a bare --root refuses and creates nothing.
+	fresh := filepath.Join(h.outside, "bare-root")
+	src := h.write(filepath.Join(h.outside, "bare.md"), entryText("Bare", "## A\n\nbare\n"))
+	for _, args := range [][]string{{"add", src}, {"reindex", "--all"}, {"search", "x"}, {"stores"}} {
+		r := h.kbAt(h.outside, append([]string{"--root", fresh}, args...)...)
+		if h.expect(r, 1) && !strings.Contains(r.Stderr, "run kb init") {
+			h.fail("a bare --root should say run kb init:\n%s", r)
+		}
+	}
+	if _, err := os.Stat(fresh); err == nil {
+		h.fail("a command on a bare --root created %s", fresh)
 	}
 }
 
@@ -149,9 +265,9 @@ func scExitCodes(h *H) {
 	h.useNone()
 	h.expect(h.kb(withNone("show", "data/nope.md")...), 1)
 	h.expect(h.kb(withNone("stats", "no-such-query")...), 1)
-	h.expect(h.kb(withNone("feedback", "1", "1", "--useful")...), 1) // no database yet
-	r := h.kb(withNone("search", "anything")...)                     // no database yet
-	h.expect(r, 1)
+	h.expect(h.kb(withNone("feedback", "1", "1", "--useful")...), 1) // no such search
+	r := h.kb(withNone("search", "anything")...)                     // an initialised store with nothing indexed
+	h.expect(r, 0)
 	h.expect(h.kb(withNone("rm", "data/nope.md")...), 1)
 	h.expect(h.kb(withNone("reindex", "--all", "data/x.md")...), 1)
 }
@@ -196,7 +312,7 @@ func scNoModelSearch(h *H) {
 	h2 := filepath.Join(h.dir, "fresh")
 	_ = os.MkdirAll(filepath.Join(h2, "data"), 0o755)
 	saved := h.root
-	h.root = h2
+	h.root = h.makeLocation(h2)
 	h.expect(h.kb("search", "anything"), 1, 2)
 	if _, err := os.Stat(h.dbPath()); err == nil {
 		h.fail("kb search created a database on a fresh root")
@@ -589,4 +705,67 @@ func fileHash(p string) string {
 		return "missing"
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(b))
+}
+
+// scSearchSettings is H32: the [search] tuning keys reach kb search (PLAN 2.1) and their bounds
+// (config.Max*) are enforced at the config boundary, so a hostile value is a well-formed exit 1
+// that names the file and key, before anything is opened or logged.
+func scSearchSettings(h *H) {
+	const none = "[embed]\nmodel = \"none\"\n"
+	h.write("data/settings-a.md", entryText("Settings A", "## Body\n\nquasarword appears here.\n"))
+	h.write("data/settings-b.md", entryText("Settings B", "## Body\n\nquasarword appears here too, quasarword twice.\n"))
+	h.must(h.kb(withNone("reindex", "--all")...).Code == 0, "index with an FTS-only config")
+
+	// rrf_k = 1 with the FTS list at weight 1: the top hit scores 1/(1+1) = 0.5.
+	h.setConfig(none+"[search]\nrrf_k = 1\n[search.list_weights]\nvec = 0.0\n", false)
+	r := h.kb(withNone("search", "quasarword")...)
+	if h.expect(r, 0) && !strings.Contains(r.Stdout, "0.5000") {
+		h.fail("rrf_k = 1 did not reach the fused score (want a top score of 0.5000):\n%s", r)
+	}
+	// fts weight 0: every hit scores 0 but is still listed.
+	h.setConfig(none+"[search.list_weights]\nfts = 0.0\n", false)
+	r = h.kb(withNone("search", "quasarword", "--json")...)
+	if h.expect(r, 0) {
+		if !json.Valid([]byte(r.Stdout)) || !strings.Contains(r.Stdout, "settings-a") {
+			h.fail("fts weight 0 lost the hits or broke --json:\n%s", r)
+		}
+	}
+
+	// Every key at its upper bound: search still works and --json still encodes.
+	maxed := none + "[search]\nlist_limit = 4096\ncandidate_limit = 8192\nper_entry_cap = 1000\nrrf_k = 100000\nvec_overfetch = 4096\n" +
+		"[search.bm25]\ntext = 1000.0\nheading = 1000.0\ntitle = 1000.0\n[search.list_weights]\nfts = 1000.0\nvec = 1000.0\n"
+	h.setConfig(maxed, false)
+	r = h.kb(withNone("search", "quasarword", "--json")...)
+	if h.expect(r, 0) && (!json.Valid([]byte(r.Stdout)) || strings.Contains(r.Stdout, "NaN") || strings.Contains(r.Stdout, "Inf")) {
+		h.fail("search with every [search] key at its max did not encode finite JSON:\n%s", r)
+	}
+
+	// Out of range: exit 1 naming the file and the key; the database is not touched.
+	before := fileHash(h.dbPath())
+	for _, tc := range []struct{ key, body string }{
+		{"search.list_limit", "[search]\nlist_limit = 4097\n"},
+		{"search.list_limit", "[search]\nlist_limit = 0\n"},
+		{"search.candidate_limit", "[search]\ncandidate_limit = 8193\n"},
+		{"search.rrf_k", "[search]\nrrf_k = 100001\n"},
+		{"search.rrf_k", "[search]\nrrf_k = -1\n"},
+		{"search.vec_overfetch", "[search]\nvec_overfetch = 4097\n"},
+		{"search.per_entry_cap", "[search]\nper_entry_cap = 0\n"},
+		{"search.bm25.title", "[search.bm25]\ntitle = 1000.5\n"},
+		{"search.bm25.text", "[search.bm25]\ntext = -1.0\n"},
+		{"search.bm25.heading", "[search.bm25]\nheading = nan\n"},
+		{"search.list_weights.fts", "[search.list_weights]\nfts = inf\n"},
+		{"search.list_weights.vec", "[search.list_weights]\nvec = -inf\n"},
+	} {
+		h.setConfig(none+tc.body, false)
+		r := h.kb(withNone("search", "quasarword")...)
+		if !h.expect(r, 1) {
+			continue
+		}
+		if !strings.Contains(r.Stderr, "config.toml") || !strings.Contains(r.Stderr, tc.key) {
+			h.fail("%s out of range: the error should name the file and %s:\n%s", strings.TrimSpace(tc.body), tc.key, r)
+		}
+	}
+	if fileHash(h.dbPath()) != before {
+		h.fail("a search refused for its config still changed the database (logged?)")
+	}
 }

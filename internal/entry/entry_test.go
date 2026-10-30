@@ -528,3 +528,29 @@ func TestLoadAndBodyHash(t *testing.T) {
 		t.Error("BodyHash should depend on the order files are concatenated in")
 	}
 }
+
+// TestDiscoverMissingOrUnreadableData: a missing data/ is an empty corpus (a fresh store); data/
+// being a file, or the root itself missing, is a read failure only when data/ exists but cannot be
+// listed as a directory.
+func TestDiscoverMissingOrUnreadableData(t *testing.T) {
+	root := t.TempDir()
+	if got, err := Discover(root); err != nil || len(got) != 0 {
+		t.Fatalf("missing data/: %v, %v; want an empty corpus", got, err)
+	}
+	if got, err := Discover(filepath.Join(root, "no-such-root")); err != nil || len(got) != 0 {
+		t.Fatalf("missing root: %v, %v; want an empty corpus", got, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "data"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Discover(root); err == nil || !strings.Contains(err.Error(), "read corpus") {
+		t.Fatalf("data/ as a file: %v; want a read error", err)
+	}
+	empty := t.TempDir()
+	if err := os.Mkdir(filepath.Join(empty, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Discover(empty); err != nil || len(got) != 0 {
+		t.Fatalf("empty data/: %v, %v", got, err)
+	}
+}

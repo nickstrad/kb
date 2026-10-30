@@ -10,7 +10,7 @@ KB_CALLER and the `--embedder`/`--embed-model` flags are gone; `$EDITOR` is read
 (config `[edit] editor` wins). `reindex.preconditions` returns a Conflict for a recorded-but-different
 embed_meta (assertion only for "never recorded"). The embed_meta model plays no part in choosing the model.
 `Parse` reads `version` before the strict decode: newer than `SchemaVersion` is Usage "written by a newer kb", older is Conflict "run kb migrate up" (no migration exists yet), so a foreign-version file never reads as "unknown key". `Apply` strips the decoder's `toml: line N` prefix from type errors. `testdata/default.toml` is the golden of every default.
-Reserved keys with an index-changing meaning (embed.dim, embed.int8, [[sources]]) are rejected until wired.
+The location file `.kb/kb.toml` is `config.Location` (`ReadLocation`/`ParseLocation`/`SaveLocation`; version, default_store, [aliases], 1 MiB cap and regular files only via `readCapped` (see capped-file-reads.md), unknown keys rejected; aliases validated, resolved in 3.1); it is not a layer of the store config. Reserved keys with an index-changing meaning (embed.dim, embed.int8, [[sources]]) are rejected until wired. Since PLAN 2.1 the [search] tuning keys (limits, rrf_k, vec_overfetch, bm25, list_weights.fts/vec) are wired through `search.NewSettings` and have `Max*` upper bounds in defaults.go (see search-settings-and-trace.md).
 
 **Why it matters.** Wiring a reserved key means deleting its rejection in `Validate` and a test row.
 `config.MinK/MaxK`, `DefaultModel` and the default open window repeat constants of search/local/store;

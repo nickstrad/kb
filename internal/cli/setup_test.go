@@ -101,14 +101,14 @@ func loadFor(t *testing.T, root, home string) (config.Config, error) {
 	}
 	cmd := &cobra.Command{Use: "kb"}
 	cmd.SetContext(context.Background())
-	return d.loadConfig(cmd, workspace.New(root, ""))
+	return d.loadConfig(cmd, testWS(root))
 }
 
 // TestLoadConfigDecisions is the branch table of loadConfig: which model a store gets from its
 // config file or the default (never from its index), and how the global store's
 // aliases merge.
 func TestLoadConfigDecisions(t *testing.T) {
-	const cfgPath = ".kb/config.toml"
+	const cfgPath = ".kb/stores/default/config.toml"
 	tests := []struct {
 		name       string
 		config     *string // nil = no file

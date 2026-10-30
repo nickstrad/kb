@@ -139,7 +139,7 @@ func TestOnlyIndexingCommandsDownload(t *testing.T) {
 		_, calls := stubPull(t, nil)
 		useRoot(t, newSearchTestRepo(t, testModel768, 768))
 		out, _, _ := run(t, "doctor")
-		if len(*calls) != 0 || !strings.Contains(out, "FAIL embedder: model "+testModel768+" is not downloaded (run `kb model pull`)") {
+		if len(*calls) != 0 || !strings.Contains(out, "FAIL model: model "+testModel768+" is not downloaded (run `kb model pull`)") {
 			t.Fatalf("pulls = %v, doctor output %q; want no pull and a not-downloaded FAIL", *calls, out)
 		}
 	})

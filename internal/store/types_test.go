@@ -17,3 +17,11 @@ func TestEmbedMetaMismatchError(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultBM25 pins the shipped column weights: a title hit counts three times a body hit, a
+// heading hit twice. Changing them changes every ranking, so it needs a reviewed golden update.
+func TestDefaultBM25(t *testing.T) {
+	if got, want := DefaultBM25(), (BM25Weights{Text: 1, Heading: 2, Title: 3}); got != want {
+		t.Errorf("DefaultBM25 = %+v, want %+v", got, want)
+	}
+}

@@ -11,8 +11,10 @@
 //     overwritten by the next Put of that key.
 //   - Several processes may open the same file at once: the file is in WAL mode, every
 //     connection waits up to busyTimeout for a lock, and writes take the write lock up front.
-//   - The schema version lives in PRAGMA user_version. A file with a newer version than this
-//     build knows is an error from Open; the caller then runs without a cache.
+//   - The schema version lives in PRAGMA user_version and the steps are an append-only
+//     migrate.Steps (cache/000N-…). Open applies pending steps itself (the cache is disposable);
+//     Artefact exposes the file to kb migrate for status and verify. A file with a newer version
+//     than this build knows is an error from Open; the caller then runs without a cache.
 //   - Nothing is evicted. Clear empties the cache.
 //
 // The cache is an optimisation: callers (embed.Cached) treat every error from it as "no cache"

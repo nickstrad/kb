@@ -17,15 +17,17 @@
 //     file, which is over the defaults. Location-level keys (default store, aliases) are not
 //     part of a store's Config.
 //
-// Keys wired today (a command reads them): embed.model, embed.batch, search.k, log.open_window,
-// agent.caller and edit.editor.
+// Keys wired today (a command reads them): embed.model, embed.batch, search.k,
+// search.list_limit, search.candidate_limit, search.per_entry_cap, search.rrf_k,
+// search.vec_overfetch, search.bm25 (text, heading, title), search.list_weights.fts and
+// search.list_weights.vec, log.open_window, agent.caller and edit.editor. The search.* tuning
+// keys have upper bounds (Max* constants) so no value can overflow a score or the vector index.
 //
 // Keys reserved for later work: they are parsed and range-checked, so a config written today
-// stays valid, but no command acts on them yet: embed.workers, search.list_limit,
-// search.candidate_limit, search.per_entry_cap, search.rrf_k, search.vec_overfetch,
-// search.bm25, search.list_weights, search.phrase_boost, search.exact_list, search.synonyms,
-// search.spell, search.supersede_penalty, search.stores (store refs: name, alias, name@path or global), [output], log.corpus_rev, [stale],
-// [eval], [prior]. The search.* tuning keys are the search package's constants until the trace
-// work (PLAN 2.1) passes them in. embed.dim, embed.int8 and [[sources]] change what the index
-// holds, so a value other than the default is rejected instead of being ignored.
+// stays valid, but no command acts on them yet: embed.workers, search.list_weights.exact,
+// search.list_weights.memory, search.phrase_boost, search.exact_list, search.synonyms,
+// search.spell, search.supersede_penalty, search.stores (store refs: name, alias, name@path or
+// global), [output], log.corpus_rev, [stale], [eval], [prior]. embed.dim, embed.int8 and
+// [[sources]] change what the index holds, so a value other than the default is rejected
+// instead of being ignored.
 package config

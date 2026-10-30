@@ -12,6 +12,12 @@ A second form: when ctx is cancelled during a transaction, database/sql's backgr
 rolls the transaction back, and the following `Tx.Commit` can return `sql.ErrTxDone`. That made
 `sigint-mid-reindex` exit 3 about one run in four even after ErrInterrupt was classified.
 
+A third form, the opposite way round: on a pinned `*sql.Conn` (raw `BEGIN IMMEDIATE`/`COMMIT`),
+neither database/sql (`Conn.grabConn` ignores ctx) nor mattn (its interrupt only races a running
+statement) refuses a statement whose ctx is **already** cancelled. A cancel during the last
+migration step therefore still ran the stamp and the `COMMIT` (found by
+`TestApplyCancelledMidStep`, 1.8a). `*sql.Tx` is safe: it watches ctx and Commit returns its error.
+
 **Why it matters.** Ctrl-C is a known edge case (exit 1, "interrupted"), not a bug. Any check
 written as `errors.Is(err, context.Canceled)` alone misses it.
 
@@ -21,4 +27,6 @@ whatever the error; `classify` also maps ErrInterrupt and context.Canceled. Abov
 unit test reaches only the `ctx.Err()` path; `TestCancelMidWriteIsInterrupted` (fault driver hook
 that cancels at a chosen statement) covers the others deterministically.
 
-**Seen in:** internal/store/sqlite/sqlite.go (classify), internal/cli/report.go · 2026-10-29
+On a pinned conn, check `ctx.Err()` yourself before `COMMIT` (as `Store.migrate` does).
+
+**Seen in:** internal/store/sqlite/sqlite.go (classify, migrate), internal/cli/report.go · 2026-10-29, 2026-10-30

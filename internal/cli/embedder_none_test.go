@@ -56,8 +56,8 @@ func TestNoneEmbedderIndexesAndSearchesWithFTSOnly(t *testing.T) {
 	}
 }
 
-// TestMissingConfigMeansDefaults: a store with no config.toml uses the default model whatever its
-// index recorded, and says how to fix the mismatch.
+// TestMissingConfigMeansDefaults: a store whose config.toml is empty uses the default model
+// whatever its index recorded, and says how to fix the mismatch.
 func TestMissingConfigMeansDefaults(t *testing.T) {
 	root := newTempRoot(t)
 	useNoneModel(t, root)
@@ -66,15 +66,13 @@ func TestMissingConfigMeansDefaults(t *testing.T) {
 	if _, errOut, code := run(t, "add", src); code != 0 {
 		t.Fatalf("add: %d %q", code, errOut)
 	}
-	if err := os.Remove(testWS(root).ConfigPath); err != nil {
-		t.Fatal(err)
-	}
+	writeConfig(t, root, "")
 	_, errOut, code := run(t, "search", "lantern")
 	if code != ExitUsage || !strings.Contains(errOut, "reindex --all") {
-		t.Fatalf("search without a config file: %d %q; want exit 1 naming kb reindex --all", code, errOut)
+		t.Fatalf("search with an empty config file: %d %q; want exit 1 naming kb reindex --all", code, errOut)
 	}
 	if out, _, code := run(t, "config"); code != 0 || !strings.Contains(out, local.DefaultModel) {
-		t.Fatalf("kb config without a file: %d %q; want the defaults", code, out)
+		t.Fatalf("kb config with an empty file: %d %q; want the defaults", code, out)
 	}
 }
 

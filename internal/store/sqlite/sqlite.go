@@ -4,7 +4,8 @@
 //
 // Inputs: a database path and Options. Outputs: *Store. Invariants: an entry's rows in chunks,
 // chunks_fts and chunks_vec always move together in one transaction (asserted before commit);
-// the schema version is checked in exactly one place, Open; migrations are append-only.
+// the schema version is checked in exactly one place (checkVersion, from Open and Artefact);
+// migrations are an append-only migrate.Steps (migrations.go).
 //
 // BUILD TAG: build with -tags fts5. mattn/go-sqlite3 compiles FTS5 in only under that tag, so
 // Open checks PRAGMA compile_options and fails with that instruction. sqlite-vec is registered as
@@ -31,6 +32,7 @@ import (
 	sqlite3 "github.com/mattn/go-sqlite3"
 
 	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/migrate"
 	"github.com/nickstrad/kb/internal/store"
 )
 
@@ -47,7 +49,8 @@ type Options struct {
 	// file is NotFound; a schema version other than this build's is a Conflict.
 	ReadOnly bool
 
-	driver string // test seam: a registered database/sql driver name; "" = driverName
+	driver    string // test seam: a registered database/sql driver name; "" = driverName
+	noMigrate bool   // Artefact: open without checking or migrating the schema version
 }
 
 // Store is one open knowledge database.
@@ -103,7 +106,7 @@ func open(ctx context.Context, path string, opts Options) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{db: db, path: path, readOnly: opts.ReadOnly}
-	if err := s.init(ctx); err != nil {
+	if err := s.init(ctx, opts.noMigrate); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -111,7 +114,8 @@ func open(ctx context.Context, path string, opts Options) (*Store, error) {
 }
 
 // init checks the driver and brings the schema up to date (read-write) or checks it (read-only).
-func (s *Store) init(ctx context.Context) error {
+// noMigrate skips the version check and the migration: the Artefact adapter does those itself.
+func (s *Store) init(ctx context.Context, noMigrate bool) error {
 	if err := s.db.PingContext(ctx); err != nil {
 		return err
 	}
@@ -126,6 +130,9 @@ func (s *Store) init(ctx context.Context) error {
 	if err := s.checkVec(ctx); err != nil {
 		return err
 	}
+	if noMigrate {
+		return nil
+	}
 	if s.readOnly {
 		var version int
 		if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -133,7 +140,8 @@ func (s *Store) init(ctx context.Context) error {
 		}
 		return s.checkVersion(version, true)
 	}
-	return s.migrate(ctx)
+	_, err := s.migrate(ctx)
+	return err
 }
 
 // DB is the underlying handle, for tests and backend-specific diagnostics only.
@@ -236,29 +244,31 @@ func (s *Store) DriverInfo(ctx context.Context) (DriverInfo, error) {
 	return info, nil
 }
 
-// migrate brings the database up to schemaVersion. The read-decide-apply sequence runs inside one
-// BEGIN IMMEDIATE on a pinned connection, so a second opener of a fresh database blocks on the
-// lock (busy_timeout) and then sees the winner's work instead of failing halfway.
-func (s *Store) migrate(ctx context.Context) error {
+// migrate brings the database up to schemaVersion and returns the steps it applied. The
+// read-decide-apply sequence runs inside one BEGIN IMMEDIATE on a pinned connection, so a second
+// opener of a fresh database blocks on the lock (busy_timeout) and then sees the winner's work
+// instead of failing halfway. Every pending step and its version stamp share that transaction:
+// a failure or a cancel rolls back to the starting version.
+func (s *Store) migrate(ctx context.Context) ([]migrate.Info, error) {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
-		return fmt.Errorf("open migration connection: %w", err)
+		return nil, fmt.Errorf("open migration connection: %w", err)
 	}
 	defer conn.Close()
 
 	version, err := userVersion(ctx, conn)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := s.checkVersion(version, false); err != nil {
-		return err
+		return nil, err
 	}
 	if version == schemaVersion {
-		return nil
+		return nil, nil
 	}
 
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return fmt.Errorf("lock %s for migration: %w", s.path, err)
+		return nil, fmt.Errorf("lock %s for migration: %w", s.path, err)
 	}
 	committed := false
 	defer func() {
@@ -271,32 +281,42 @@ func (s *Store) migrate(ctx context.Context) error {
 	// Re-read under the write lock: another opener may have migrated while we waited for it.
 	version, err = userVersion(ctx, conn)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := s.checkVersion(version, false); err != nil {
-		return err
+		return nil, err
 	}
-	db := connExecer{ctx: ctx, conn: conn}
-	for v := version; v < schemaVersion; v++ {
-		if err := migrations[v](db); err != nil {
-			return fmt.Errorf("migrate %s from schema version %d to %d: %w", s.path, v, v+1, err)
-		}
-		// user_version is part of the transaction, so it cannot drift from the statements above.
-		if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", v+1)); err != nil {
-			return fmt.Errorf("stamp schema version %d: %w", v+1, err)
-		}
+	applied, err := migrations.Up(ctx, execer(conn), version, stampVersion)
+	if err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", s.path, err)
+	}
+	// Neither *sql.Conn nor the driver refuses a statement on an already-cancelled ctx (the
+	// interrupt only races a running one), so a cancel during the last step would still COMMIT.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", s.path, err)
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return fmt.Errorf("commit migration of %s: %w", s.path, err)
+		return nil, fmt.Errorf("commit migration of %s: %w", s.path, err)
 	}
 	committed = true
-	return nil
+	return applied, nil
+}
+
+// stampVersion sets PRAGMA user_version inside the migration transaction, so the version cannot
+// drift from the statements before it. PRAGMA takes no parameters; v is an int.
+func stampVersion(ctx context.Context, db execer, v int) error {
+	_, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", v))
+	return err
 }
 
 // checkVersion is the one schema-version check. A newer database is refused; an older one is
-// refused only read-only, since a read-write open migrates it.
+// refused only read-only, since a read-write open migrates it. A negative version is damage.
 func (s *Store) checkVersion(version int, readOnly bool) error {
 	switch {
+	case version < 0:
+		return errs.New(errs.Conflict, "sqlite.Open",
+			"database %s has a negative schema version (%d); it is damaged: move it aside and run kb reindex --all", s.path, version).
+			With("db", s.path)
 	case version > schemaVersion:
 		return errs.New(errs.Conflict, "sqlite.Open",
 			"database %s is at schema version %d, this kb only understands %d; use a newer kb", s.path, version, schemaVersion).

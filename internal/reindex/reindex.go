@@ -15,11 +15,8 @@ package reindex
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
 
 	"github.com/nickstrad/kb/internal/assert"
 	"github.com/nickstrad/kb/internal/chunk"
@@ -151,14 +148,10 @@ func all(ctx context.Context, o Options) (Summary, error) {
 	return sum, nil
 }
 
-// discover is entry.Discover with a missing data/ directory read as an empty corpus (see All).
+// discover is entry.Discover (which reads a missing data/ as an empty corpus, see All) with a read
+// failure turned into a well-formed Usage error.
 func discover(root string) ([]entry.Entry, error) {
 	entries, err := entry.Discover(root)
-	if errors.Is(err, fs.ErrNotExist) {
-		if _, statErr := os.Stat(entry.DataRoot(root)); errors.Is(statErr, fs.ErrNotExist) {
-			return nil, nil
-		}
-	}
 	if err != nil {
 		return nil, errs.Wrap(err, errs.Usage, "reindex.All", "could not read the entries under %s: %v", entry.DataRoot(root), err)
 	}

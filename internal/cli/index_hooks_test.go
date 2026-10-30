@@ -123,14 +123,14 @@ func TestDoctorDetectsIndependentDrift(t *testing.T) {
 				if err := os.Remove(testDBPath(root)); err != nil {
 					t.Fatal(err)
 				}
-				want = "FAIL database:"
+				want = "warn database: not indexed: run kb reindex"
 			}
 			out, errOut, code := run(t, "doctor")
 			if kind == "clean" {
 				if code != 0 || !strings.Contains(out, "fts5 enabled") || !strings.Contains(out, "entries in sync") || !strings.Contains(out, "index.md: absent (optional export)") {
 					t.Fatalf("%d %q %q", code, out, errOut)
 				}
-			} else if kind == "index" {
+			} else if kind == "index" || kind == "database" { // warnings: exit 0
 				if code != 0 || !strings.Contains(out, want) {
 					t.Fatalf("want %q: %d %q %q", want, code, out, errOut)
 				}

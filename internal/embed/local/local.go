@@ -22,16 +22,6 @@ import (
 	"github.com/nickstrad/kb/internal/errs"
 )
 
-// DefaultCacheDir is where models are kept when the caller does not choose: the user cache
-// directory (on macOS ~/Library/Caches/kb/models).
-func DefaultCacheDir() (string, error) {
-	base, err := os.UserCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("find user cache directory: %w", err)
-	}
-	return filepath.Join(base, "kb", "models"), nil
-}
-
 // Embedder embeds texts with one model. The model is loaded on first use (about 0.2 s for
 // bge-small), so constructing an Embedder is free for commands that never embed.
 type Embedder struct {

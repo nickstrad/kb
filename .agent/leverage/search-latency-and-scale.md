@@ -3,9 +3,10 @@
 
 - **Category:** resource/performance
 - **Status:** watch
-- **Where:** `internal/search/search.go` (`ListLimit` 20, `vecOverFetch` 60 for tag filters, RRF), sqlite-vec `vec0` (no ANN index; `internal/store/sqlite/retrieve.go` `knn`/`filterByTag`), `internal/store/sqlite/log.go` (`LogSearch`).
+- **Where:** `internal/search/search.go` + `settings.go` (`search.Params` from config `[search]`: list_limit 20, vec_overfetch 60 for tag filters, rrf_k, weights; config caps list_limit/vec_overfetch at 4096 = sqlite-vec's max KNN k), sqlite-vec `vec0` (no ANN index; `internal/store/sqlite/retrieve.go` `knn`/`filterByTag`), `internal/store/sqlite/log.go` (`LogSearch`).
 - **Why it matters:** agents search often; the latency adds up per task. Tag filters over-fetch and can miss results when a tag is rare. Cross-store search (Phase 3) multiplies the work.
 - **Evidence:** about 0.2 s per search on a small corpus, mostly the model load. KNN cost on 10k+ chunks is unmeasured. `TestVecOverFetchBoundary` pins the 60/61 edge. W2 pass: hybrid and vec searches first check `sqlite_master` for `chunks_vec` (one indexed lookup) and skip the query embedding when it is missing, so an upgraded-but-not-reindexed store pays no model load.
-- **Coverage today:** boundary tables for ListLimit, CandidateLimit, PerEntryCap and vecOverFetch; harness hostile queries.
-- **Next checks:** a benchmark at 1k/10k/50k chunks (FTS vs KNN vs total); whether an `entry_tags` join (5.2) fixes rare-tag recall; the per-store cost of cross-store fan-out; whether binary/int8 quantized vec0 columns are worth it at scale.
-- **Last reviewed:** 2026-10-29 · W2 wave-end pass
+- **W6 wave-end pass:** harness `search-settings` (H32) runs every [search] key at its max (list_limit/vec_overfetch 4096, candidate_limit 8192) on a tiny corpus: exits 0 with finite JSON; the cost at those sizes on a real corpus is still unmeasured. `kb stores` counts each store's entries by reading every entry row (`Entries`), linear in corpus size per store (Q58).
+- **Coverage today:** boundary tables for ListLimit, CandidateLimit, PerEntryCap and vecOverFetch at their defaults and as config params (min, ±1, config max; `TestListLimitParamBoundary` pins vec0's 4096 cap); `FuzzFuse`/`FuzzApplyCap` properties; harness hostile queries.
+- **Next checks:** with list_limit/vec_overfetch now user-settable up to 4096, measure KNN + ChunkMeta cost at that size; a benchmark at 1k/10k/50k chunks (FTS vs KNN vs total); whether an `entry_tags` join (5.2) fixes rare-tag recall; the per-store cost of cross-store fan-out; whether binary/int8 quantized vec0 columns are worth it at scale.
+- **Last reviewed:** 2026-10-30 · W6 wave-end pass

@@ -474,10 +474,11 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Carried from W4 pass: (a) `workspace.Workspace.ModelsDir` (`os.UserCacheDir()/kb/models`) is computed but unused; `local.DefaultCacheDir` derives the same path on its own. `kb model pull|path` should take it from the workspace so there is one rule. (c) `kb init` is the only command that writes `kb.toml` or a store `config.toml`; the harness `workspace-discovery` scenario gains init rows.
 - Carried from W2 pass: `reindex.All` reads a missing `data/` as an empty corpus via a local `discover` wrapper (Q23). Step 5 (Discover tolerates a missing source dir) should absorb it: move the rule into `entry.Discover` and delete the wrapper. Keep the doctor warning.
 - Model: Sonnet (commands from spec); review: Opus via testing-standards-pass
+- Status: done (W6)
 - Files: new `cli/init.go` and `cli/model.go`; `cli/doctor.go`; `entry/entry.go` (Discover tolerance).
 - Steps:
   1. `kb init [--global] [--name NAME] [--model ID|none] [--source GLOB]... [--force]`:
-     - if no location exists at the target (cwd, `--root` or `--global`), create `.kb/kb.toml` (`version = 1`, `default_store` = this store's name) and `.kb/.gitignore` (`stores/*/kb.sqlite*`, `stores/*/eval/`, `*.bak-v*`);
+     - if no location exists at the target (cwd, `--root` or `--global`), create `.kb/kb.toml` (`version = 1`, `default_store` = this store's name) and `.kb/.gitignore` (`stores/*/kb.sqlite*`, `stores/*/eval/`, `*.bak-v*`, `kb.log`, `migrate.lock`);
      - create `.kb/stores/<NAME>/config.toml` (NAME defaults to `default`; `workspace.ValidName`). It holds commented defaults and **explicit** `[[sources]]`: `--source` globs, else an entries source at `data` (default store) or `data-<NAME>` (named store);
      - create the entries directory when an entries source is configured.
   2. Then it opens the DB (fresh create at the target schema), runs `EnsureEmbedMeta` and pulls the model, with progress on stderr.
@@ -497,6 +498,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **1.5 In-place sources with optional front matter**
+- Carried from W6 pass: `entry.Discover` already reads a missing `data/` as an empty corpus (1.4 step 5; the reindex wrapper is gone); keep that for a missing source dir. Named stores share `data/` until sources land (Q53), and doctor's `sources` check must become a warning for none (Q55).
 - Carried from W3 pass: Q31 (entry returns plain fmt errors; every cli call site wraps them as Usage). When `Discover`/`Resolve`/`Load` are rewritten here, return `*errs.Error` at the entry boundary (NotFound for "no such entry", Usage with the path for front matter) and drop the `usageErr("%s", err)` wrappers in add/edit/rm/show/reindex.
 - Carried from W2 pass: `reindex.All` prunes only rows that neither the first Discover nor a second Discover run after `ListEntries` found (Q22; concurrent `kb add` writes the file before committing the row). When `Discover(root, []config.Source)` replaces it, keep that two-discovery rule and `TestAllKeepsEntryAddedDuringRun`. Front-matter title/summary now have caps and a control-character rule (`entry.MaxTitleRunes` 200, `MaxSummaryRunes` 1000, Q20); `fallbackMeta` must produce values that pass `checkText` (truncate the fallback summary to 200 runes already does; also strip control characters from a humanised filename).
 - Carried from the adversarial harness (W2): a symlink under `data/` that points outside the root is followed and indexed today. Discovery must skip such links with a warning, and doctor must report them (DEFAULTS #65). Add the harness scenario to the acceptance checks.
@@ -557,6 +559,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **1.7a Named stores: workspace location and store resolution (new files only)**
 - Design: `docs/design/named-stores.md` (D9). 1.3 already did its prep (see 1.3 Status), so nothing from 1.3 carries over.
 - Model: Sonnet (pure resolution with a clear spec); review: Opus via testing-standards-pass (path boundary)
+- Status: done (W6)
 - Files: new `internal/workspace/location.go` and `location_test.go`. `workspace.go` stays untouched until 1.7b.
 - Steps:
   1. `ResolveLocation(rootFlag string, global bool, env Env) (*Location, error)`: `--root` > `--global` > walk up for `.kb/kb.toml` (a regular file). `Location{Root, KBDir, FilePath}`. Errors as in 1.1.
@@ -575,6 +578,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **1.7b Named stores: CLI on location + store, `--store`, `kb stores`**
 - Carried from W5 pass: `Config.Search.Stores` and `CheckModel(src, …)` take a source label. If the location file adds a second config layer, pass the right source (Q50).
 - Model: Sonnet (mechanical cli switch plus one new command); review: Opus via error-handling-pass
+- Status: done (W6)
 - Files: `internal/workspace/workspace.go` (delete `Resolve`, `discover`, `isStore` and the legacy marker; keep `Env`/`OSEnv`); new `internal/workspace/refs.go` (local NAME | `global` only; 3.1 adds aliases and `NAME@LOC`); new `internal/config/location.go` (`Location{Version, DefaultStore, Aliases}`, `ReadLocation`, `Validate`; aliases are parsed and validated but resolved in 3.1); `cli/root.go` (`--store` persistent flag, `deps.workspace` = location, then store), `cli/setup.go` (`openStoreForWrite` no longer creates `.kb/`; a missing store is NotFound "run kb init"), new `cli/stores.go`; `cli/report.go` (the incident log goes to `<KBDir>`). The `AddCommand` line is added by the orchestrator.
 - Steps:
   1. Resolution: location (1.7a), then store = `--store` (a local NAME or `global`) or `kb.toml default_store`. A store missing from the location is NotFound; so is a `default_store` that names no store (the error names `kb.toml`).
@@ -594,6 +598,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **1.8a Migration framework: `internal/migrate` and the existing artefacts (no behaviour change)**
 - Design: `docs/design/migrations.md` (D10).
 - Model: Opus (cross-package interface, concurrency and atomicity rules); review: Opus via testing-standards-pass + error-handling-pass
+- Status: done (W6). CODING_STYLE §6.1 and TESTING §6.1 hold the authoring rules.
 - Files: new `internal/migrate/{doc.go,migrate.go,run.go}` + tests; `internal/store/sqlite/migrations.go` (steps become `migrate.Steps[execer]` with IDs `index/0001-baseline`, `index/0002-log-provenance`, `index/0003-vec-width` (Effect reembed)); `internal/store/sqlite/sqlite.go` (`Status`, `Backup` via `VACUUM INTO`, `Verify`: `integrity_check` + `foreign_key_check` + the schema compared with a fresh database at the same version); new `internal/store/sqlite/artefact.go`; `internal/embed/cache/cache.go` (its schema becomes `cache/0001-baseline`) + new `cache/artefact.go`; new `internal/store/sqlite/testdata/mkfixture` and per-version SQL fixtures.
 - Steps:
   1. `migrate.Info{From, ID, Desc, Effect}`, `Step[T]`, `Steps[T]` (`Target`, `Pending`, `Check`), `Status`, the `Artefact{Status, Backup, Apply}` interface, the `Verifier` interface, and `Run(ctx, arts, Options{DryRun, NoBackup, LockWait, Now})` with an advisory `flock` on a sibling `migrate.lock`, backup naming `<file>.bak-v<N>-<YYYYMMDD-HHMMSS>` and pruning to the newest 3.
@@ -611,6 +616,8 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: the flock is advisory and POSIX-only. That is fine (macOS-only development; Windows is a non-goal).
 
 **1.8b `kb migrate` and explicit migration for durable artefacts**
+- Carried from W6 pass: (a) `kb doctor` opens the index read-write, so today it migrates an older database silently; with auto-migration off it must report the pending steps (`sqlite.NewArtefact(ws.DBPath).Status`) as its own check instead of a driver FAIL. (b) `kb stores` opens each DB read-only and shows the `checkVersion` text in the row ("run kb doctor once to upgrade it" today): when that text becomes "run kb migrate up", update `TestStoresAndDoctorOnOtherSchemaVersions`. (c) `kb init` already creates the DB at the target with nothing pending (`TestInitIndexIsAtMigrateTarget`); switch it to `Options.Create` and keep that test. (d) New `.kb/.gitignore` files ignore `migrate.lock`; the location artefact's lock is `.kb/migrate.lock`. (e) Q56 (lock-dir error and Status-error-with-pending rows).
+- Carried from 1.8a: build `sqlite.NewArtefact(<store DB path>)` and `cache.NewArtefact(<cache path>)` in `cli/migrate_cmd.go` and call `migrate.Run`/`Status`. Change the read-only refusal text in `sqlite.checkVersion` ("run kb doctor once to upgrade it") to "run kb migrate up". Turn off auto-migration on open for the index DB; the cache keeps auto-migrating. Q52: delete `TestMigration2KeepsSearchLog` (duplicates `TestStepEffects/index/0002`).
 - Carried from W5 pass: `config.Parse` already emits the older-version Conflict "run kb migrate up" through `checkVersion`. Add the config migration step, plus a test at current+1 once `config.SchemaVersion` is 2.
 - Model: Sonnet (command and wiring from spec); review: Opus via testing-standards-pass
 - Files: `internal/store/sqlite/sqlite.go` (`Options.Create`: only a version-0 file is migrated on open; an older one is Conflict "store … is at schema vN; this kb needs vM. Run: kb migrate up"); new `internal/config/migrate.go` (config and location artefacts: `Steps[map[string]any]`, temp-file + rename, `config.Save`); new `cli/migrate_cmd.go`; `cli/init.go` (`Options.Create`). The `AddCommand` line is added by the orchestrator. It does not edit `cli/setup.go` (3.3b owns it in W7). The refusal comes from `sqlite.Open`, and `report` already maps Conflict to exit 1.
@@ -634,6 +641,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **2.1 Search trace plumbing**
 - Carried from W5 pass: `settings_hash` (`config.EffectiveJSON`) covers `[embed]` and `[search]` only. If a new key changes results, add it there with a hash-changes row in `TestEffectiveJSON`. Wiring a reserved key: delete its rejection in `Validate`, add a boundary row, update the wired/reserved list in `doc.go`; `TestDefaultsGolden` forces a reviewed golden change.
 - Model: Opus (fusion params/trace; defaults must stay bit-identical); review: Sonnet via testing-standards-pass
+- Status: done (W6)
 - Files: `internal/search/search.go`, `internal/store/sqlite/retrieve.go`.
 - Steps:
   1. `Searcher` reads all limits/weights from `config.Search` instead of the constants (`ListLimit`, `CandidateLimit`, `PerEntryCap`, `RRFConstant`, `vecOverFetch`, and the hard-coded `bm25(chunks_fts, 1.0, 2.0, 3.0)` in `ftsList`). The defaults stay identical.
@@ -645,6 +653,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **2.2 `kb explain "<query>"`**
+- Carried from W6 pass: `FTS` with an empty non-nil `ChunkIDs` runs nothing but returns the MATCH expression (a storetest contract). Call it directly for the single-column re-scores; do not route it through `Searcher.ftsList`, whose OR retry fires on "0 rows and a non-empty Match".
 - Model: Sonnet (new command over existing trace); review: Sonnet via testing-standards-pass
 - Files: new `cli/explain.go` and `search/explain.go`.
 - Steps:
@@ -701,6 +710,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **2.5 Log effective settings**
+- Carried from W6 pass: `Outcome.Settings` already carries the per-store `JSON`/`Hash` (each named store's own `[search]`, `TestSearchSettingsArePerStore`); log those, not `config.Default()`'s.
 - Model: Sonnet (additive migration, hash plumbing); review: Sonnet via testing-standards-pass
 - Files: migration 3→4, `sqlite/log.go`, `search` (SearchRecord gets Settings, SettingsHash, FTSMatch), `stats/queries.go` (a `settings` query grouping hit-rate/MRR by `settings_hash`).
 - Tests: the logged row has a hash equal to `config.EffectiveJSON` hash.
@@ -725,6 +735,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 ### Phase 3: Cross-store search
 
 **3.1 Store registry and read-only open**
+- Carried from W6 pass: `workspace.ParseRef` refuses a ref containing `@` or `:` with "NAME@LOCATION refs are not supported yet" (`TestParseRef` rows); 3.1 replaces that branch with the real grammar and must update those rows.
 - Model: Sonnet (resolution order and warnings, clear spec); review: Sonnet via error-handling-pass
 - Changed by D9: refs instead of names; aliases live in `kb.toml [aliases]`.
 - Files: `internal/workspace/refs.go` (extends 1.7b's), `sqlite.Open(..ReadOnly)` (from 1.2).
@@ -757,6 +768,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: different models across stores. This is handled by per-store query embedding, and the shared cache keeps it cheap.
 
 **3.3 Shared embedding cache ∥**
+- Carried from W6 pass (3.3b): the cache's damage and newer-schema messages (`cache.Artefact`, docs/design/migrations.md) tell the user to run `kb model cache --clear`; that command must exist when the cache is wired.
 - Model: Opus (concurrent writers, WAL, degrade-on-error decorator); review: Opus via testing-standards-pass + error-handling-pass
 - Status: 3.3a done (W2): `internal/embed/cache` plus `embed.Cached`, not wired. 3.3b wiring notes from 3.3a:
   - Open `cache.DefaultPath()` (or a config override) in setup. On any `Open` error, including `ErrNewerSchema`, warn and use the plain embedder.
@@ -1084,7 +1096,7 @@ A wave starts when every item of the previous wave is merged and its review pass
 - **W3 (done):** 1.2 alone. It moves store/search/log SQL and rewrites imports across cli, so it collides with everything except 1.6 and 3.3a (which may still be finishing). Move-only commit first, then narrowing.
 - **W4 (done):** 1.1 (owns all of `internal/cli/*`, root.go, setup.go) ∥ 5.1 (links/ new + `entry.ParseFrontMatter`; pulled forward, see 6.5).
 - **W5 (done):** 1.3 (config/ new, setup.go, root.go flags, cli/config_cmd.go), including the named-stores prep (D9). The W5 pass adds the config `version`-first ordering.
-- **W6:**
+- **W6 (done):**
   - lane A: 1.7a → 1.7b → 1.4. 1.7a: workspace/location.go (new). 1.7b: workspace.go, refs.go, config/location.go, cli/root.go, setup.go, report.go, stores.go, cli test helpers. 1.4: init.go, model.go, doctor.go, entry.Discover (5.1 must be merged first, because both edit entry.go).
   - lane B: 2.1: search.go, sqlite/retrieve.go, store/types.go, cli/search.go. It also adds the retrieval-side fields that later items need (see 6.5). 1.7b may touch cli/search.go only where it must to compile, and coordinates with 2.1.
   - lane C: 1.8a: migrate/ (new), sqlite/sqlite.go, sqlite/migrations.go, sqlite/artefact.go, embed/cache/. No overlap with 2.1 (retrieve.go) or lane A.

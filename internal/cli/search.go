@@ -137,7 +137,11 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 		}
 	}
 
-	searcher := &search.Searcher{Store: st, Log: st, Embedder: embedder, KBVersion: Version}
+	settings, err := search.NewSettings(cfg)
+	if err != nil {
+		return err
+	}
+	searcher := &search.Searcher{Store: st, Log: st, Embedder: embedder, KBVersion: Version, Settings: settings}
 	req := search.Request{
 		Query:  opts.query,
 		Mode:   mode,

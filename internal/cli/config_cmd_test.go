@@ -71,7 +71,7 @@ func TestConfigCommand(t *testing.T) {
 
 func TestConfigNoStore(t *testing.T) {
 	t.Chdir(realTempDir(t))
-	if _, errOut, code := run(t, "config"); code != ExitUsage || !strings.Contains(errOut, "no kb store found") {
+	if _, errOut, code := run(t, "config"); code != ExitUsage || !strings.Contains(errOut, "no kb location found") {
 		t.Errorf("exit %d stderr %q", code, errOut)
 	}
 }

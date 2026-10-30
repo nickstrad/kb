@@ -43,6 +43,7 @@ Platform: kb is developed and tested on macOS (darwin/arm64). Tests run there, l
 | chunk | yes | yes | `FuzzSplit` | yes | |
 | embed (+ fake, None; v2 `embed/local` wrapping rembed) | yes | yes | | | **Embedder suite** |
 | store (v2: interfaces) + `store/sqlite` | yes | yes | store model test (§5.2); v2: `FuzzSanitizeFTS` | | **Store suite** |
+| migrate (+ each artefact's adapter, §6.1) | yes | yes, D (`Run`) | `FuzzSteps` | | |
 | reindex | yes | yes, D | | | |
 | search | yes | yes, D | `FuzzSanitizeFTS` (until v2), Fuse/applyCap properties | | |
 | stats, index | | yes | | | |
@@ -135,8 +136,10 @@ func applyCap(cands []Candidate, entryOf map[int64]string, k int) []Candidate {
 
 | Where | Kind | Condition |
 |---|---|---|
-| `search.Fuse` | Post (guarded) | sorted by `RRFScore` desc, then FTS rank, vec rank, chunk id; `len <= CandidateLimit`; no duplicate `ChunkID`; each candidate has `FTSRank` or `VecRank` set |
-| `search.applyCap` | Pre / Post (guarded) | `MinK <= k <= MaxK`; `len(out) <= k`; no entry more than `PerEntryCap` times; `out` is an order-preserving subsequence of `cands` |
+| `search.Fuse` | Post (guarded) | sorted by `RRFScore` desc, then FTS rank, vec rank, chunk id; `len <= Params.CandidateLimit`; no duplicate `ChunkID`; each candidate has `FTSRank` or `VecRank` set |
+| `search.applyCap` | Pre / Post (guarded) | `MinK <= k <= MaxK`; `perEntryCap >= 1`; `len(out) <= k`; no entry more than `perEntryCap` times; `out` is an order-preserving subsequence of `cands`; no returned chunk is `CapDropped` |
+| `search.Searcher.Search` (settings) | Pre | a non-zero `Settings.Params` is `valid()` (positive limits, finite non-negative weights): `config.Validate` guarantees it, so a violation is a caller that skipped validation |
+| `sqlite.Store.FTS` | Pre | `Limit > 0`; every bm25 column weight is finite and `>= 0` |
 | `search.Searcher.Search` | Post | `Mode` is one of the four `Mode*` constants; `Mode == ModeFTSFallback` ⇔ `FallbackErr != nil`; hit ranks are `1..len(Hits)`; `Result.Hits != nil` |
 | `search.SanitizeFTS` | Post | `and` and `or` both empty or both non-empty; even number of `"`; no empty phrase `""` |
 | `chunk.Split` | Post (guarded) | `Ord` runs 0..n-1; `TextHash == Hash(Text)`; chunk 0 has an empty heading |
@@ -286,8 +289,8 @@ func FuzzFuse(f *testing.F) {
 | chunk | Appending `"\n\n## New\n\nbody\n"` to a body with no open code fence leaves every earlier chunk unchanged and adds chunks only at the end | metamorphic | new |
 | chunk | Content preservation: every non-blank, non-heading line of the stripped body appears in some chunk's text | oracle | new; check the exact rule against `splitOversized` first |
 | search | `SanitizeFTS`: both outputs parse in a real FTS5 `MATCH`; every phrase has at least one token; for valid UTF-8, the query's own text as a document is found by the AND query | oracle (SQLite) | `FuzzSanitizeFTS` exists |
-| search | `Fuse`: with one list empty, the order equals that list's order (truncated); dominance (above); moving a chunk up in one list never moves it down in the output | metamorphic | new |
-| search | `applyCap(c, m, k)` is a prefix of `applyCap(c, m, k+1)`; if fewer than k come back, every skipped mapped candidate's entry is already at `PerEntryCap` | metamorphic, maximality | new |
+| search | `Fuse`: with one list empty, the order equals that list's order (truncated); dominance (above); a list of weight 0 adds no score; doubling both weights doubles every score and keeps the order; a larger `rrf_k` never raises a score | metamorphic | `FuzzFuse` exists (internal/search/fuzz_test.go); "moving a chunk up never moves it down" is still new |
+| search | `applyCap(c, m, k, cap)` is a prefix of `applyCap(c, m, k+1, cap)`; if fewer than k come back, every skipped mapped candidate's entry is already at `cap` (and is marked `CapDropped`) | metamorphic, maximality | `FuzzApplyCap` exists (internal/search/fuzz_test.go) |
 | store | Model test: ops decoded from bytes (replace entry with n chunks, delete entry) applied to the store and to a `map[path][]hash`. After each op, the entries and chunk hashes read back match the map, and the three row sets agree (L1). | oracle (stateful) | new; lives in `storetest` so every backend runs it |
 | v2 config | `Load(Save(c)) == c`; `Save(Load(x))` is idempotent | round trip | new |
 | v2 root | From any subdirectory under a `.kb/`, discovery returns the same root; from outside, a NotFound error | metamorphic | new |
@@ -357,6 +360,19 @@ func Run(t *testing.T, e embed.Embedder, caps Caps)
 Callers: `fake`, `None`, and `embed/local` (behind the `model` tag); until v2 deletes them, also `ollama` and `openai` against an `httptest.Server`. Behaviour specific to one implementation (HTTP status to error kind; local model-table prefixes and dims) stays in that implementation's own tests.
 
 Rules: anything a second backend must also do goes in the suite. Behaviour specific to one backend (SQLite PRAGMAs, `Open` idempotence, migrations, concurrent `Open`) stays in that backend's package. Search-layer logic (`Fuse`, `applyCap`) does not depend on the backend and is tested once, in `internal/search`. CLI and search tests do not repeat suite cases.
+
+### 6.1 Migration tests: fixture per version, replay, effect table
+
+Every versioned artefact (CODING_STYLE.md §6.1) has these, in its own package. The framework itself (`internal/migrate`: `Steps.Check`, `Run`'s lock, backup, apply and verify decision table) is tested once, against a fake artefact; adapters do not repeat it.
+
+1. **Fixtures.** One SQL text fixture per version (`testdata/migrations/<artefact>-v<N>.sql`), with realistic rows: entries, chunks, FTS, the embedding model and vectors, and at least one row in every search-log table of that version. It is generated once by the package's `-write-fixtures` test flag (steps `0..N-1` applied, rows inserted, dumped as `quote()` literals) and checked in as text, never binary. **A fixture is never edited or regenerated**: it freezes what an older kb wrote, so an edit to an old step fails the fixture test instead of passing silently. A new step adds the next fixture.
+2. **Replay (one per artefact):**
+   - building the artefact one version at a time gives the same normalised schema and `user_version` as creating it fresh at the target;
+   - every fixture matches the steps' schema at its own version (`Verify`), and upgraded to the target it passes `Verify` with every search-log row preserved;
+   - every new step must keep both green.
+3. **Per step:** the fixture at `From`, upgraded by that step alone, shows the step's effect (columns renamed, tables cleared, `body_hash` emptied) and keeps the search log (renamed columns compared under their new names). A step without an effect check fails the test.
+4. **Effect table:** a test lists `(step ID, Effect)` for every step, so adding a step or changing an effect is a reviewed diff.
+5. **Interruption:** a cancel during the last pending step leaves the starting version and schema (one transaction), and a rerun succeeds. A driver fault at each statement of the upgrade does the same (fault driver).
 
 ## 7. Test doubles and determinism
 

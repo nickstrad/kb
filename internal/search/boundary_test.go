@@ -31,7 +31,7 @@ func TestFuseCandidateLimitBoundary(t *testing.T) {
 					vec = append(vec, VecRow{ChunkID: int64(i + 1)})
 				}
 			}
-			if got := Fuse(fts, vec); len(got) != tc.want {
+			if got := Fuse(fts, vec, DefaultParams()); len(got) != tc.want {
 				t.Fatalf("len(Fuse) = %d, want %d", len(got), tc.want)
 			}
 		})
@@ -79,7 +79,7 @@ func TestApplyCapBoundaries(t *testing.T) {
 		{"empty candidates", 0, distinct(0), MaxK, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := applyCap(cands(tc.n), tc.entryOf, tc.k)
+			got := applyCap(cands(tc.n), tc.entryOf, tc.k, PerEntryCap)
 			if len(got) != tc.want {
 				t.Fatalf("len(applyCap) = %d, want %d", len(got), tc.want)
 			}

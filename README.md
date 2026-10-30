@@ -5,9 +5,12 @@ FTS5 and sqlite-vec, searches them with hybrid full-text + vector ranking, logs 
 records feedback on what helped so `kb stats` can show where the store falls short.
 
 This repository holds the Go CLI. Knowledge entries
-live in a separate knowledge repository (the store): entries in `<store>/data/`, the index and
-search log in `<store>/.kb/kb.sqlite`. kb uses the nearest directory at or above the current one
-that has a `.kb/`; `--root DIR` and `--global` name a store explicitly.
+live in a separate knowledge repository. A **location** is a directory with a `.kb/` folder
+(`.kb/kb.toml`); it holds one or more named **stores**, each with its own config, embedder, index
+and search log in `.kb/stores/<name>/` (`config.toml`, `kb.sqlite`). Entries are in `<location>/data/`.
+kb uses the nearest directory at or above the current one that has `.kb/kb.toml`; `--root DIR` and
+`--global` name a location explicitly, and `--store NAME` picks a store (default: `default_store`
+in `kb.toml`). Only `kb init` creates a location or a store; `kb stores` lists them.
 
 ## Install
 
@@ -53,8 +56,10 @@ search (exit 2) and says to run `kb model pull`.
 ## Use in a project
 
 ```bash
-cd <project>/knowledge   # kb finds the store by walking up to .kb/; or pass --root DIR / --global
-kb model pull
+cd <project>/knowledge   # kb finds the location by walking up to .kb/kb.toml; or pass --root DIR / --global
+kb init                  # creates .kb/ and the "default" store, and downloads the model
+kb init --name adr       # optional: a second store, used with --store adr
+kb stores                # list the stores
 kb add <draft.md>
 kb search "<question>" --caller claude
 ```
@@ -66,7 +71,7 @@ kb search "<question>" --caller claude
 | 0 | success |
 | 1 | a well-formed failure: bad flag or argument, no such entry or search, an embedding-model mismatch, a damaged or locked database, or an interrupt (Ctrl-C) |
 | 2 | the embedder is unavailable: a hybrid search fell back to full-text search, or indexing could not load the model |
-| 3 | internal error (a kb bug). The details go to `<root>/.kb/kb.log` (or `~/Library/Caches/kb/kb.log` when there is no store) under the id printed on stderr; `--debug` prints them too. Please report it. |
+| 3 | internal error (a kb bug). The details go to `<location>/.kb/kb.log` (or `~/Library/Caches/kb/kb.log` when there is no location) under the id printed on stderr; `--debug` prints them too. Please report it. |
 
 ## Using kb from an agent
 

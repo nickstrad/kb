@@ -92,15 +92,34 @@ const (
 )
 
 // FTSQuery is one full-text query. Terms are raw user fields (search splits on whitespace); the
-// backend quotes and sanitises each one. Tag, when set, keeps only entries carrying it.
+// backend quotes and sanitises each one. Tag, when set, keeps only entries carrying it. Weights
+// are the per-column relevance weights; nil means DefaultBM25(). ChunkIDs, when non-nil, restricts
+// the query to those chunks (an empty non-nil slice matches nothing), so a caller can re-score a
+// known candidate set.
 type FTSQuery struct {
-	Terms []string
-	Op    FTSOp
-	Tag   string
-	Limit int
+	Terms    []string
+	Op       FTSOp
+	Tag      string
+	Limit    int
+	Weights  *BM25Weights
+	ChunkIDs []int64
 }
 
-// FTSResult is the ranked rows plus the backend-native expression that ran ("" if none did).
+// BM25Weights are the column weights of the full-text score: chunk text, heading and entry
+// title. Each is finite and 0 or more; a 0 column adds nothing to the score.
+type BM25Weights struct {
+	Text    float64
+	Heading float64
+	Title   float64
+}
+
+// DefaultBM25 is the weighting an FTSQuery without Weights uses: a title hit counts three times
+// a body hit, a heading hit twice.
+func DefaultBM25() BM25Weights { return BM25Weights{Text: 1.0, Heading: 2.0, Title: 3.0} }
+
+// FTSResult is the ranked rows plus the backend-native expression built from the terms ("" when
+// every term sanitised away and nothing ran). An empty non-nil ChunkIDs runs nothing but still
+// reports the expression.
 type FTSResult struct {
 	Rows  []FTSRow
 	Match string
@@ -128,11 +147,16 @@ type VecRow struct {
 	Distance float64
 }
 
-// ChunkMeta is the display data of one chunk.
+// ChunkMeta is the display data of one chunk and where it sits: its entry (id, path, updated
+// date, "" when unset) and its source file and position in that entry.
 type ChunkMeta struct {
-	EntryPath string
-	Heading   string
-	Text      string
+	EntryPath    string
+	Heading      string
+	Text         string
+	EntryID      int64
+	EntryUpdated string
+	Ord          int
+	SourceFile   string
 }
 
 // WholeSearchRank is the feedback rank of a whole-search verdict (kb feedback N --none). No

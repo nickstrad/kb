@@ -167,22 +167,25 @@ func newIncidentID() string {
 	return hex.EncodeToString(b)
 }
 
-// incidentLogPath is <root>/.kb/kb.log when the store's .kb exists, else the user cache dir's
-// kb/kb.log. It never creates a store directory.
+// incidentLogPath is <root>/.kb/kb.log when the location's .kb exists, else the user cache dir's
+// kb/kb.log. It never creates a directory.
 //
-// The store is the one the command ran on (--root, --global or discovery from the working
-// directory). When none resolves, because discovery failed or the flags did not parse, the
-// incident goes to the user cache dir.
+// The location is the one the command ran in (--root, --global, --store global or discovery from
+// the working directory). When none resolves, because discovery failed or the flags did not parse,
+// the incident goes to the user cache dir. The log is per location, not per store.
 func incidentLogPath(d *deps, cmd *cobra.Command) (string, error) {
 	var rootFlag string
 	var global bool
 	if cmd != nil { // Get* fails only for an undefined flag (a panic before flags exist): use discovery
 		rootFlag, _ = cmd.Flags().GetString("root")
 		global, _ = cmd.Flags().GetBool("global")
+		if s, _ := cmd.Flags().GetString("store"); s == workspace.GlobalName && rootFlag == "" {
+			global = true
+		}
 	}
-	if ws, err := workspace.Resolve(rootFlag, global, d.workspaceEnv()); err == nil {
-		if fi, err := os.Stat(ws.KBDir); err == nil && fi.IsDir() {
-			return filepath.Join(ws.KBDir, "kb.log"), nil
+	if loc, err := workspace.ResolveLocation(rootFlag, global, d.workspaceEnv()); err == nil {
+		if fi, err := os.Stat(loc.KBDir); err == nil && fi.IsDir() {
+			return filepath.Join(loc.KBDir, "kb.log"), nil
 		}
 	}
 	base, err := d.userCacheDir()

@@ -4,6 +4,7 @@ package sqlite
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/nickstrad/kb/internal/assert"
@@ -55,9 +56,15 @@ func TestRowSetInvariantFires(t *testing.T) {
 	}
 }
 
-// TestRetrieverPreconditions: a non-positive limit or k is a caller bug.
+// TestRetrieverPreconditions: a non-positive limit or k, or an unusable bm25 weight, is a caller
+// bug.
 func TestRetrieverPreconditions(t *testing.T) {
 	st := openFaulty(t, 4)
 	mustViolate(t, "precondition", func() { st.FTS(context.Background(), store.FTSQuery{Terms: []string{"x"}}) })
+	for _, w := range []store.BM25Weights{{Text: -1}, {Heading: math.NaN()}, {Title: math.Inf(1)}} {
+		mustViolate(t, "precondition", func() {
+			st.FTS(context.Background(), store.FTSQuery{Terms: []string{"x"}, Limit: 1, Weights: &w})
+		})
+	}
 	mustViolate(t, "precondition", func() { st.KNN(context.Background(), store.KNNQuery{Vec: []float32{1}}) })
 }

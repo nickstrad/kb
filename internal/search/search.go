@@ -1,11 +1,12 @@
 // Package search is the hybrid searcher: a full-text list and a KNN list from a store.Retriever,
-// fused with reciprocal rank fusion, capped to PerEntryCap chunks per entry, and logged through a
-// Logger. It holds no SQL; the backend owns query syntax.
+// fused with weighted reciprocal rank fusion, capped to a number of chunks per entry, and logged
+// through a Logger. It holds no SQL; the backend owns query syntax.
 //
-// Inputs: a Request and an embedder. Outputs: an Outcome (the Result plus everything the log
-// records). Invariants (asserted): the fused list is totally ordered, duplicate-free and at most
-// CandidateLimit long; the returned list is at most k long, at most PerEntryCap per entry and an
-// order-preserving subsequence of the fused list.
+// Inputs: a Request, an embedder and Settings (the [search] Params plus the settings hash).
+// Outputs: an Outcome (the Result, everything the log records and the trace: settings, FTS
+// expression, OR retry, cap drops). Invariants (asserted): the fused list is totally ordered,
+// duplicate-free and at most Params.CandidateLimit long; the returned list is at most k long, at
+// most Params.PerEntryCap per entry and an order-preserving subsequence of the fused list.
 package search
 
 import (
@@ -30,7 +31,8 @@ const (
 	ModeFTSFallback = "fts-fallback"
 )
 
-// Defaults and limits from the CLI contract and the search algorithm.
+// The k range from the CLI contract, and the default [search] values (DefaultParams; a test pins
+// them to config.Default).
 const (
 	DefaultK       = 8
 	MinK           = 1
@@ -41,8 +43,9 @@ const (
 	RRFConstant    = 60
 )
 
-// vecOverFetch is how many neighbours the KNN fetches before a tag filter narrows them: the vector
-// index cannot filter on the entry's tags, so without it a rare tag would come back nearly empty.
+// vecOverFetch is the default number of neighbours the KNN fetches before a tag filter narrows
+// them: the vector index cannot filter on tags, so without it a rare tag would come back nearly
+// empty.
 const vecOverFetch = 60
 
 // ErrNoVectors means the index has no vectors: it is FTS only, or it was migrated to schema 3 and
@@ -93,11 +96,13 @@ type Logger interface {
 }
 
 // Searcher runs searches against one index, using Embedder for the vector list. A nil Embedder
-// means vector search is unavailable and hybrid degrades to fts-fallback.
+// means vector search is unavailable and hybrid degrades to fts-fallback. Settings left zero
+// means DefaultSettings.
 type Searcher struct {
 	Store    store.Retriever
 	Log      Logger
 	Embedder embed.Embedder
+	Settings Settings
 	// KBVersion is the kb binary's version, stored in searches.kb_version.
 	KBVersion string
 	// CorpusRev optionally names the corpus revision, stored in searches.corpus_rev.
@@ -106,9 +111,10 @@ type Searcher struct {
 
 // Candidate is one chunk in the fused list. FTSRank/FTSScore are nil when the chunk was not in
 // the FTS list and VecRank/VecDistance are nil when it was not in the vector list; at least one
-// pair is always set. RRFScore is the reciprocal-rank-fusion score the list is sorted by. The
-// path/heading/text fields are filled in once the candidates are looked up in the database, so
-// the log can write search_candidates without re-reading anything.
+// pair is always set. RRFScore is the reciprocal-rank-fusion score the list is sorted by.
+// CapDropped is true when the diversity cap skipped the chunk because its entry already filled
+// its places. The path/heading/text fields are filled in once the candidates are looked up in the
+// database, so the log can write search_candidates without re-reading anything.
 type Candidate struct {
 	ChunkID     int64
 	FTSRank     *int
@@ -116,6 +122,7 @@ type Candidate struct {
 	VecRank     *int
 	VecDistance *float64
 	RRFScore    float64
+	CapDropped  bool
 
 	EntryPath string
 	Heading   string
@@ -125,10 +132,12 @@ type Candidate struct {
 // Outcome is everything one search produced: the caller-facing Result plus the full candidate
 // list, the per-stage timings and the counts that searches/search_results/search_candidates need.
 // Mode is the mode that actually ran, which is ModeFTSFallback when a hybrid search lost its
-// embedder; in that case FallbackErr says why and Search still returns a nil error.
+// embedder; in that case FallbackErr says why and Search still returns a nil error. Settings,
+// FTSMatch and FTSFallbackToOr are the trace: what the search ran with, the FTS expression that
+// produced the FTS list ("" when none ran) and whether it is the OR retry.
 type Outcome struct {
 	Result     *Result
-	Candidates []Candidate // the fused list, top CandidateLimit, in fused order
+	Candidates []Candidate // the fused list, top Params.CandidateLimit, in fused order
 	Returned   []Candidate // the subset that survived the diversity cap and k (returned=1)
 	Mode       string
 
@@ -144,6 +153,10 @@ type Outcome struct {
 	TagFilter   string
 	K           int
 	FallbackErr error
+
+	Settings        Settings
+	FTSMatch        string
+	FTSFallbackToOr bool
 }
 
 // FTSRow and VecRow are the two ranked lists Fuse takes, as the store returns them.
@@ -152,11 +165,13 @@ type (
 	VecRow = store.VecRow
 )
 
-// Fuse merges the two lists with reciprocal rank fusion: a chunk scores 1/(RRFConstant+rank) for
-// every list it appears in, rank starting at 1. The result is sorted by score descending and
-// truncated to CandidateLimit. Ties are broken by FTS rank, then vector rank, then chunk id, all
-// ascending (a missing rank sorts last), so the same two lists always fuse to the same order.
-func Fuse(fts []FTSRow, vec []VecRow) []Candidate {
+// Fuse merges the two lists with weighted reciprocal rank fusion: a chunk scores
+// w/(p.RRFK+rank) for every list it appears in, rank starting at 1 and w that list's weight
+// (p.FTSWeight, p.VecWeight). The result is sorted by score descending and truncated to
+// p.CandidateLimit. Ties are broken by FTS rank, then vector rank, then chunk id, all ascending (a
+// missing rank sorts last), so the same lists and params always fuse to the same order. A list
+// of weight 0 still contributes its chunks and ranks, but no score.
+func Fuse(fts []FTSRow, vec []VecRow, p Params) []Candidate {
 	byChunk := make(map[int64]*Candidate, len(fts)+len(vec))
 	order := make([]int64, 0, len(fts)+len(vec))
 
@@ -176,7 +191,7 @@ func Fuse(fts []FTSRow, vec []VecRow) []Candidate {
 		score := r.Score
 		c.FTSRank = &rank
 		c.FTSScore = &score
-		c.RRFScore += 1 / float64(RRFConstant+rank)
+		c.RRFScore += p.FTSWeight / float64(p.RRFK+rank)
 	}
 	for i, r := range vec {
 		rank := i + 1
@@ -184,7 +199,7 @@ func Fuse(fts []FTSRow, vec []VecRow) []Candidate {
 		distance := r.Distance
 		c.VecRank = &rank
 		c.VecDistance = &distance
-		c.RRFScore += 1 / float64(RRFConstant+rank)
+		c.RRFScore += p.VecWeight / float64(p.RRFK+rank)
 	}
 
 	out := make([]Candidate, 0, len(order))
@@ -192,11 +207,11 @@ func Fuse(fts []FTSRow, vec []VecRow) []Candidate {
 		out = append(out, *byChunk[id])
 	}
 	sort.Slice(out, func(i, j int) bool { return fusedBefore(out[i], out[j]) })
-	if len(out) > CandidateLimit {
-		out = out[:CandidateLimit]
+	if len(out) > p.CandidateLimit {
+		out = out[:p.CandidateLimit]
 	}
 	if assert.Enabled {
-		assertFused(out)
+		assertFused(out, p.CandidateLimit)
 	}
 	return out
 }
@@ -216,9 +231,9 @@ func fusedBefore(a, b Candidate) bool {
 }
 
 // assertFused checks Fuse's postconditions: strictly ordered (which also rules out duplicates
-// adjacent after sorting), no duplicate chunk ids, within CandidateLimit, a rank in some list.
-func assertFused(out []Candidate) {
-	assert.Post(len(out) <= CandidateLimit, "Fuse: len=%d > CandidateLimit=%d", len(out), CandidateLimit)
+// adjacent after sorting), no duplicate chunk ids, within limit, a rank in some list.
+func assertFused(out []Candidate, limit int) {
+	assert.Post(len(out) <= limit, "Fuse: len=%d > CandidateLimit=%d", len(out), limit)
 	seen := make(map[int64]bool, len(out))
 	for i, c := range out {
 		assert.Post(!seen[c.ChunkID], "Fuse: chunk %d appears twice", c.ChunkID)
@@ -240,14 +255,16 @@ func rankOrMax(p *int) int {
 }
 
 // applyCap is the diversity cap: walking the fused list in order, a chunk is skipped once its
-// entry already holds PerEntryCap places in the returned list, and the walk stops at k. The
-// candidate list itself is unaffected, so recall analysis can see what the cap dropped. A chunk
-// missing from entryOf is skipped: without an entry it can neither be capped nor displayed.
-func applyCap(cands []Candidate, entryOf map[int64]string, k int) []Candidate {
+// entry already holds perEntryCap places in the returned list, and the walk stops at k. The
+// candidate list keeps every chunk, so recall analysis can see what the cap dropped; each chunk
+// the cap skipped gets CapDropped set in cands. A chunk missing from entryOf is skipped, not
+// marked: without an entry it can neither be capped nor displayed.
+func applyCap(cands []Candidate, entryOf map[int64]string, k, perEntryCap int) []Candidate {
 	assert.Pre(k >= MinK && k <= MaxK, "applyCap: k=%d outside [MinK,MaxK]", k)
+	assert.Pre(perEntryCap >= 1, "applyCap: perEntryCap=%d must be positive", perEntryCap)
 	out := make([]Candidate, 0, k)
 	perEntry := make(map[string]int)
-	for _, c := range cands {
+	for i, c := range cands {
 		if len(out) >= k {
 			break
 		}
@@ -255,28 +272,30 @@ func applyCap(cands []Candidate, entryOf map[int64]string, k int) []Candidate {
 		if !ok {
 			continue
 		}
-		if perEntry[path] >= PerEntryCap {
+		if perEntry[path] >= perEntryCap {
+			cands[i].CapDropped = true
 			continue
 		}
 		perEntry[path]++
 		out = append(out, c)
 	}
 	if assert.Enabled {
-		assertCapped(cands, out, entryOf, k)
+		assertCapped(cands, out, entryOf, k, perEntryCap)
 	}
 	return out
 }
 
-// assertCapped checks applyCap's postconditions: at most k, at most PerEntryCap per entry, and
-// an order-preserving subsequence of cands.
-func assertCapped(cands, out []Candidate, entryOf map[int64]string, k int) {
+// assertCapped checks applyCap's postconditions: at most k, at most perEntryCap per entry, an
+// order-preserving subsequence of cands, and no returned chunk marked CapDropped.
+func assertCapped(cands, out []Candidate, entryOf map[int64]string, k, perEntryCap int) {
 	assert.Post(len(out) <= k, "applyCap: len(out)=%d > k=%d", len(out), k)
 	perEntry := make(map[string]int)
 	j := 0
 	for _, c := range out {
 		perEntry[entryOf[c.ChunkID]]++
-		assert.Post(perEntry[entryOf[c.ChunkID]] <= PerEntryCap, "applyCap: entry %q appears more than PerEntryCap=%d times",
-			entryOf[c.ChunkID], PerEntryCap)
+		assert.Post(perEntry[entryOf[c.ChunkID]] <= perEntryCap, "applyCap: entry %q appears more than PerEntryCap=%d times",
+			entryOf[c.ChunkID], perEntryCap)
+		assert.Post(!c.CapDropped, "applyCap: returned chunk %d is marked CapDropped", c.ChunkID)
 		for j < len(cands) && cands[j].ChunkID != c.ChunkID {
 			j++
 		}
@@ -338,6 +357,11 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 		return nil, errs.New(errs.Usage, op, "unknown mode %q (want hybrid, fts or vec)", req.Mode)
 	}
 	k := ClampK(req.K)
+	settings, err := s.settings()
+	if err != nil {
+		return nil, err
+	}
+	p := settings.Params
 
 	out := &Outcome{
 		Mode:       mode,
@@ -345,6 +369,7 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 		K:          k,
 		Candidates: []Candidate{},
 		Returned:   []Candidate{},
+		Settings:   settings,
 	}
 
 	// Vector side first: whether it works decides the mode finally recorded. Missing vectors are
@@ -375,7 +400,7 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 		} else {
 			out.EmbedModel = s.Embedder.Model()
 			vecStart := time.Now()
-			vec, err = s.Store.KNN(ctx, store.KNNQuery{Vec: qvec, K: ListLimit, Tag: req.Tag, OverFetch: vecOverFetch})
+			vec, err = s.Store.KNN(ctx, store.KNNQuery{Vec: qvec, K: p.ListLimit, Tag: req.Tag, OverFetch: p.VecOverFetch})
 			out.VecMs = time.Since(vecStart).Milliseconds()
 			if err != nil {
 				return nil, err
@@ -386,17 +411,19 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 	var fts []FTSRow
 	if out.Mode != ModeVec {
 		ftsStart := time.Now()
-		rows, err := s.ftsList(ctx, strings.Fields(req.Query), req.Tag)
+		res, retried, err := s.ftsList(ctx, strings.Fields(req.Query), req.Tag, p)
 		out.FTSMs = time.Since(ftsStart).Milliseconds()
 		if err != nil {
 			return nil, err
 		}
-		fts = rows
+		fts = res.Rows
+		out.FTSMatch = res.Match
+		out.FTSFallbackToOr = retried
 	}
 	out.NFTS = len(fts)
 	out.NVec = len(vec)
 
-	cands := Fuse(fts, vec)
+	cands := Fuse(fts, vec, p)
 	ids := make([]int64, len(cands))
 	for i, c := range cands {
 		ids[i] = c.ChunkID
@@ -416,10 +443,10 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 			cands[i].Text = m.Text
 		}
 	}
+	returned := applyCap(cands, entryOf, k, p.PerEntryCap)
 	if len(cands) > 0 {
 		out.Candidates = cands
 	}
-	returned := applyCap(cands, entryOf, k)
 	if len(returned) > 0 {
 		out.Returned = returned
 	}
@@ -442,20 +469,22 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 }
 
 // ftsList runs the full-text list: all terms ANDed first and, if that matches nothing and there
-// is more than one term, ORed (one unknown word should not empty a good query).
-func (s *Searcher) ftsList(ctx context.Context, terms []string, tag string) ([]FTSRow, error) {
-	q := store.FTSQuery{Terms: terms, Op: store.OpAnd, Tag: tag, Limit: ListLimit}
-	res, err := s.Store.FTS(ctx, q)
-	if err != nil {
-		return nil, err
+// is more than one term, ORed (one unknown word should not empty a good query). retried reports
+// that the OR query is the one that produced res.
+func (s *Searcher) ftsList(ctx context.Context, terms []string, tag string, p Params) (res store.FTSResult, retried bool, err error) {
+	weights := p.BM25
+	q := store.FTSQuery{Terms: terms, Op: store.OpAnd, Tag: tag, Limit: p.ListLimit, Weights: &weights}
+	if res, err = s.Store.FTS(ctx, q); err != nil {
+		return store.FTSResult{}, false, err
 	}
 	if len(res.Rows) == 0 && res.Match != "" && len(terms) > 1 {
 		q.Op = store.OpOr
 		if res, err = s.Store.FTS(ctx, q); err != nil {
-			return nil, err
+			return store.FTSResult{}, false, err
 		}
+		return res, true, nil
 	}
-	return res.Rows, nil
+	return res, false, nil
 }
 
 // embedQuery embeds the query with the embedder's query prefix, timing it on its own because it

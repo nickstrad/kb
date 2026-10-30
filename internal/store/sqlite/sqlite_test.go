@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"github.com/nickstrad/kb/internal/errs"
+	"github.com/nickstrad/kb/internal/migrate"
 	"github.com/nickstrad/kb/internal/store"
 	"math"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -949,11 +951,14 @@ func TestMigrateRunsOnlyOutstandingMigrations(t *testing.T) {
 
 	origMigrations, origVersion := migrations, schemaVersion
 	defer func() { migrations, schemaVersion = origMigrations, origVersion }()
-	migrations = append(append([]func(execer) error{}, origMigrations...), func(db execer) error {
-		_, err := db.Exec("CREATE TABLE probe (id INTEGER PRIMARY KEY)")
-		return err
+	migrations = append(slices.Clone(origMigrations), migrate.Step[execer]{
+		Info: migrate.Info{From: len(origMigrations), ID: "index/9999-probe", Desc: "probe"},
+		Up: func(ctx context.Context, db execer) error {
+			_, err := db.ExecContext(ctx, "CREATE TABLE probe (id INTEGER PRIMARY KEY)")
+			return err
+		},
 	})
-	schemaVersion = len(migrations)
+	schemaVersion = migrations.Target()
 
 	second, err := Open(context.Background(), path, Options{})
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math"
 	"os"
@@ -51,8 +52,8 @@ type Source struct {
 	Exclude []string `toml:"exclude"`
 }
 
-// Search is [search]: retrieval settings. Only K is read by a command today; the rest are the
-// constants of the search package until its trace work passes them in.
+// Search is [search]: retrieval settings. K, the limits, rrf_k, vec_overfetch, bm25 and the fts
+// and vec list weights drive kb search; the other keys are reserved (see the package doc).
 type Search struct {
 	K                int         `toml:"k" json:"k"`
 	ListLimit        int         `toml:"list_limit" json:"list_limit"`
@@ -140,22 +141,80 @@ func (l Log) OpenWindowDuration() time.Duration {
 	return d
 }
 
+// MaxFileBytes is the largest config or location file kb reads (1 MiB). A bigger file is refused
+// before it is read, so a stray or hostile multi-GB file costs one stat, not its full size in memory.
+const MaxFileBytes = 1 << 20
+
 // Read parses the file at path onto the defaults and validates it. found is false, with the
 // defaults and a nil error, when the file does not exist. Errors are Usage and name the file (and
-// the key or line).
+// the key or line). A file larger than MaxFileBytes, or one that is not a regular file (a
+// directory, a FIFO, a device such as a symlink to /dev/zero), is refused unread.
 func Read(path string) (c Config, found bool, err error) {
-	data, err := os.ReadFile(path)
+	data, regular, err := readCapped("config.Read", "config", path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return Default(), false, nil
 	}
 	if err != nil {
-		return Config{}, false, errs.Wrap(err, errs.Usage, "config.Read", "cannot read config %s: %v", path, err)
+		return Config{}, regular, err
 	}
 	c, err = Parse(data, path)
 	if err != nil {
 		return Config{}, true, err
 	}
 	return c, true, nil
+}
+
+// readCapped reads a small text file kb owns: a regular file of at most MaxFileBytes. regular
+// reports that path is a regular file (also when it is refused for its size). A missing file is
+// returned as the os error (wrapping fs.ErrNotExist) for the caller to classify; every other
+// failure is a Usage error naming the file. what names the file kind in messages.
+//
+// The stat check refuses non-regular files before they are opened (opening a FIFO would block,
+// and a device never ends); the limited read still refuses a file that grew past the cap after
+// the stat.
+func readCapped(op, what, path string) (data []byte, regular bool, err error) {
+	info, err := os.Stat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, false, err
+	case err != nil:
+		return nil, false, errs.Wrap(err, errs.Usage, op, "cannot read %s %s: %v", what, path, err)
+	case !info.Mode().IsRegular():
+		return nil, false, errs.New(errs.Usage, op, "%s: is %s, not a regular file; a %s file must be a plain file", path, fileKind(info.Mode()), what)
+	case info.Size() > MaxFileBytes:
+		return nil, true, errs.New(errs.Usage, op, "%s: file is %d bytes; a %s file may be at most %d bytes (1 MiB)", path, info.Size(), what, MaxFileBytes)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false, err // removed after the stat
+		}
+		return nil, true, errs.Wrap(err, errs.Usage, op, "cannot read %s %s: %v", what, path, err)
+	}
+	defer f.Close() // read-only: a close error loses nothing
+	data, err = io.ReadAll(io.LimitReader(f, MaxFileBytes+1))
+	if err != nil {
+		return nil, true, errs.Wrap(err, errs.Usage, op, "cannot read %s %s: %v", what, path, err)
+	}
+	if len(data) > MaxFileBytes {
+		return nil, true, errs.New(errs.Usage, op, "%s: file is over %d bytes; a %s file may be at most %d bytes (1 MiB)", path, MaxFileBytes, what, MaxFileBytes)
+	}
+	return data, true, nil
+}
+
+// fileKind names a non-regular file type for messages.
+func fileKind(m fs.FileMode) string {
+	switch {
+	case m.IsDir():
+		return "a directory"
+	case m&fs.ModeNamedPipe != 0:
+		return "a named pipe"
+	case m&fs.ModeDevice != 0:
+		return "a device"
+	case m&fs.ModeSocket != 0:
+		return "a socket"
+	}
+	return "a special file (" + m.Type().String() + ")"
 }
 
 // Load is Read without the found flag: a missing file gives the defaults.
@@ -289,8 +348,8 @@ func (c Config) Validate(src string) error {
 		return nil
 	}
 	weight := func(key string, v float64) error {
-		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
-			return problem(key, "must be a finite number, 0 or more (got %v)", v)
+		if math.IsNaN(v) || v < 0 || v > MaxWeight {
+			return problem(key, "must be between 0 and %v (got %v)", MaxWeight, v)
 		}
 		return nil
 	}
@@ -338,15 +397,19 @@ func (c Config) Validate(src string) error {
 	for _, f := range []struct {
 		key string
 		v   int
+		max int // 0 = no upper bound
 	}{
-		{"search.list_limit", s.ListLimit},
-		{"search.candidate_limit", s.CandidateLimit},
-		{"search.per_entry_cap", s.PerEntryCap},
-		{"search.rrf_k", s.RRFK},
-		{"search.vec_overfetch", s.VecOverfetch},
+		{"search.list_limit", s.ListLimit, MaxListLimit},
+		{"search.candidate_limit", s.CandidateLimit, MaxCandidateLimit},
+		{"search.per_entry_cap", s.PerEntryCap, 0},
+		{"search.rrf_k", s.RRFK, MaxRRFK},
+		{"search.vec_overfetch", s.VecOverfetch, MaxVecOverfetch},
 	} {
 		if err := min1(f.key, f.v); err != nil {
 			return err
+		}
+		if f.max > 0 && f.v > f.max {
+			return problem(f.key, "must be between 1 and %d (got %d)", f.max, f.v)
 		}
 	}
 	if s.CandidateLimit < s.K {

@@ -139,21 +139,6 @@ func TestSupportedIsSortedAndLookupable(t *testing.T) {
 	}
 }
 
-func TestDefaultCacheDir(t *testing.T) {
-	t.Setenv("HOME", "/Users/someone")
-	dir, err := DefaultCacheDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dir != "/Users/someone/Library/Caches/kb/models" {
-		t.Fatalf("DefaultCacheDir() = %q", dir)
-	}
-	t.Setenv("HOME", "")
-	if _, err := DefaultCacheDir(); err == nil {
-		t.Fatal("DefaultCacheDir with no HOME succeeded")
-	}
-}
-
 // TestPullCorruptCacheFailsOffline: rembed skips files already in the cache and parses
 // config.json before fetching anything else, so a garbage config fails Pull with no network.
 func TestPullCorruptCacheFailsOffline(t *testing.T) {

@@ -6,6 +6,15 @@ const (
 	MinK = 1
 	MaxK = 20
 
+	// Upper bounds of the [search] tuning keys. MaxListLimit and MaxVecOverfetch are sqlite-vec's
+	// largest KNN k; the fused list holds at most two lists' worth, so a larger candidate_limit
+	// changes nothing. MaxRRFK and MaxWeight keep every fused score finite.
+	MaxListLimit      = 4096
+	MaxCandidateLimit = 2 * MaxListLimit
+	MaxVecOverfetch   = 4096
+	MaxRRFK           = 100000
+	MaxWeight         = 1000.0
+
 	// SchemaVersion is the config schema version this kb reads.
 	SchemaVersion = 1
 

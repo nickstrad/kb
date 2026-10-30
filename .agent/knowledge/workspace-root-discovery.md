@@ -1,24 +1,37 @@
-# Root discovery: workspace.Resolve and how cli tests pick a store
+# Location and store resolution: workspace, config.Location, kb init
 
-> The store is --root, else --global, else the nearest ancestor with .kb/config.toml or .kb/kb.sqlite; there is no KB_ROOT, and tests chdir into the store.
+> A location is the nearest ancestor with .kb/kb.toml (or --root/--global); the store is --store, else kb.toml default_store; only kb init creates either; cli tests chdir into a made location.
 
-**Fact.** `workspace.Resolve(rootFlag, global, Env)` (internal/workspace) is pure apart from stat calls; `Env`
-carries cwd, home, XDG_DATA_HOME and the cache base, and `workspace.OSEnv()` is the only os reader. cli reaches it
-through `deps.workspaceEnv` and `d.workspace(cmd)`; `incidentLogPath(d, cmd)` resolves the same way and falls back
-to the user cache dir. Discovery resolves symlinks in the cwd first (physical parent chain); `--root`/`--global`
-are only made absolute and cleaned. Discovery never creates `.kb/`; `--root`/`--global` may name a missing dir and
-add/reindex create `.kb/` there (interim until `kb init`, 1.4).
+**Fact.** `workspace.ResolveLocation(rootFlag, global, env)` (internal/workspace/location.go) is pure apart from stat
+calls: `--root` > `--global` ($XDG_DATA_HOME/kb, else ~/.local/share/kb) > walk up for `.kb/kb.toml` as a regular file
+(physical parent chain; a nested location wins). `--root`/`--global` name a location that may not exist. `Env`
+carries cwd, home, XDG_DATA_HOME and the cache base; `workspace.OSEnv()` is the only os reader and cli reaches it
+through `deps.workspaceEnv`. `TargetLocation` is the same for `kb init`: no flag means the working directory itself,
+never an ancestor. `Location.Store(name)` needs `stores/<name>/config.toml` as a regular file (else NotFound listing the
+stores); `StoreAt` builds the Workspace without that check (init). `ValidName` (`^[a-z0-9][a-z0-9_-]{0,31}$`, not
+`global`) is what keeps StoreDir a direct child of `.kb/stores`. `Workspace` keeps `Root` (the location root), `KBDir`,
+`DBPath`/`ConfigPath` (inside `StoreDir`), `Location`, `Store`. `workspace.ModelsDirOf(cacheBase)` is the one rule for the
+model cache; production `deps.modelCacheDir` uses it.
 
-**Why it matters.** Tests that expect "no .kb created" must check `.kb/kb.sqlite`, since the test store already has
-`.kb/config.toml`. Roots on macOS differ between `t.TempDir()` (/var) and discovery (/private/var).
+cli: `deps.location(cmd)` = resolve + `config.ReadLocation` (a missing kb.toml is NotFound "run kb init"); `deps.workspace(cmd)`
+adds the store (`--store` via `workspace.ParseRef`: "", `global`, or a local name; a ref with `@` or `:` is Usage "not supported yet" until 3.1; `global` + `--root` is Usage). A
+`default_store` that names no store is NotFound naming kb.toml. `--debug` prints `kb <cmd>: location <root> store <name> (--root |
+--global | --store global | discovered from <cwd>)` first. The incident log is `<KBDir>/kb.log`, per location, else the user
+cache dir. `kb stores`, `kb doctor` use `d.location` directly so a broken store does not hide the others.
 
-**How to apply.** CLI tests call `newTempRoot(t)` / `useRoot(t, dir)` (adds an empty `.kb/config.toml`, `t.Chdir`,
-returns the symlink-resolved path); never parallel. The harness passes `--root` to every command. TestMain overrides
-home/XDG/cache in `testDeps.workspaceEnv`, so a `--global` CLI test writes under a temp home (clean up
-`<home>/.local`). The harness passes `--root` to every command except `workspace-discovery`, which uses
-`h.kbAt(dir, ...)`; its not-found check runs in an `os.MkdirTemp` dir outside the repo and skips if any ancestor
-holds `.kb/`, because the sandbox lives inside the repo and the repo may become a store (PLAN 1.5 accept). Under
-`--debug` every command prints `kb <cmd>: store <root> (<how>)` on stderr first (Q48): tests asserting an empty
-stderr under --debug must skip that line.
+`kb init` is the only creator (O_EXCL writes; idempotent): `.kb/kb.toml` + `.kb/.gitignore` for a new location (refused at $HOME or `/`
+without `--force`, DEFAULTS #121), `stores/<name>/config.toml`, `data/`, then the database + embed_meta, then loads the model (exit 2
+leaves the store created). `[[sources]]` is still rejected by config.Validate, so init writes none and every store indexes `data/`
+until 1.5. `entry.Discover` reads a missing `data/` as an empty corpus; `kb doctor` warns about it.
 
-**Seen in:** internal/workspace, internal/cli/root.go, internal/cli/add_test.go · 2026-10-30; .agent/scripts/adversarial/harness/scenarios.go (scWorkspaceDiscovery) · 2026-10-30 W4 pass
+**Why it matters.** Tests that expect "nothing created" must check `.kb/stores/default/kb.sqlite` or the location dir. Roots on
+macOS differ between `t.TempDir()` (/var) and discovery (/private/var).
+
+**How to apply.** CLI tests call `newTempRoot(t)` / `useRoot(t, dir)` (make `.kb/kb.toml` + `stores/default/config.toml` unless
+present, `t.Chdir`, return the symlink-resolved path), `addStore`, `makeLocation`, `testWS(root)`, `testDBPath(root)`; never
+parallel. TestMain overrides home/XDG/cache in `testDeps.workspaceEnv`, so `--global` tests write under a temp home (clean up
+`<home>/.local`). The harness runs `kb init` for the scenario root and the global location (`H.initStores`; default-model scenarios
+init with the default model and accept exit 2), `H.makeLocation` writes the files of an initialised-but-never-indexed store. Under
+`--debug` tests asserting an empty stderr must skip the location line.
+
+**Seen in:** internal/workspace, internal/config/location.go, internal/cli/{root,setup,stores,init,doctor}.go, .agent/scripts/adversarial/harness · 2026-10-30 W6

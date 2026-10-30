@@ -3,7 +3,7 @@
 Rules: README.md and AGENTS.md "Leverage points". At most about 10 active entries.
 
 - [sqlite-write-contention](sqlite-write-contention.md) — validated (2026-10-30) · several kb processes writing one store: locking, busy waits and reindex/add races
-- [schema-migrations](schema-migrations.md) — watch · one-way migrations must preserve the irreplaceable search log on every upgrade
+- [schema-migrations](schema-migrations.md) — watch · forward-only migrations (internal/migrate + adapters) must preserve the search log; lock/backup/apply and declared effects must be right
 - [embedding-model-lifecycle](embedding-model-lifecycle.md) — watch · model load (~0.2 s per command), ~700 MB peak while embedding, download and cache integrity
 - [reindex-throughput](reindex-throughput.md) — watch · ~33 ms per chunk dominates indexing; reuse by text hash, batch size and the shared cache decide cost
 - [embedding-cache-shared-file](embedding-cache-shared-file.md) — watch · one SQLite file shared by every project on the machine; must degrade, never corrupt or stall

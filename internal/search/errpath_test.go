@@ -80,7 +80,7 @@ func TestSearchStoreErrors(t *testing.T) {
 }
 
 // TestFTSListRetryDecision: ftsList retries with OR only when the AND query ran (Match != ""),
-// found nothing, and had more than one term.
+// found nothing, and had more than one term, and reports the retry exactly then.
 func TestFTSListRetryDecision(t *testing.T) {
 	one := []store.FTSRow{{ChunkID: 1}}
 	for _, tc := range []struct {
@@ -90,7 +90,7 @@ func TestFTSListRetryDecision(t *testing.T) {
 		match string
 		want  []store.FTSOp
 	}{
-		{"AND empty, two terms: retry with OR", []string{"a", "b"}, []store.FTSRow{}, "m", []store.FTSOp{store.OpAnd, store.OpOr}},
+		{"AND empty, two terms: retry with OR", []string{"a", "b"}, []store.FTSRow{}, "m", []store.FTSOp{store.OpAnd, store.OpOr}}, // the only retried row
 		{"AND empty, one term: no retry", []string{"a"}, []store.FTSRow{}, "m", []store.FTSOp{store.OpAnd}},
 		{"nothing ran (all terms sanitised away): no retry", []string{"a", "b"}, []store.FTSRow{}, "", []store.FTSOp{store.OpAnd}},
 		{"AND matched: no retry", []string{"a", "b"}, one, "m", []store.FTSOp{store.OpAnd}},
@@ -98,8 +98,12 @@ func TestFTSListRetryDecision(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &faultyRetriever{ftsRows: tc.rows, match: tc.match}
 			s := &Searcher{Store: f}
-			if _, err := s.ftsList(context.Background(), tc.terms, ""); err != nil {
+			_, retried, err := s.ftsList(context.Background(), tc.terms, "", DefaultParams())
+			if err != nil {
 				t.Fatal(err)
+			}
+			if want := len(tc.want) == 2; retried != want {
+				t.Fatalf("retried = %v, want %v", retried, want)
 			}
 			if len(f.ftsOps) != len(tc.want) {
 				t.Fatalf("FTS ops = %v, want %v", f.ftsOps, tc.want)

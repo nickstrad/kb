@@ -104,7 +104,7 @@ func TestShowNoLog(t *testing.T) {
 	}
 	// --debug names the store (Q48); nothing else may appear.
 	rest := stderr
-	if strings.HasPrefix(rest, "kb show: store ") {
+	if strings.HasPrefix(rest, "kb show: location ") {
 		_, rest, _ = strings.Cut(rest, "\n")
 	}
 	if rest != "" {

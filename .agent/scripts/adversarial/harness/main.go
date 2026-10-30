@@ -187,6 +187,7 @@ func runScenario(ctx context.Context, s scenario, bin, dir string) (o outcome) {
 				h.fail("scenario panicked: %v", r)
 			}
 		}()
+		h.initStores(defaultModelScenarios[s.Name])
 		if !defaultModelScenarios[s.Name] {
 			h.useNone() // most scenarios run on FTS only; the rest write their own config
 		}
@@ -379,7 +380,35 @@ func entryText(title, body string) string {
 	return "---\ntitle: " + title + "\nsummary: " + title + " summary\ntags: [adv]\n---\n\n" + body
 }
 
-func (h *H) dbPath() string { return filepath.Join(h.root, ".kb", "kb.sqlite") }
+// dbPath is the default store's database in the scenario root.
+func (h *H) dbPath() string { return filepath.Join(h.root, ".kb", "stores", "default", "kb.sqlite") }
+
+// initStores creates the scenario root's location and the --global one with kb init. Most
+// scenarios run FTS-only (--model none). A default-model scenario inits with the default model,
+// which cannot be downloaded here: init exits 2 but leaves the store created, exactly the state
+// the scenario then attacks.
+func (h *H) initStores(defaultModel bool) {
+	for _, args := range [][]string{{"--root", h.root, "init"}, {"--global", "init"}} {
+		if !defaultModel {
+			args = append(args, "--model", "none")
+		}
+		r := h.kbAt(h.outside, args...)
+		want := 0
+		if defaultModel {
+			want = 2
+		}
+		h.must(r.Code == want, "kb %s: want exit %d\n%s", strings.Join(args, " "), want, r)
+	}
+}
+
+// makeLocation writes a location with one empty-config store called "default" at root, the files
+// kb init writes but no database: the state of a cloned repo whose config is committed. It returns root.
+func (h *H) makeLocation(root string) string {
+	h.must(os.MkdirAll(filepath.Join(root, ".kb", "stores", "default"), 0o755) == nil, "mkdir location %s", root)
+	h.write(filepath.Join(root, ".kb", "kb.toml"), "version = 1\ndefault_store = \"default\"\n")
+	h.write(filepath.Join(root, ".kb", "stores", "default", "config.toml"), "")
+	return root
+}
 
 func quoteArgs(a []string) string {
 	q := make([]string, len(a))

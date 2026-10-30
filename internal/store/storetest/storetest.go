@@ -137,8 +137,21 @@ func replaceWrites(t *testing.T, st store.Store, dim int) {
 		t.Errorf("FTS ids %v, want the entry's chunks", got)
 	}
 	meta, err := st.ChunkMeta(ctx, append(chunkIDs(t, st, id), 999999))
-	if err != nil || len(meta) != 2 || meta[cs[1].ID] != (store.ChunkMeta{EntryPath: "a.md", Heading: "h1", Text: "beta zebracorn"}) {
+	want := store.ChunkMeta{EntryPath: "a.md", Heading: "h1", Text: "beta zebracorn", EntryID: id, Ord: 1, SourceFile: "f.md"}
+	if err != nil || len(meta) != 2 || meta[cs[1].ID] != want {
 		t.Errorf("ChunkMeta = %+v, %v; want the two chunks, the dangling id absent", meta, err)
+	}
+	dated := entryIn("d.md")
+	dated.Updated = "2026-01-02"
+	did := mustReplace(t, st, dated, chunks(dim, "dated chunk"))
+	if meta, err := st.ChunkMeta(ctx, chunkIDs(t, st, did)); err != nil || len(meta) != 1 {
+		t.Errorf("ChunkMeta(dated) = %+v, %v", meta, err)
+	} else {
+		for _, m := range meta {
+			if m.EntryUpdated != "2026-01-02" || m.EntryID != did {
+				t.Errorf("ChunkMeta(dated) = %+v; want EntryUpdated 2026-01-02, EntryID %d", m, did)
+			}
+		}
 	}
 	embs, err := st.Embeddings(ctx, id)
 	if err != nil {
@@ -273,6 +286,67 @@ func fts(t *testing.T, st store.Store, dim int) {
 	res, err = st.FTS(ctx, store.FTSQuery{Terms: []string{"quokka"}, Limit: 1})
 	if err != nil || len(res.Rows) != 1 || res.Match == "" {
 		t.Errorf("Limit 1 = %+v, %v", res, err)
+	}
+	ftsChunkIDs(t, st, aIDs)
+	ftsWeights(t, st)
+}
+
+// ftsChunkIDs: a non-nil ChunkIDs restricts the rows to those ids (with or without a tag); an
+// empty non-nil one runs nothing but still reports the expression.
+func ftsChunkIDs(t *testing.T, st store.Store, aIDs []int64) {
+	for _, tc := range []struct {
+		name string
+		ids  []int64
+		tag  string
+		want int
+	}{
+		{"restricted to a.md", aIDs, "", len(aIDs)},
+		{"restricted to a.md and a dangling id", append(slices.Clone(aIDs), 999999), "", len(aIDs)},
+		{"restricted to a.md, tag docker", aIDs, "docker", len(aIDs)},
+		{"restricted to a.md, tag docker-compose", aIDs, "docker-compose", 0},
+		{"empty set", []int64{}, "", 0},
+	} {
+		res, err := st.FTS(ctx, store.FTSQuery{Terms: []string{"quokka"}, Tag: tc.tag, Limit: 20, ChunkIDs: tc.ids})
+		if err != nil || len(res.Rows) != tc.want || res.Match == "" {
+			t.Errorf("%s: FTS = %+v, %v; want %d rows and the expression", tc.name, res, err, tc.want)
+		}
+		for _, r := range res.Rows {
+			if !slices.Contains(tc.ids, r.ChunkID) {
+				t.Errorf("%s: row %d is outside the restriction %v", tc.name, r.ChunkID, tc.ids)
+			}
+		}
+	}
+}
+
+// ftsWeights: a column of weight 0 adds nothing to the score. "quokka" occurs only in chunk text
+// and "Title" only in entry titles, so each scores 0 exactly when its column's weight is 0.
+func ftsWeights(t *testing.T, st store.Store) {
+	score := func(term string, w *store.BM25Weights) float64 {
+		t.Helper()
+		res, err := st.FTS(ctx, store.FTSQuery{Terms: []string{term}, Limit: 1, Weights: w})
+		if err != nil || len(res.Rows) != 1 {
+			t.Fatalf("FTS %q %+v = %+v, %v", term, w, res, err)
+		}
+		return res.Rows[0].Score
+	}
+	for _, tc := range []struct {
+		term     string
+		w        store.BM25Weights
+		wantZero bool
+	}{
+		{"quokka", store.BM25Weights{Text: 1}, false},
+		{"quokka", store.BM25Weights{Heading: 1, Title: 1}, true},
+		{"Title", store.BM25Weights{Title: 1}, false},
+		{"Title", store.BM25Weights{Text: 1, Heading: 1}, true},
+		{"quokka", store.BM25Weights{}, true},
+	} {
+		if got := score(tc.term, &tc.w); (got == 0) != tc.wantZero {
+			t.Errorf("score(%q, %+v) = %v, want zero=%v", tc.term, tc.w, got, tc.wantZero)
+		}
+	}
+	def := store.DefaultBM25()
+	if a, b := score("quokka", nil), score("quokka", &def); a != b {
+		t.Errorf("nil weights score %v, DefaultBM25 %v; want equal", a, b)
 	}
 }
 

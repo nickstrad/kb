@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -145,10 +146,15 @@ func (e Entry) HasTag(tag string) bool {
 
 // Discover walks data/ one level deep and returns every entry, sorted by Path. A file or
 // directory entry whose front matter cannot be read, parsed or validated is still returned, with
-// Err set (see the Entry.Err doc). The only error Discover itself returns is a failure to read
-// data/, which no individual entry can route around.
+// Err set (see the Entry.Err doc). A data/ directory that does not exist is an empty corpus, not
+// an error (a fresh store, or a clone that has not made one): callers that care, such as kb
+// doctor, stat DataRoot themselves. The only error Discover itself returns is a failure to read
+// an existing data/, which no individual entry can route around.
 func Discover(root string) ([]Entry, error) {
 	items, err := os.ReadDir(DataRoot(root))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read corpus %s: %w", DataRoot(root), err)
 	}

@@ -1,0 +1,432 @@
+== query="widget" mode=hybrid k=20 tag=""
+ran=hybrid n_fts=20 n_vec=20
+cand  1 chunk=49 gen/09.md| fts=2/-1.7555724565611655e-06 vec=2/0.920380175113678 rrf=0.03225806451612903
+cand  2 chunk=16 gen/00.md|section 3 fts=7/-1.5823665893271463e-06 vec=17/0.9805892109870911 rrf=0.027912386121341344
+cand  3 chunk=6 beta.md| fts=19/-1.051731389317258e-06 vec=11/0.9731873869895935 rrf=0.026742734890354787
+cand  4 chunk=13 gen/00.md| fts=1/-1.8613075300831162e-06 vec=-/- rrf=0.01639344262295082
+cand  5 chunk=56 gen/10.md|section 3 fts=-/- vec=1/0.920380175113678 rrf=0.01639344262295082
+cand  6 chunk=15 gen/00.md|section 2 fts=3/-1.676143663073228e-06 vec=-/- rrf=0.015873015873015872
+cand  7 chunk=30 gen/04.md|section 1 fts=-/- vec=3/0.920380175113678 rrf=0.015873015873015872
+cand  8 chunk=50 gen/09.md|section 1 fts=4/-1.676143663073228e-06 vec=-/- rrf=0.015625
+cand  9 chunk=4 alpha.md|section 3 fts=-/- vec=4/0.9364089965820312 rrf=0.015625
+cand 10 chunk=52 gen/09.md|section 3 fts=5/-1.676143663073228e-06 vec=-/- rrf=0.015384615384615385
+cand 11 chunk=42 gen/07.md|section 1 fts=-/- vec=5/0.9423893094062805 rrf=0.015384615384615385
+cand 12 chunk=14 gen/00.md|section 1 fts=6/-1.5823665893271463e-06 vec=-/- rrf=0.015151515151515152
+cand 13 chunk=23 gen/02.md|section 2 fts=-/- vec=6/0.9423893094062805 rrf=0.015151515151515152
+cand 14 chunk=8 beta.md|section 2 fts=-/- vec=7/0.9543251395225525 rrf=0.014925373134328358
+cand 15 chunk=51 gen/09.md|section 2 fts=8/-1.5823665893271463e-06 vec=-/- rrf=0.014705882352941176
+cand 16 chunk=46 gen/08.md|section 1 fts=-/- vec=8/0.9628548622131348 rrf=0.014705882352941176
+cand 17 chunk=20 gen/01.md|section 3 fts=9/-1.5528876009107846e-06 vec=-/- rrf=0.014492753623188406
+cand 18 chunk=27 gen/03.md|section 2 fts=-/- vec=9/0.9628548622131348 rrf=0.014492753623188406
+cand 19 chunk=39 gen/06.md|section 2 fts=10/-1.5528876009107846e-06 vec=-/- rrf=0.014285714285714285
+cand 20 chunk=2 alpha.md|section 1 fts=-/- vec=10/0.9713827967643738 rrf=0.014285714285714285
+cand 21 chunk=58 gen/11.md|section 1 fts=11/-1.5528876009107846e-06 vec=-/- rrf=0.014084507042253521
+cand 22 chunk=17 gen/01.md| fts=12/-1.4605275966124793e-06 vec=-/- rrf=0.013888888888888888
+cand 23 chunk=48 gen/08.md|section 3 fts=-/- vec=12/0.9792749285697937 rrf=0.013888888888888888
+cand 24 chunk=29 gen/04.md| fts=13/-1.4231243479085651e-06 vec=-/- rrf=0.0136986301369863
+cand 25 chunk=41 gen/07.md| fts=-/- vec=13/0.9792749285697937 rrf=0.0136986301369863
+cand 26 chunk=24 gen/02.md|section 3 fts=14/-1.387589013224822e-06 vec=-/- rrf=0.013513513513513514
+cand 27 chunk=22 gen/02.md|section 1 fts=-/- vec=14/0.9792749285697937 rrf=0.013513513513513514
+cand 28 chunk=43 gen/07.md|section 2 fts=15/-1.387589013224822e-06 vec=-/- rrf=0.013333333333333334
+cand 29 chunk=54 gen/10.md|section 1 fts=-/- vec=15/0.9805892109870911 rrf=0.013333333333333334
+cand 30 chunk=36 gen/05.md|section 3 fts=16/-1.3537850762428947e-06 vec=-/- rrf=0.013157894736842105
+cand 31 chunk=35 gen/05.md|section 2 fts=-/- vec=16/0.9805892109870911 rrf=0.013157894736842105
+cand 32 chunk=55 gen/10.md|section 2 fts=17/-1.3537850762428947e-06 vec=-/- rrf=0.012987012987012988
+cand 33 chunk=9 gamma/README.md| fts=18/-1.0931079702753898e-06 vec=-/- rrf=0.01282051282051282
+cand 34 chunk=57 gen/11.md| fts=-/- vec=18/0.9816646575927734 rrf=0.01282051282051282
+cand 35 chunk=38 gen/06.md|section 1 fts=-/- vec=19/0.9816646575927734 rrf=0.012658227848101266
+cand 36 chunk=21 gen/02.md| fts=20/-1.051731389317258e-06 vec=-/- rrf=0.0125
+cand 37 chunk=19 gen/01.md|section 2 fts=-/- vec=20/0.9816646575927734 rrf=0.0125
+hit  1 gen/09.md| rrf=0.03225806451612903
+hit  2 gen/00.md|section 3 rrf=0.027912386121341344
+hit  3 beta.md| rrf=0.026742734890354787
+hit  4 gen/00.md| rrf=0.01639344262295082
+hit  5 gen/10.md|section 3 rrf=0.01639344262295082
+hit  6 gen/00.md|section 2 rrf=0.015873015873015872
+hit  7 gen/04.md|section 1 rrf=0.015873015873015872
+hit  8 gen/09.md|section 1 rrf=0.015625
+hit  9 alpha.md|section 3 rrf=0.015625
+hit 10 gen/09.md|section 3 rrf=0.015384615384615385
+hit 11 gen/07.md|section 1 rrf=0.015384615384615385
+hit 12 gen/02.md|section 2 rrf=0.015151515151515152
+hit 13 beta.md|section 2 rrf=0.014925373134328358
+hit 14 gen/08.md|section 1 rrf=0.014705882352941176
+hit 15 gen/01.md|section 3 rrf=0.014492753623188406
+hit 16 gen/03.md|section 2 rrf=0.014492753623188406
+hit 17 gen/06.md|section 2 rrf=0.014285714285714285
+hit 18 alpha.md|section 1 rrf=0.014285714285714285
+hit 19 gen/11.md|section 1 rrf=0.014084507042253521
+hit 20 gen/01.md| rrf=0.013888888888888888
+== query="zebracorn" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=20 n_vec=20
+cand  1 chunk=25 gen/03.md| fts=9/-0.7845120756330959 vec=7/0.9644565582275391 rrf=0.029418126757516764
+cand  2 chunk=51 gen/09.md|section 2 fts=12/-0.7453336310902428 vec=5/0.9644565582275391 rrf=0.029273504273504274
+cand  3 chunk=32 gen/04.md|section 3 fts=11/-0.7453336310902428 vec=6/0.9644565582275391 rrf=0.029236022193768675
+cand  4 chunk=53 gen/10.md| fts=4/-0.8664042735947962 vec=16/0.9930792450904846 rrf=0.028782894736842105
+cand  5 chunk=34 gen/05.md|section 1 fts=8/-0.8341225991491197 vec=17/0.9930792450904846 rrf=0.027692895339954164
+cand  6 chunk=42 gen/07.md|section 1 fts=20/-0.5251721981610058 vec=9/0.9720285534858704 rrf=0.026992753623188405
+cand  7 chunk=23 gen/02.md|section 2 fts=19/-0.5251721981610058 vec=10/0.9720285534858704 rrf=0.02694394213381555
+cand  8 chunk=2 alpha.md|section 1 fts=17/-0.5251721981610058 vec=19/0.9935302138328552 rrf=0.025645240835114255
+cand  9 chunk=36 gen/05.md|section 3 fts=1/-0.9453493821820947 vec=-/- rrf=0.01639344262295082
+cand 10 chunk=44 gen/07.md|section 3 fts=-/- vec=1/0.9477769732475281 rrf=0.01639344262295082
+cand 11 chunk=55 gen/10.md|section 2 fts=2/-0.9453493821820947 vec=-/- rrf=0.016129032258064516
+cand 12 chunk=37 gen/06.md| fts=-/- vec=2/0.9477769732475281 rrf=0.016129032258064516
+cand 13 chunk=33 gen/05.md| fts=3/-0.883500608745757 vec=-/- rrf=0.015873015873015872
+cand 14 chunk=18 gen/01.md|section 1 fts=-/- vec=3/0.9477769732475281 rrf=0.015873015873015872
+cand 15 chunk=3 alpha.md|section 2 fts=-/- vec=4/0.953075110912323 rrf=0.015625
+cand 16 chunk=35 gen/05.md|section 2 fts=5/-0.8499570294219359 vec=-/- rrf=0.015384615384615385
+cand 17 chunk=54 gen/10.md|section 1 fts=6/-0.8499570294219359 vec=-/- rrf=0.015151515151515152
+cand 18 chunk=56 gen/10.md|section 3 fts=7/-0.8499570294219359 vec=-/- rrf=0.014925373134328358
+cand 19 chunk=5 alpha.md|section 4 fts=-/- vec=8/0.9657610058784485 rrf=0.014705882352941176
+cand 20 chunk=29 gen/04.md| fts=10/-0.7644211849548321 vec=-/- rrf=0.014285714285714285
+cand 21 chunk=46 gen/08.md|section 1 fts=-/- vec=11/0.9759986996650696 rrf=0.014084507042253521
+cand 22 chunk=27 gen/03.md|section 2 fts=-/- vec=12/0.9759986996650696 rrf=0.013888888888888888
+cand 23 chunk=41 gen/07.md| fts=13/-0.5871552202374176 vec=-/- rrf=0.0136986301369863
+cand 24 chunk=7 beta.md|section 1 fts=-/- vec=13/0.9885765910148621 rrf=0.0136986301369863
+cand 25 chunk=22 gen/02.md|section 1 fts=14/-0.5443261213682828 vec=-/- rrf=0.013513513513513514
+cand 26 chunk=11 gamma/README.md|section 2 fts=-/- vec=14/0.9908700585365295 rrf=0.013513513513513514
+cand 27 chunk=48 gen/08.md|section 3 fts=15/-0.5443261213682828 vec=-/- rrf=0.013333333333333334
+cand 28 chunk=60 gen/11.md|section 3 fts=-/- vec=15/0.9930792450904846 rrf=0.013333333333333334
+cand 29 chunk=1 alpha.md| fts=16/-0.5251721981610058 vec=-/- rrf=0.013157894736842105
+cand 30 chunk=4 alpha.md|section 3 fts=18/-0.5251721981610058 vec=-/- rrf=0.01282051282051282
+cand 31 chunk=15 gen/00.md|section 2 fts=-/- vec=18/0.9930792450904846 rrf=0.01282051282051282
+cand 32 chunk=6 beta.md| fts=-/- vec=20/0.9938035607337952 rrf=0.0125
+hit  1 gen/03.md| rrf=0.029418126757516764
+hit  2 gen/09.md|section 2 rrf=0.029273504273504274
+hit  3 gen/04.md|section 3 rrf=0.029236022193768675
+hit  4 gen/10.md| rrf=0.028782894736842105
+hit  5 gen/05.md|section 1 rrf=0.027692895339954164
+hit  6 gen/07.md|section 1 rrf=0.026992753623188405
+hit  7 gen/02.md|section 2 rrf=0.02694394213381555
+hit  8 alpha.md|section 1 rrf=0.025645240835114255
+== query="quokka widget" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=11 n_vec=20
+cand  1 chunk=7 beta.md|section 1 fts=11/-0.8317337210341053 vec=9/0.9448038935661316 rrf=0.028577260665441927
+cand  2 chunk=13 gen/00.md| fts=6/-0.9576664552866563 vec=16/0.9596952199935913 rrf=0.028309409888357256
+cand  3 chunk=23 gen/02.md|section 2 fts=4/-1.2327035941271467 vec=19/0.961714506149292 rrf=0.028283227848101264
+cand  4 chunk=42 gen/07.md|section 1 fts=5/-1.2327035941271467 vec=18/0.961714506149292 rrf=0.028205128205128206
+cand  5 chunk=20 gen/01.md|section 3 fts=8/-0.8902689253433689 vec=15/0.9596952199935913 rrf=0.02803921568627451
+cand  6 chunk=39 gen/06.md|section 2 fts=9/-0.8902689253433689 vec=14/0.9596952199935913 rrf=0.028006267136701922
+cand  7 chunk=58 gen/11.md|section 1 fts=10/-0.8902689253433689 vec=13/0.9596952199935913 rrf=0.027984344422700584
+cand  8 chunk=29 gen/04.md| fts=1/-1.4687224613641041 vec=-/- rrf=0.01639344262295082
+cand  9 chunk=48 gen/08.md|section 3 fts=-/- vec=1/0.9147375226020813 rrf=0.01639344262295082
+cand 10 chunk=30 gen/04.md|section 1 fts=2/-1.4408408254069385 vec=-/- rrf=0.016129032258064516
+cand 11 chunk=41 gen/07.md| fts=-/- vec=2/0.9147375226020813 rrf=0.016129032258064516
+cand 12 chunk=31 gen/04.md|section 2 fts=3/-1.4139984003704702 vec=-/- rrf=0.015873015873015872
+cand 13 chunk=22 gen/02.md|section 1 fts=-/- vec=3/0.9147375226020813 rrf=0.015873015873015872
+cand 14 chunk=9 gamma/README.md| fts=-/- vec=4/0.9375326633453369 rrf=0.015625
+cand 15 chunk=43 gen/07.md|section 2 fts=-/- vec=5/0.940735936164856 rrf=0.015384615384615385
+cand 16 chunk=24 gen/02.md|section 3 fts=-/- vec=6/0.940735936164856 rrf=0.015151515151515152
+cand 17 chunk=14 gen/00.md|section 1 fts=7/-0.9227385199396148 vec=-/- rrf=0.014925373134328358
+cand 18 chunk=17 gen/01.md| fts=-/- vec=7/0.940735936164856 rrf=0.014925373134328358
+cand 19 chunk=6 beta.md| fts=-/- vec=8/0.9414946436882019 rrf=0.014705882352941176
+cand 20 chunk=54 gen/10.md|section 1 fts=-/- vec=10/0.9532698392868042 rrf=0.014285714285714285
+cand 21 chunk=35 gen/05.md|section 2 fts=-/- vec=11/0.9532698392868042 rrf=0.014084507042253521
+cand 22 chunk=16 gen/00.md|section 3 fts=-/- vec=12/0.9532698392868042 rrf=0.013888888888888888
+cand 23 chunk=3 alpha.md|section 2 fts=-/- vec=17/0.9607245922088623 rrf=0.012987012987012988
+cand 24 chunk=51 gen/09.md|section 2 fts=-/- vec=20/0.977221667766571 rrf=0.0125
+hit  1 beta.md|section 1 rrf=0.028577260665441927
+hit  2 gen/00.md| rrf=0.028309409888357256
+hit  3 gen/02.md|section 2 rrf=0.028283227848101264
+hit  4 gen/07.md|section 1 rrf=0.028205128205128206
+hit  5 gen/01.md|section 3 rrf=0.02803921568627451
+hit  6 gen/06.md|section 2 rrf=0.028006267136701922
+hit  7 gen/11.md|section 1 rrf=0.027984344422700584
+hit  8 gen/04.md| rrf=0.01639344262295082
+== query="zebracorn quokka" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=5 n_vec=20
+cand  1 chunk=32 gen/04.md|section 3 fts=2/-2.186173443124224 vec=6/0.9200090765953064 rrf=0.03128054740957967
+cand  2 chunk=29 gen/04.md| fts=1/-2.2331422231945885 vec=-/- rrf=0.01639344262295082
+cand  3 chunk=52 gen/09.md|section 3 fts=-/- vec=1/0.909442126750946 rrf=0.01639344262295082
+cand  4 chunk=45 gen/08.md| fts=-/- vec=2/0.909442126750946 rrf=0.016129032258064516
+cand  5 chunk=33 gen/05.md| fts=3/-1.878841064647419 vec=-/- rrf=0.015873015873015872
+cand  6 chunk=26 gen/03.md|section 1 fts=-/- vec=3/0.909442126750946 rrf=0.015873015873015872
+cand  7 chunk=23 gen/02.md|section 2 fts=4/-1.7578748145740901 vec=-/- rrf=0.015625
+cand  8 chunk=4 alpha.md|section 3 fts=-/- vec=4/0.9133527278900146 rrf=0.015625
+cand  9 chunk=42 gen/07.md|section 1 fts=5/-1.7578748145740901 vec=-/- rrf=0.015384615384615385
+cand 10 chunk=51 gen/09.md|section 2 fts=-/- vec=5/0.9200090765953064 rrf=0.015384615384615385
+cand 11 chunk=25 gen/03.md| fts=-/- vec=7/0.9200090765953064 rrf=0.014925373134328358
+cand 12 chunk=3 alpha.md|section 2 fts=-/- vec=8/0.9276988506317139 rrf=0.014705882352941176
+cand 13 chunk=57 gen/11.md| fts=-/- vec=9/0.931162416934967 rrf=0.014492753623188406
+cand 14 chunk=38 gen/06.md|section 1 fts=-/- vec=10/0.931162416934967 rrf=0.014285714285714285
+cand 15 chunk=19 gen/01.md|section 2 fts=-/- vec=11/0.931162416934967 rrf=0.014084507042253521
+cand 16 chunk=5 alpha.md|section 4 fts=-/- vec=12/0.9357966780662537 rrf=0.013888888888888888
+cand 17 chunk=8 beta.md|section 2 fts=-/- vec=13/0.9396694898605347 rrf=0.0136986301369863
+cand 18 chunk=10 gamma/README.md|section 1 fts=-/- vec=14/0.9421597123146057 rrf=0.013513513513513514
+cand 19 chunk=46 gen/08.md|section 1 fts=-/- vec=15/0.9526743292808533 rrf=0.013333333333333334
+cand 20 chunk=27 gen/03.md|section 2 fts=-/- vec=16/0.9526743292808533 rrf=0.013157894736842105
+cand 21 chunk=47 gen/08.md|section 2 fts=-/- vec=17/0.9608805775642395 rrf=0.012987012987012988
+cand 22 chunk=28 gen/03.md|section 3 fts=-/- vec=18/0.9608805775642395 rrf=0.01282051282051282
+cand 23 chunk=21 gen/02.md| fts=-/- vec=19/0.9608805775642395 rrf=0.012658227848101266
+cand 24 chunk=11 gamma/README.md|section 2 fts=-/- vec=20/0.9645599722862244 rrf=0.0125
+hit  1 gen/04.md|section 3 rrf=0.03128054740957967
+hit  2 gen/04.md| rrf=0.01639344262295082
+hit  3 gen/09.md|section 3 rrf=0.01639344262295082
+hit  4 gen/08.md| rrf=0.016129032258064516
+hit  5 gen/05.md| rrf=0.015873015873015872
+hit  6 gen/03.md|section 1 rrf=0.015873015873015872
+hit  7 gen/02.md|section 2 rrf=0.015625
+hit  8 alpha.md|section 3 rrf=0.015625
+== query="zebracorn nonexistentword" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=20 n_vec=20
+cand  1 chunk=53 gen/10.md| fts=4/-0.8664042735947962 vec=2/0.922099232673645 rrf=0.031754032258064516
+cand  2 chunk=34 gen/05.md|section 1 fts=8/-0.8341225991491197 vec=3/0.922099232673645 rrf=0.03057889822595705
+cand  3 chunk=56 gen/10.md|section 3 fts=7/-0.8499570294219359 vec=5/0.9484227299690247 rrf=0.030309988518943745
+cand  4 chunk=35 gen/05.md|section 2 fts=5/-0.8499570294219359 vec=18/0.9718007445335388 rrf=0.028205128205128206
+cand  5 chunk=54 gen/10.md|section 1 fts=6/-0.8499570294219359 vec=17/0.9718007445335388 rrf=0.02813852813852814
+cand  6 chunk=42 gen/07.md|section 1 fts=20/-0.5251721981610058 vec=8/0.9620532989501953 rrf=0.027205882352941177
+cand  7 chunk=23 gen/02.md|section 2 fts=19/-0.5251721981610058 vec=9/0.9620532989501953 rrf=0.02715098147128967
+cand  8 chunk=4 alpha.md|section 3 fts=18/-0.5251721981610058 vec=13/0.9705051779747009 rrf=0.02651914295749912
+cand  9 chunk=36 gen/05.md|section 3 fts=1/-0.9453493821820947 vec=-/- rrf=0.01639344262295082
+cand 10 chunk=60 gen/11.md|section 3 fts=-/- vec=1/0.922099232673645 rrf=0.01639344262295082
+cand 11 chunk=55 gen/10.md|section 2 fts=2/-0.9453493821820947 vec=-/- rrf=0.016129032258064516
+cand 12 chunk=33 gen/05.md| fts=3/-0.883500608745757 vec=-/- rrf=0.015873015873015872
+cand 13 chunk=15 gen/00.md|section 2 fts=-/- vec=4/0.922099232673645 rrf=0.015625
+cand 14 chunk=49 gen/09.md| fts=-/- vec=6/0.9484227299690247 rrf=0.015151515151515152
+cand 15 chunk=30 gen/04.md|section 1 fts=-/- vec=7/0.9484227299690247 rrf=0.014925373134328358
+cand 16 chunk=25 gen/03.md| fts=9/-0.7845120756330959 vec=-/- rrf=0.014492753623188406
+cand 17 chunk=29 gen/04.md| fts=10/-0.7644211849548321 vec=-/- rrf=0.014285714285714285
+cand 18 chunk=57 gen/11.md| fts=-/- vec=10/0.9632859230041504 rrf=0.014285714285714285
+cand 19 chunk=32 gen/04.md|section 3 fts=11/-0.7453336310902428 vec=-/- rrf=0.014084507042253521
+cand 20 chunk=38 gen/06.md|section 1 fts=-/- vec=11/0.9632859230041504 rrf=0.014084507042253521
+cand 21 chunk=51 gen/09.md|section 2 fts=12/-0.7453336310902428 vec=-/- rrf=0.013888888888888888
+cand 22 chunk=19 gen/01.md|section 2 fts=-/- vec=12/0.9632859230041504 rrf=0.013888888888888888
+cand 23 chunk=41 gen/07.md| fts=13/-0.5871552202374176 vec=-/- rrf=0.0136986301369863
+cand 24 chunk=22 gen/02.md|section 1 fts=14/-0.5443261213682828 vec=-/- rrf=0.013513513513513514
+cand 25 chunk=44 gen/07.md|section 3 fts=-/- vec=14/0.970626711845398 rrf=0.013513513513513514
+cand 26 chunk=48 gen/08.md|section 3 fts=15/-0.5443261213682828 vec=-/- rrf=0.013333333333333334
+cand 27 chunk=37 gen/06.md| fts=-/- vec=15/0.970626711845398 rrf=0.013333333333333334
+cand 28 chunk=1 alpha.md| fts=16/-0.5251721981610058 vec=-/- rrf=0.013157894736842105
+cand 29 chunk=18 gen/01.md|section 1 fts=-/- vec=16/0.970626711845398 rrf=0.013157894736842105
+cand 30 chunk=2 alpha.md|section 1 fts=17/-0.5251721981610058 vec=-/- rrf=0.012987012987012988
+cand 31 chunk=16 gen/00.md|section 3 fts=-/- vec=19/0.9718007445335388 rrf=0.012658227848101266
+cand 32 chunk=50 gen/09.md|section 1 fts=-/- vec=20/0.9820923209190369 rrf=0.0125
+hit  1 gen/10.md| rrf=0.031754032258064516
+hit  2 gen/05.md|section 1 rrf=0.03057889822595705
+hit  3 gen/10.md|section 3 rrf=0.030309988518943745
+hit  4 gen/05.md|section 2 rrf=0.028205128205128206
+hit  5 gen/10.md|section 1 rrf=0.02813852813852814
+hit  6 gen/07.md|section 1 rrf=0.027205882352941177
+hit  7 gen/02.md|section 2 rrf=0.02715098147128967
+hit  8 alpha.md|section 3 rrf=0.02651914295749912
+== query="widget enclosure" mode=fts k=20 tag=""
+ran=fts n_fts=2 n_vec=0
+cand  1 chunk=6 beta.md| fts=1/-3.315832488682483 vec=-/- rrf=0.01639344262295082
+cand  2 chunk=7 beta.md|section 1 fts=2/-2.879804351853421 vec=-/- rrf=0.016129032258064516
+hit  1 beta.md| rrf=0.01639344262295082
+hit  2 beta.md|section 1 rrf=0.016129032258064516
+== query="container plumbing" mode=vec k=10 tag=""
+ran=vec n_fts=0 n_vec=20
+cand  1 chunk=46 gen/08.md|section 1 fts=-/- vec=1/0.8827323317527771 rrf=0.01639344262295082
+cand  2 chunk=27 gen/03.md|section 2 fts=-/- vec=2/0.8827323317527771 rrf=0.016129032258064516
+cand  3 chunk=12 gamma/README.md|section 3 fts=-/- vec=3/0.9194146394729614 rrf=0.015873015873015872
+cand  4 chunk=56 gen/10.md|section 3 fts=-/- vec=4/0.9740768074989319 rrf=0.015625
+cand  5 chunk=49 gen/09.md| fts=-/- vec=5/0.9740768074989319 rrf=0.015384615384615385
+cand  6 chunk=30 gen/04.md|section 1 fts=-/- vec=6/0.9740768074989319 rrf=0.015151515151515152
+cand  7 chunk=58 gen/11.md|section 1 fts=-/- vec=7/0.9741621017456055 rrf=0.014925373134328358
+cand  8 chunk=39 gen/06.md|section 2 fts=-/- vec=8/0.9741621017456055 rrf=0.014705882352941176
+cand  9 chunk=20 gen/01.md|section 3 fts=-/- vec=9/0.9741621017456055 rrf=0.014492753623188406
+cand 10 chunk=13 gen/00.md| fts=-/- vec=10/0.9741621017456055 rrf=0.014285714285714285
+cand 11 chunk=7 beta.md|section 1 fts=-/- vec=11/0.9764167666435242 rrf=0.014084507042253521
+cand 12 chunk=2 alpha.md|section 1 fts=-/- vec=12/0.9769027829170227 rrf=0.013888888888888888
+cand 13 chunk=47 gen/08.md|section 2 fts=-/- vec=13/0.9790211319923401 rrf=0.0136986301369863
+cand 14 chunk=28 gen/03.md|section 3 fts=-/- vec=14/0.9790211319923401 rrf=0.013513513513513514
+cand 15 chunk=21 gen/02.md| fts=-/- vec=15/0.9790211319923401 rrf=0.013333333333333334
+cand 16 chunk=55 gen/10.md|section 2 fts=-/- vec=16/0.9791283011436462 rrf=0.013157894736842105
+cand 17 chunk=36 gen/05.md|section 3 fts=-/- vec=17/0.9791283011436462 rrf=0.012987012987012988
+cand 18 chunk=29 gen/04.md| fts=-/- vec=18/0.9791283011436462 rrf=0.01282051282051282
+cand 19 chunk=43 gen/07.md|section 2 fts=-/- vec=19/0.9849066734313965 rrf=0.012658227848101266
+cand 20 chunk=24 gen/02.md|section 3 fts=-/- vec=20/0.9849066734313965 rrf=0.0125
+hit  1 gen/08.md|section 1 rrf=0.01639344262295082
+hit  2 gen/03.md|section 2 rrf=0.016129032258064516
+hit  3 gamma/README.md|section 3 rrf=0.015873015873015872
+hit  4 gen/10.md|section 3 rrf=0.015625
+hit  5 gen/09.md| rrf=0.015384615384615385
+hit  6 gen/04.md|section 1 rrf=0.015151515151515152
+hit  7 gen/11.md|section 1 rrf=0.014925373134328358
+hit  8 gen/06.md|section 2 rrf=0.014705882352941176
+hit  9 gen/01.md|section 3 rrf=0.014492753623188406
+hit 10 gen/00.md| rrf=0.014285714285714285
+== query="widget" mode=hybrid k=20 tag="docker"
+ran=hybrid n_fts=7 n_vec=8
+cand  1 chunk=30 gen/04.md|section 1 fts=3/-1.0133729569093613e-06 vec=1/0.920380175113678 rrf=0.032266458495966696
+cand  2 chunk=29 gen/04.md| fts=1/-1.4231243479085651e-06 vec=4/1.0253416299819946 rrf=0.032018442622950824
+cand  3 chunk=31 gen/04.md|section 2 fts=4/-9.77714062296364e-07 vec=5/1.0342020988464355 rrf=0.031009615384615385
+cand  4 chunk=9 gamma/README.md| fts=2/-1.0931079702753898e-06 vec=8/1.079854130744934 rrf=0.030834914611005692
+cand  5 chunk=12 gamma/README.md|section 3 fts=7/-8.570775734034046e-07 vec=3/1.0229387283325195 rrf=0.030798389007344232
+cand  6 chunk=11 gamma/README.md|section 2 fts=5/-9.134299281626689e-07 vec=7/1.064045786857605 rrf=0.030309988518943745
+cand  7 chunk=10 gamma/README.md|section 1 fts=6/-8.843569491925027e-07 vec=6/1.0608071088790894 rrf=0.030303030303030304
+cand  8 chunk=32 gen/04.md|section 3 fts=-/- vec=2/1.0194721221923828 rrf=0.016129032258064516
+hit  1 gen/04.md|section 1 rrf=0.032266458495966696
+hit  2 gen/04.md| rrf=0.032018442622950824
+hit  3 gen/04.md|section 2 rrf=0.031009615384615385
+hit  4 gamma/README.md| rrf=0.030834914611005692
+hit  5 gamma/README.md|section 3 rrf=0.030798389007344232
+hit  6 gamma/README.md|section 2 rrf=0.030309988518943745
+== query="widget" mode=vec k=20 tag="tmux"
+ran=vec n_fts=0 n_vec=9
+cand  1 chunk=4 alpha.md|section 3 fts=-/- vec=1/0.9364089965820312 rrf=0.01639344262295082
+cand  2 chunk=46 gen/08.md|section 1 fts=-/- vec=2/0.9628548622131348 rrf=0.016129032258064516
+cand  3 chunk=2 alpha.md|section 1 fts=-/- vec=3/0.9713827967643738 rrf=0.015873015873015872
+cand  4 chunk=48 gen/08.md|section 3 fts=-/- vec=4/0.9792749285697937 rrf=0.015625
+cand  5 chunk=47 gen/08.md|section 2 fts=-/- vec=5/0.9883155226707458 rrf=0.015384615384615385
+cand  6 chunk=45 gen/08.md| fts=-/- vec=6/1.002756953239441 rrf=0.015151515151515152
+cand  7 chunk=1 alpha.md| fts=-/- vec=7/1.0327847003936768 rrf=0.014925373134328358
+cand  8 chunk=3 alpha.md|section 2 fts=-/- vec=8/1.0631264448165894 rrf=0.014705882352941176
+cand  9 chunk=5 alpha.md|section 4 fts=-/- vec=9/1.093510389328003 rrf=0.014492753623188406
+hit  1 alpha.md|section 3 rrf=0.01639344262295082
+hit  2 gen/08.md|section 1 rrf=0.016129032258064516
+hit  3 alpha.md|section 1 rrf=0.015873015873015872
+hit  4 gen/08.md|section 3 rrf=0.015625
+hit  5 gen/08.md|section 2 rrf=0.015384615384615385
+hit  6 alpha.md| rrf=0.014925373134328358
+== query="tmux logout session" mode=hybrid k=20 tag=""
+ran=hybrid n_fts=20 n_vec=20
+cand  1 chunk=54 gen/10.md|section 1 fts=3/-2.9097075548655513 vec=2/0.9464703798294067 rrf=0.03200204813108039
+cand  2 chunk=52 gen/09.md|section 3 fts=2/-3.037695301402604 vec=10/0.9755174517631531 rrf=0.0304147465437788
+cand  3 chunk=35 gen/05.md|section 2 fts=11/-2.3371122529587396 vec=3/0.9464703798294067 rrf=0.029957522915269395
+cand  4 chunk=16 gen/00.md|section 3 fts=10/-2.3371122529587396 vec=4/0.9464703798294067 rrf=0.029910714285714284
+cand  5 chunk=45 gen/08.md| fts=5/-2.77678719693499 vec=11/0.9755174517631531 rrf=0.02946912242686891
+cand  6 chunk=49 gen/09.md| fts=1/-3.101153520462163 vec=19/0.9805826544761658 rrf=0.029051670471052088
+cand  7 chunk=50 gen/09.md|section 1 fts=14/-1.6722616455892865 vec=6/0.9482477903366089 rrf=0.028665028665028666
+cand  8 chunk=26 gen/03.md|section 1 fts=12/-2.2855758094069385 vec=12/0.9755174517631531 rrf=0.027777777777777776
+cand  9 chunk=56 gen/10.md|section 3 fts=8/-2.5795901857351593 vec=18/0.9805826544761658 rrf=0.027526395173453996
+cand 10 chunk=46 gen/08.md|section 1 fts=19/-1.4408398120339816 vec=8/0.9647274613380432 rrf=0.027364110201042444
+cand 11 chunk=9 gamma/README.md| fts=-/- vec=1/0.9377926588058472 rrf=0.01639344262295082
+cand 12 chunk=20 gen/01.md|section 3 fts=4/-2.8718510741662597 vec=-/- rrf=0.015625
+cand 13 chunk=5 alpha.md|section 4 fts=-/- vec=5/0.9482170343399048 rrf=0.015384615384615385
+cand 14 chunk=58 gen/11.md|section 1 fts=6/-2.749442048432514 vec=-/- rrf=0.015151515151515152
+cand 15 chunk=48 gen/08.md|section 3 fts=7/-2.594943861887562 vec=-/- rrf=0.014925373134328358
+cand 16 chunk=31 gen/04.md|section 2 fts=-/- vec=7/0.9482477903366089 rrf=0.014925373134328358
+cand 17 chunk=18 gen/01.md|section 1 fts=9/-2.5399856109688472 vec=-/- rrf=0.014492753623188406
+cand 18 chunk=27 gen/03.md|section 2 fts=-/- vec=9/0.9647274613380432 rrf=0.014492753623188406
+cand 19 chunk=51 gen/09.md|section 2 fts=13/-1.8326310916671793 vec=-/- rrf=0.0136986301369863
+cand 20 chunk=59 gen/11.md|section 2 fts=-/- vec=13/0.9772412180900574 rrf=0.0136986301369863
+cand 21 chunk=40 gen/06.md|section 3 fts=-/- vec=14/0.9772412180900574 rrf=0.013513513513513514
+cand 22 chunk=17 gen/01.md| fts=15/-1.598554156403933 vec=-/- rrf=0.013333333333333334
+cand 23 chunk=33 gen/05.md| fts=-/- vec=15/0.9772412180900574 rrf=0.013333333333333334
+cand 24 chunk=13 gen/00.md| fts=16/-1.532523192609664 vec=-/- rrf=0.013157894736842105
+cand 25 chunk=14 gen/00.md|section 1 fts=-/- vec=16/0.9772412180900574 rrf=0.013157894736842105
+cand 26 chunk=39 gen/06.md|section 2 fts=17/-1.457853651509852 vec=-/- rrf=0.012987012987012988
+cand 27 chunk=8 beta.md|section 2 fts=-/- vec=17/0.979432225227356 rrf=0.012987012987012988
+cand 28 chunk=19 gen/01.md|section 2 fts=18/-1.4408398120339816 vec=-/- rrf=0.01282051282051282
+cand 29 chunk=53 gen/10.md| fts=20/-1.4374620850160416 vec=-/- rrf=0.0125
+cand 30 chunk=30 gen/04.md|section 1 fts=-/- vec=20/0.9805826544761658 rrf=0.0125
+hit  1 gen/10.md|section 1 rrf=0.03200204813108039
+hit  2 gen/09.md|section 3 rrf=0.0304147465437788
+hit  3 gen/05.md|section 2 rrf=0.029957522915269395
+hit  4 gen/00.md|section 3 rrf=0.029910714285714284
+hit  5 gen/08.md| rrf=0.02946912242686891
+hit  6 gen/09.md| rrf=0.029051670471052088
+hit  7 gen/09.md|section 1 rrf=0.028665028665028666
+hit  8 gen/03.md|section 1 rrf=0.027777777777777776
+hit  9 gen/10.md|section 3 rrf=0.027526395173453996
+hit 10 gen/08.md|section 1 rrf=0.027364110201042444
+hit 11 gamma/README.md| rrf=0.01639344262295082
+hit 12 gen/01.md|section 3 rrf=0.015625
+hit 13 alpha.md|section 4 rrf=0.015384615384615385
+hit 14 gen/11.md|section 1 rrf=0.015151515151515152
+hit 15 gen/08.md|section 3 rrf=0.014925373134328358
+hit 16 gen/04.md|section 2 rrf=0.014925373134328358
+hit 17 gen/01.md|section 1 rrf=0.014492753623188406
+hit 18 gen/03.md|section 2 rrf=0.014492753623188406
+hit 19 gen/11.md|section 2 rrf=0.0136986301369863
+hit 20 gen/06.md|section 3 rrf=0.013513513513513514
+== query="draw-visual widget" mode=hybrid k=5 tag=""
+ran=hybrid n_fts=20 n_vec=20
+cand  1 chunk=13 gen/00.md| fts=1/-1.8613075300831162e-06 vec=10/0.9774197340011597 rrf=0.030679156908665108
+cand  2 chunk=58 gen/11.md|section 1 fts=11/-1.5528876009107846e-06 vec=7/0.9774197340011597 rrf=0.02900988017658188
+cand  3 chunk=39 gen/06.md|section 2 fts=10/-1.5528876009107846e-06 vec=8/0.9774197340011597 rrf=0.028991596638655463
+cand  4 chunk=20 gen/01.md|section 3 fts=9/-1.5528876009107846e-06 vec=9/0.9774197340011597 rrf=0.028985507246376812
+cand  5 chunk=21 gen/02.md| fts=20/-1.051731389317258e-06 vec=4/0.9511064887046814 rrf=0.028125
+cand  6 chunk=6 beta.md| fts=19/-1.051731389317258e-06 vec=11/0.9796087145805359 rrf=0.026742734890354787
+cand  7 chunk=17 gen/01.md| fts=12/-1.4605275966124793e-06 vec=19/0.9978227615356445 rrf=0.026547116736990152
+cand  8 chunk=24 gen/02.md|section 3 fts=14/-1.387589013224822e-06 vec=18/0.9978227615356445 rrf=0.026334026334026334
+cand  9 chunk=43 gen/07.md|section 2 fts=15/-1.387589013224822e-06 vec=17/0.9978227615356445 rrf=0.02632034632034632
+cand 10 chunk=1 alpha.md| fts=-/- vec=1/0.9504379034042358 rrf=0.01639344262295082
+cand 11 chunk=49 gen/09.md| fts=2/-1.7555724565611655e-06 vec=-/- rrf=0.016129032258064516
+cand 12 chunk=47 gen/08.md|section 2 fts=-/- vec=2/0.9511064887046814 rrf=0.016129032258064516
+cand 13 chunk=15 gen/00.md|section 2 fts=3/-1.676143663073228e-06 vec=-/- rrf=0.015873015873015872
+cand 14 chunk=28 gen/03.md|section 3 fts=-/- vec=3/0.9511064887046814 rrf=0.015873015873015872
+cand 15 chunk=50 gen/09.md|section 1 fts=4/-1.676143663073228e-06 vec=-/- rrf=0.015625
+cand 16 chunk=52 gen/09.md|section 3 fts=5/-1.676143663073228e-06 vec=-/- rrf=0.015384615384615385
+cand 17 chunk=3 alpha.md|section 2 fts=-/- vec=5/0.957190990447998 rrf=0.015384615384615385
+cand 18 chunk=14 gen/00.md|section 1 fts=6/-1.5823665893271463e-06 vec=-/- rrf=0.015151515151515152
+cand 19 chunk=11 gamma/README.md|section 2 fts=-/- vec=6/0.9749358296394348 rrf=0.015151515151515152
+cand 20 chunk=16 gen/00.md|section 3 fts=7/-1.5823665893271463e-06 vec=-/- rrf=0.014925373134328358
+cand 21 chunk=51 gen/09.md|section 2 fts=8/-1.5823665893271463e-06 vec=-/- rrf=0.014705882352941176
+cand 22 chunk=4 alpha.md|section 3 fts=-/- vec=12/0.9825899600982666 rrf=0.013888888888888888
+cand 23 chunk=29 gen/04.md| fts=13/-1.4231243479085651e-06 vec=-/- rrf=0.0136986301369863
+cand 24 chunk=2 alpha.md|section 1 fts=-/- vec=13/0.9865322113037109 rrf=0.0136986301369863
+cand 25 chunk=48 gen/08.md|section 3 fts=-/- vec=14/0.9896268248558044 rrf=0.013513513513513514
+cand 26 chunk=41 gen/07.md| fts=-/- vec=15/0.9896268248558044 rrf=0.013333333333333334
+cand 27 chunk=36 gen/05.md|section 3 fts=16/-1.3537850762428947e-06 vec=-/- rrf=0.013157894736842105
+cand 28 chunk=22 gen/02.md|section 1 fts=-/- vec=16/0.9896268248558044 rrf=0.013157894736842105
+cand 29 chunk=55 gen/10.md|section 2 fts=17/-1.3537850762428947e-06 vec=-/- rrf=0.012987012987012988
+cand 30 chunk=9 gamma/README.md| fts=18/-1.0931079702753898e-06 vec=-/- rrf=0.01282051282051282
+cand 31 chunk=44 gen/07.md|section 3 fts=-/- vec=20/1.004340410232544 rrf=0.0125
+hit  1 gen/00.md| rrf=0.030679156908665108
+hit  2 gen/11.md|section 1 rrf=0.02900988017658188
+hit  3 gen/06.md|section 2 rrf=0.028991596638655463
+hit  4 gen/01.md|section 3 rrf=0.028985507246376812
+hit  5 gen/02.md| rrf=0.028125
+== query="&&" mode=hybrid k=1 tag=""
+ran=hybrid n_fts=0 n_vec=20
+cand  1 chunk=12 gamma/README.md|section 3 fts=-/- vec=1/0.9466984868049622 rrf=0.01639344262295082
+cand  2 chunk=11 gamma/README.md|section 2 fts=-/- vec=2/0.9553183317184448 rrf=0.016129032258064516
+cand  3 chunk=50 gen/09.md|section 1 fts=-/- vec=3/0.9582841992378235 rrf=0.015873015873015872
+cand  4 chunk=31 gen/04.md|section 2 fts=-/- vec=4/0.9582841992378235 rrf=0.015625
+cand  5 chunk=42 gen/07.md|section 1 fts=-/- vec=5/0.9590622782707214 rrf=0.015384615384615385
+cand  6 chunk=23 gen/02.md|section 2 fts=-/- vec=6/0.9590622782707214 rrf=0.015151515151515152
+cand  7 chunk=1 alpha.md| fts=-/- vec=7/0.9600133299827576 rrf=0.014925373134328358
+cand  8 chunk=8 beta.md|section 2 fts=-/- vec=8/0.9619373679161072 rrf=0.014705882352941176
+cand  9 chunk=57 gen/11.md| fts=-/- vec=9/0.967086136341095 rrf=0.014492753623188406
+cand 10 chunk=38 gen/06.md|section 1 fts=-/- vec=10/0.967086136341095 rrf=0.014285714285714285
+cand 11 chunk=19 gen/01.md|section 2 fts=-/- vec=11/0.967086136341095 rrf=0.014084507042253521
+cand 12 chunk=55 gen/10.md|section 2 fts=-/- vec=12/0.9677188992500305 rrf=0.013888888888888888
+cand 13 chunk=36 gen/05.md|section 3 fts=-/- vec=13/0.9677188992500305 rrf=0.0136986301369863
+cand 14 chunk=29 gen/04.md| fts=-/- vec=14/0.9677188992500305 rrf=0.013513513513513514
+cand 15 chunk=46 gen/08.md|section 1 fts=-/- vec=15/0.9700564742088318 rrf=0.013333333333333334
+cand 16 chunk=27 gen/03.md|section 2 fts=-/- vec=16/0.9700564742088318 rrf=0.013157894736842105
+cand 17 chunk=9 gamma/README.md| fts=-/- vec=17/0.9794090390205383 rrf=0.012987012987012988
+cand 18 chunk=56 gen/10.md|section 3 fts=-/- vec=18/0.9834921360015869 rrf=0.01282051282051282
+cand 19 chunk=49 gen/09.md| fts=-/- vec=19/0.9834921360015869 rrf=0.012658227848101266
+cand 20 chunk=30 gen/04.md|section 1 fts=-/- vec=20/0.9834921360015869 rrf=0.0125
+hit  1 gamma/README.md|section 3 rrf=0.01639344262295082
+== query="gasket harbour lantern" mode=fts k=20 tag=""
+ran=fts n_fts=1 n_vec=0
+cand  1 chunk=26 gen/03.md|section 1 fts=1/-3.946230476076601 vec=-/- rrf=0.01639344262295082
+hit  1 gen/03.md|section 1 rrf=0.01639344262295082
+== query="Gamma" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=4 n_vec=20
+cand  1 chunk=12 gamma/README.md|section 3 fts=4/-3.656575734310088 vec=5/0.9642003774642944 rrf=0.031009615384615385
+cand  2 chunk=9 gamma/README.md| fts=1/-4.441884897163439 vec=-/- rrf=0.01639344262295082
+cand  3 chunk=6 beta.md| fts=-/- vec=1/0.9486287832260132 rrf=0.01639344262295082
+cand  4 chunk=11 gamma/README.md|section 2 fts=2/-3.7879234956702583 vec=-/- rrf=0.016129032258064516
+cand  5 chunk=48 gen/08.md|section 3 fts=-/- vec=2/0.9603828191757202 rrf=0.016129032258064516
+cand  6 chunk=10 gamma/README.md|section 1 fts=3/-3.7210908913553546 vec=-/- rrf=0.015873015873015872
+cand  7 chunk=41 gen/07.md| fts=-/- vec=3/0.9603828191757202 rrf=0.015873015873015872
+cand  8 chunk=22 gen/02.md|section 1 fts=-/- vec=4/0.9603828191757202 rrf=0.015625
+cand  9 chunk=47 gen/08.md|section 2 fts=-/- vec=6/0.9664528369903564 rrf=0.015151515151515152
+cand 10 chunk=28 gen/03.md|section 3 fts=-/- vec=7/0.9664528369903564 rrf=0.014925373134328358
+cand 11 chunk=21 gen/02.md| fts=-/- vec=8/0.9664528369903564 rrf=0.014705882352941176
+cand 12 chunk=7 beta.md|section 1 fts=-/- vec=9/0.9691882133483887 rrf=0.014492753623188406
+cand 13 chunk=51 gen/09.md|section 2 fts=-/- vec=10/0.9724679589271545 rrf=0.014285714285714285
+cand 14 chunk=32 gen/04.md|section 3 fts=-/- vec=11/0.9724679589271545 rrf=0.014084507042253521
+cand 15 chunk=25 gen/03.md| fts=-/- vec=12/0.9724679589271545 rrf=0.013888888888888888
+cand 16 chunk=59 gen/11.md|section 2 fts=-/- vec=13/0.9781509637832642 rrf=0.0136986301369863
+cand 17 chunk=40 gen/06.md|section 3 fts=-/- vec=14/0.9781509637832642 rrf=0.013513513513513514
+cand 18 chunk=33 gen/05.md| fts=-/- vec=15/0.9781509637832642 rrf=0.013333333333333334
+cand 19 chunk=14 gen/00.md|section 1 fts=-/- vec=16/0.9781509637832642 rrf=0.013157894736842105
+cand 20 chunk=5 alpha.md|section 4 fts=-/- vec=17/0.9794018268585205 rrf=0.012987012987012988
+cand 21 chunk=60 gen/11.md|section 3 fts=-/- vec=18/0.9802405834197998 rrf=0.01282051282051282
+cand 22 chunk=53 gen/10.md| fts=-/- vec=19/0.9802405834197998 rrf=0.012658227848101266
+cand 23 chunk=34 gen/05.md|section 1 fts=-/- vec=20/0.9802405834197998 rrf=0.0125
+hit  1 gamma/README.md|section 3 rrf=0.031009615384615385
+hit  2 gamma/README.md| rrf=0.01639344262295082
+hit  3 beta.md| rrf=0.01639344262295082
+hit  4 gamma/README.md|section 2 rrf=0.016129032258064516
+hit  5 gen/08.md|section 3 rrf=0.016129032258064516
+hit  6 gen/07.md| rrf=0.015873015873015872
+hit  7 gen/02.md|section 1 rrf=0.015625
+hit  8 gen/08.md|section 2 rrf=0.015151515151515152

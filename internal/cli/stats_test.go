@@ -32,7 +32,7 @@ type statsFixture struct {
 func buildStatsFixture(t *testing.T) *statsFixture {
 	t.Helper()
 	root := t.TempDir()
-	dbPath := filepath.Join(root, ".kb", "kb.sqlite")
+	dbPath := testDBPath(root)
 
 	st, err := sqlite.Open(context.Background(), dbPath, sqlite.Options{})
 	if err != nil {
@@ -280,7 +280,7 @@ func TestStatsPrintSQLNeedsNoDatabase(t *testing.T) {
 		t.Errorf("--print-sql output does not look like SQL:\n%s", stdout)
 	}
 	// The promise is stronger than "works without a database": it must not create one either.
-	if _, err := os.Stat(filepath.Join(root, ".kb", "kb.sqlite")); !os.IsNotExist(err) {
+	if _, err := os.Stat(testDBPath(root)); !os.IsNotExist(err) {
 		t.Errorf("--print-sql created %s/.kb (stat err = %v); it must open no database", root, err)
 	}
 }

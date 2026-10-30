@@ -219,9 +219,21 @@ func execute(ctx context.Context, d deps, args []string, stdout, stderr io.Write
 - Always pass values as parameters (`?`). Never use `fmt.Sprintf` to build SQL from values. Identifiers built from a fixed allow-list (for example a sort column) are the only exception, and they need a comment.
 - FTS5 `MATCH` strings go through the existing sanitizer (`search.SanitizeFTS`). It is a fuzz target; keep it that way.
 - Writes that must stay consistent (an entry and its chunks and vectors; a search and its results and candidates) happen in **one transaction**. Use `defer tx.Rollback()` immediately after `BeginTx`.
-- Migrations are **append-only**, numbered and idempotent. Never edit a migration that has shipped; add a new one. The schema version lives in the database.
+- Migrations follow §6.1. The schema version lives in the database (`PRAGMA user_version`).
 - Backend-specific SQL, PRAGMAs and extension loading (`vec0`, `fts5`) stay inside the backend package. A future DuckDB or libSQL backend follows the same rule.
 - Store per-connection settings in the DSN (as `store.Open` does with `_foreign_keys`), not in a one-off `Exec`.
+
+### 6.1 Migrations
+
+Every versioned file (the store index DB, the embedding cache, later the store config and location file) lists its steps as a `migrate.Steps[T]` and implements `migrate.Artefact` in a small adapter (`internal/migrate`, design `docs/design/migrations.md`).
+
+1. **Append-only.** Never edit or reorder a released step or `schema.sql`. A fix is a new step.
+2. Every step has a stable `ID` (`<artefact>/<NNNN>-<slug>`, NNNN = `From`+1), a one-line `Desc` and an `Effect` (`none`, `reindex`, `reembed`). `Steps.Check` enforces the shape; each artefact calls it in a test and an init-time assertion.
+3. A step uses only its handle: SQL text, or the map tree. It never calls kb's current Go code (for example `chunk.Split`), because a later change to that code would silently change an old migration. It never begins or commits a transaction, and never touches the network or the model.
+4. **Every search-log table is preserved.** A step that alters one has a test that compares every row before and after.
+5. Work that needs the model or the corpus never runs in a step: the step clears the derived state and declares `EffectReindex` or `EffectReembed`, honestly. A reviewer checks every step that drops or clears derived data against its declared effect.
+6. Migration numbers are pre-assigned (PLAN §6.3). No agent adds a step that is not in that table.
+7. An adapter states whether `Apply` is atomic (SQLite: every pending step and the version stamp in one transaction) or stamps after each step so a rerun resumes. On a pinned `*sql.Conn`, check `ctx.Err()` before `COMMIT`: neither database/sql nor the driver refuses a statement on an already-cancelled ctx.
 
 ## 7. Comments
 

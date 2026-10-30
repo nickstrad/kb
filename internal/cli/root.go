@@ -17,12 +17,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/local"
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/store"
 	"github.com/nickstrad/kb/internal/store/sqlite"
 	"github.com/nickstrad/kb/internal/workspace"
@@ -48,20 +50,28 @@ type deps struct {
 	// userCacheDir is where the incident log goes when there is no <root>/.kb.
 	userCacheDir func() (string, error)
 	// workspaceEnv supplies the working directory, home, XDG_DATA_HOME and cache base that
-	// workspace.Resolve reads.
+	// location resolution reads.
 	workspaceEnv func() workspace.Env
 }
 
 // productionDeps are the real implementations.
 func productionDeps() *deps {
-	return &deps{
-		modelCacheDir: local.DefaultCacheDir,
-		pullModel:     local.Pull,
-		openStore:     openSQLite,
-		editor:        runEditor,
-		userCacheDir:  os.UserCacheDir,
-		workspaceEnv:  workspace.OSEnv,
+	d := &deps{
+		pullModel:    local.Pull,
+		openStore:    openSQLite,
+		editor:       runEditor,
+		userCacheDir: os.UserCacheDir,
+		workspaceEnv: workspace.OSEnv,
 	}
+	// The model cache is the workspace's ModelsDir rule, so there is one place that decides it.
+	d.modelCacheDir = func() (string, error) {
+		dir := workspace.ModelsDirOf(d.workspaceEnv().CacheBase)
+		if dir == "" {
+			return "", errs.New(errs.Usage, "cli.modelCacheDir", "cannot find the user cache directory for the model cache")
+		}
+		return dir, nil
+	}
+	return d
 }
 
 // openSQLite is deps.openStore in production.
@@ -73,26 +83,79 @@ func openSQLite(ctx context.Context, path string, readOnly bool) (store.Store, e
 	return st, nil
 }
 
-// workspace resolves the store this command runs on from the root persistent flags (--root,
-// --global), else by walking up from the working directory. The error is already well-formed.
-// Under --debug it says on stderr which store was chosen and how.
-func (d *deps) workspace(cmd *cobra.Command) (*workspace.Workspace, error) {
-	// Get* fails only for an undefined flag; both are root persistent flags, so "" / false is safe.
+// location resolves the location this command runs in from the root persistent flags (--root,
+// --global, --store global), else by walking up from the working directory for .kb/kb.toml, and
+// reads its kb.toml. how says how it was chosen, for --debug. Errors are already well-formed:
+// NotFound with no location, or when --root/--global name a directory with no kb.toml (run kb
+// init); Usage for a bad --store or a flag conflict.
+func (d *deps) location(cmd *cobra.Command) (loc *workspace.Location, lf config.Location, ref workspace.Ref, how string, err error) {
+	// Get* fails only for an undefined flag; all are root persistent flags, so "" / false is safe.
 	root, _ := cmd.Flags().GetString("root")
 	global, _ := cmd.Flags().GetBool("global")
+	storeFlag, _ := cmd.Flags().GetString("store")
 	env := d.workspaceEnv()
-	ws, err := workspace.Resolve(root, global, env)
-	if err == nil && debugFlag(cmd) {
-		how := "discovered from " + env.Cwd
-		switch {
-		case root != "":
-			how = "--root"
-		case global:
-			how = "--global"
-		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "%s: store %s (%s)\n", cmd.CommandPath(), ws.Root, how)
+	ref, err = workspace.ParseRef(storeFlag)
+	if err != nil {
+		return nil, config.Location{}, ref, "", err
 	}
-	return ws, err
+	how = "discovered from " + env.Cwd
+	switch {
+	case ref.Global && root != "":
+		return nil, config.Location{}, ref, "", usageErr("--store global cannot be combined with --root: global names the global location")
+	case ref.Global:
+		global, how = true, "--store global"
+	case root != "":
+		how = "--root"
+	case global:
+		how = "--global"
+	}
+	loc, err = workspace.ResolveLocation(root, global, env)
+	if err != nil {
+		return nil, config.Location{}, ref, "", err
+	}
+	lf, err = config.ReadLocation(loc.FilePath)
+	if err != nil {
+		return nil, config.Location{}, ref, "", err
+	}
+	return loc, lf, ref, how, nil
+}
+
+// workspace resolves the store this command runs on: the location (see location), then the store,
+// which is --store (a local NAME, or global for the global location's default) or kb.toml's
+// default_store. A store missing from the location is NotFound; so is a default_store that names
+// no store, and that message names kb.toml. Under --debug it says on stderr which store was
+// chosen and how.
+func (d *deps) workspace(cmd *cobra.Command) (*workspace.Workspace, error) {
+	loc, lf, ref, how, err := d.location(cmd)
+	if err != nil {
+		return nil, err
+	}
+	name := ref.Name
+	if name == "" {
+		name = lf.DefaultStore
+	}
+	ws, err := loc.Store(name)
+	if err != nil {
+		if ref.Name == "" && errs.KindOf(err) == errs.NotFound {
+			return nil, errs.Wrap(err, errs.NotFound, "cli.workspace",
+				"default_store %q in %s names no store in %s; %s", name, loc.FilePath, loc.Root, storeHint(loc, name))
+		}
+		return nil, err
+	}
+	if debugFlag(cmd) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "%s: location %s store %s (%s)\n", cmd.CommandPath(), loc.Root, ws.Store, how)
+	}
+	return ws, nil
+}
+
+// storeHint lists the existing stores and says how to fix a missing one.
+func storeHint(loc *workspace.Location, name string) string {
+	have, _, err := loc.Stores()
+	list := "none"
+	if err == nil && len(have) > 0 {
+		list = strings.Join(have, ", ")
+	}
+	return fmt.Sprintf("stores: %s; edit default_store or create it with kb init --name %s", list, name)
 }
 
 // Version is printed by `kb version` and recorded with every logged search; main sets it from
@@ -161,11 +224,13 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		Short: "Search and maintain the knowledge repository",
 		Long: "kb is a knowledge store for agents and people: Markdown entries, indexed for hybrid\n" +
 			"full-text and vector search. kb help is the reference for using it.\n\n" +
-			"Store: kb works on the nearest directory at or above the current one that holds a kb\n" +
-			"store. --root DIR names a store explicitly\n" +
-			"and --global uses the machine-wide store ($XDG_DATA_HOME/kb, else ~/.local/share/kb);\n" +
-			"add and reindex create the store there when it is missing. Entries live under data/;\n" +
-			"the index and search log live in the store's database.\n\n" +
+			"Locations and stores: a location is a directory with a .kb/ folder (kb.toml); it holds\n" +
+			"named stores, each with its own config, sources, embedder, index and search log. kb works\n" +
+			"on the nearest location at or above the current directory, and in it on the store named by\n" +
+			"--store, else kb.toml's default_store. kb init creates a location and its first store, and\n" +
+			"kb init --name NAME adds another; kb stores lists them. --root DIR names a location\n" +
+			"explicitly and --global uses the machine-wide one ($XDG_DATA_HOME/kb, else ~/.local/share/kb).\n" +
+			"Only kb init creates a location or a store. Entries live under data/ (kb init makes it).\n\n" +
 			"Use it in two steps:\n" +
 			"  kb search \"<query>\" --caller claude   ranked hits, opening with \"search N · M hits\"\n" +
 			"  kb show <path>                        read a hit's entry\n" +
@@ -182,8 +247,9 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	}
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
-	cmd.PersistentFlags().String("root", "", "use the store in DIR instead of discovering one from the current directory")
-	cmd.PersistentFlags().Bool("global", false, "use the machine-wide store ($XDG_DATA_HOME/kb, else ~/.local/share/kb)")
+	cmd.PersistentFlags().String("root", "", "use the location in DIR instead of discovering one from the current directory")
+	cmd.PersistentFlags().Bool("global", false, "use the machine-wide location ($XDG_DATA_HOME/kb, else ~/.local/share/kb)")
+	cmd.PersistentFlags().String("store", "", "the store to work on: a store name of the location, or global; default: kb.toml's default_store")
 	cmd.MarkFlagsMutuallyExclusive("root", "global")
 	cmd.PersistentFlags().Bool("debug", false, "print extra detail on stderr: the full error chain, and best-effort steps that failed quietly")
 
@@ -202,6 +268,8 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		newVersionCmd(stdout),
 		newModelCmd(d, stdout, stderr),
 		newConfigCmd(d, stdout, stderr),
+		newStoresCmd(d, stdout, stderr),
+		newInitCmd(d, stdout, stderr),
 	)
 	markRunErrors(cmd)
 	return cmd

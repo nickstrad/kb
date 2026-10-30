@@ -45,6 +45,10 @@ func runList(stdout io.Writer, root, tag string) error {
 		return usageErr("%s", err.Error())
 	}
 
+	if len(entries) == 0 {
+		fmt.Fprintln(stdout, "no entries")
+		return nil
+	}
 	w := tabwriter.NewWriter(stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "PATH\tSUMMARY\tUPDATED\tVERIFIED")
 	shown := 0

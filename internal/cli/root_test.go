@@ -46,7 +46,7 @@ func TestWorkspaceDiscoveryCLI(t *testing.T) {
 	t.Run("failure outside any store", func(t *testing.T) {
 		t.Chdir(realTempDir(t))
 		out, errOut, code := run(t, "list")
-		want := `kb list: no kb store found in`
+		want := `kb list: no kb location found in`
 		if code != 1 || out != "" || !strings.Contains(errOut, want) ||
 			!strings.Contains(errOut, `run "kb init" here, or use --global / --root`) {
 			t.Fatalf("exit %d stdout %q stderr %q", code, out, errOut)
@@ -69,10 +69,12 @@ func TestWorkspaceDiscoveryCLI(t *testing.T) {
 		t.Chdir(sub) // inside another store: --global must still win
 		src := filepath.Join(realTempDir(t), "global-entry.md")
 		writeFile(t, src, validFrontMatter("Global", "Created through --global."))
-		writeFile(t, filepath.Join(testDeps.workspaceEnv().Home, ".local", "share", "kb", ".kb", "config.toml"), "[embed]\nmodel = \"none\"\n")
-		_, errOut, code := run(t, "--global", "--debug", "add", src)
 		home := testDeps.workspaceEnv().Home
-		if code != 0 || !strings.Contains(errOut, "store "+filepath.Join(home, ".local", "share", "kb")+" (--global)") {
+		globalRoot := filepath.Join(home, ".local", "share", "kb")
+		makeLocation(t, globalRoot, "default")
+		writeFile(t, filepath.Join(globalRoot, ".kb", "stores", "default", "config.toml"), "[embed]\nmodel = \"none\"\n")
+		_, errOut, code := run(t, "--global", "--debug", "add", src)
+		if code != 0 || !strings.Contains(errOut, "location "+globalRoot+" store default (--global)") {
 			t.Fatalf("exit %d stderr %q", code, errOut)
 		}
 		t.Cleanup(func() { os.RemoveAll(filepath.Join(home, ".local")) })
@@ -89,28 +91,36 @@ func TestWorkspaceDiscoveryCLI(t *testing.T) {
 			args []string
 			want string
 		}{
-			{[]string{"--debug", "list"}, "kb list: store " + root + " (discovered from " + sub + ")"},
-			{[]string{"--debug", "--root", root, "list"}, "kb list: store " + root + " (--root)"},
+			{[]string{"--debug", "list"}, "kb list: location " + root + " store default (discovered from " + sub + ")"},
+			{[]string{"--debug", "--root", root, "list"}, "kb list: location " + root + " store default (--root)"},
 		} {
 			_, errOut, code := run(t, tc.args...)
 			if code != 0 || !strings.Contains(errOut, tc.want) {
 				t.Errorf("%v: exit %d stderr %q, want %q", tc.args, code, errOut, tc.want)
 			}
 		}
-		if _, errOut, _ := run(t, "list"); strings.Contains(errOut, "store ") {
+		if _, errOut, _ := run(t, "list"); strings.Contains(errOut, "location ") {
 			t.Errorf("without --debug the store line leaked: %q", errOut)
 		}
 	})
-	t.Run("root flag creates the store on a fresh directory", func(t *testing.T) {
+	t.Run("root flag on a directory with no location refuses and creates nothing", func(t *testing.T) {
 		fresh := filepath.Join(realTempDir(t), "new-store")
 		src := filepath.Join(realTempDir(t), "fresh-entry.md")
-		writeFile(t, src, validFrontMatter("Fresh", "Created through --root."))
-		_, errOut, code := run(t, "--root", fresh, "add", src)
-		if code != 0 {
-			t.Fatalf("exit %d stderr %q", code, errOut)
-		}
-		if _, err := os.Stat(filepath.Join(fresh, ".kb", "kb.sqlite")); err != nil {
-			t.Fatalf("add --root did not create the database: %v", err)
+		writeFile(t, src, validFrontMatter("Fresh", "Not created through --root."))
+		for _, cmd := range []string{"add", "reindex"} {
+			args := []string{"--root", fresh, cmd}
+			if cmd == "add" {
+				args = append(args, src)
+			} else {
+				args = append(args, "--all")
+			}
+			_, errOut, code := run(t, args...)
+			if code != 1 || !strings.Contains(errOut, "run kb init") {
+				t.Errorf("%s: exit %d stderr %q, want exit 1 saying run kb init", cmd, code, errOut)
+			}
+			if _, err := os.Stat(fresh); !os.IsNotExist(err) {
+				t.Errorf("%s created %s (stat err %v)", cmd, fresh, err)
+			}
 		}
 	})
 }

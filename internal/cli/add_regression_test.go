@@ -43,7 +43,7 @@ func TestAddRejectsMissingFrontMatterBeforeCopy(t *testing.T) {
 			if _, err := os.Stat(dest); !os.IsNotExist(err) {
 				t.Fatalf("destination exists: %v", err)
 			}
-			if _, err := os.Stat(filepath.Join(root, ".kb", "kb.sqlite")); !os.IsNotExist(err) {
+			if _, err := os.Stat(testDBPath(root)); !os.IsNotExist(err) {
 				t.Fatalf("validation created database: %v", err)
 			}
 		})

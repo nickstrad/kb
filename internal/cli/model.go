@@ -16,7 +16,7 @@ import (
 func newModelCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "model",
-		Short: "Download or list embedding models",
+		Short: "Download, locate or list embedding models",
 		Long: "Embedding models run in-process and are kept in one cache per machine. kb reindex\n" +
 			"and kb add download the configured model when it is missing; kb model pull does it\n" +
 			"up front. kb search never downloads.",
@@ -34,7 +34,18 @@ func newModelCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			},
 		},
 		&cobra.Command{
+			Use:           "path",
+			Short:         "Print the directory of the model named by [embed] model",
+			Args:          cobra.NoArgs,
+			SilenceUsage:  true,
+			SilenceErrors: true,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runModelPath(cmd, d, stdout)
+			},
+		},
+		&cobra.Command{
 			Use:           "list",
+			Aliases:       []string{"ls"},
 			Short:         "List the supported embedding models and whether each is downloaded",
 			Args:          cobra.NoArgs,
 			SilenceUsage:  true,
@@ -47,14 +58,53 @@ func newModelCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	return cmd
 }
 
+// configuredEmbed is the [embed] table of the store this command runs on, or the defaults outside
+// any location, so the model commands work before kb init. Inside a location the store must
+// resolve: a --store or default_store that names no store is NotFound, not a silent fallback to
+// the default model.
+func configuredEmbed(cmd *cobra.Command, d *deps) (config.Embed, error) {
+	ecfg := config.Default().Embed
+	if _, _, _, _, err := d.location(cmd); err != nil {
+		if errs.KindOf(err) == errs.NotFound {
+			return ecfg, nil
+		}
+		return ecfg, err
+	}
+	_, cfg, err := d.workspaceConfig(cmd)
+	if err != nil {
+		return ecfg, err
+	}
+	return cfg.Embed, nil
+}
+
+// runModelPath prints the directory the configured model is (or will be) cached in, even before
+// it is downloaded, so scripts can find or clean it. "none" has no directory.
+func runModelPath(cmd *cobra.Command, d *deps, stdout io.Writer) error {
+	ecfg, err := configuredEmbed(cmd, d)
+	if err != nil {
+		return err
+	}
+	if ecfg.Model == config.ModelNone {
+		return usageErr("embed.model is %q: this store uses full-text search only, so there is no model directory", config.ModelNone)
+	}
+	spec, err := local.Lookup(ecfg.Model)
+	if err != nil {
+		return usageErr("%s", err)
+	}
+	cache, err := d.modelCacheDir()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, local.New(spec, cache).ModelDir())
+	return nil
+}
+
 // runModelPull downloads the model [embed] model names unless it is already cached. Outside a
 // store it pulls the default model, so it works before a store exists. A failed download exits 2
 // (embedder unavailable), like any other "the model cannot be used" failure.
 func runModelPull(cmd *cobra.Command, d *deps, stdout, stderr io.Writer) error {
-	ecfg := config.Default().Embed
-	if _, cfg, err := d.workspaceConfig(cmd); err == nil {
-		ecfg = cfg.Embed
-	} else if errs.KindOf(err) != errs.NotFound {
+	ecfg, err := configuredEmbed(cmd, d)
+	if err != nil {
 		return err
 	}
 	if ecfg.Model == config.ModelNone {

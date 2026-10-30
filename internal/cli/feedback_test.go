@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/nickstrad/kb/internal/store/sqlite"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -32,7 +31,7 @@ func searchID(t *testing.T, args ...string) string {
 // feedbackRows counts search_feedback rows, optionally for one (search, rank).
 func feedbackRows(t *testing.T, root, where string, args ...any) int {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), filepath.Join(root, ".kb", "kb.sqlite"), sqlite.Options{})
+	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -6,6 +6,7 @@ package sqlite
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"unicode"
 
@@ -15,34 +16,23 @@ import (
 	"github.com/nickstrad/kb/internal/store"
 )
 
-// FTS runs one MATCH over chunks_fts with bm25 weights text 1.0, heading 2.0, title 3.0 and returns
-// at most q.Limit rows, best first (bm25 is negative, lower is better). Each term is quoted as one
-// phrase (MatchExpr); a query whose terms all sanitise away runs nothing. A tag filter joins out
-// to entries inside the query, so the LIMIT stays full.
+// FTS runs one MATCH over chunks_fts, scored with bm25 and q.Weights (text, heading, title; nil
+// is store.DefaultBM25) and returns at most q.Limit rows, best first (bm25 is negative, lower is
+// better). Each term is quoted as one phrase (MatchExpr); a query whose terms all sanitise away
+// runs nothing. A tag filter joins out to entries inside the query, so the LIMIT stays full;
+// q.ChunkIDs, when non-nil, restricts the rows to those chunk ids.
 func (s *Store) FTS(ctx context.Context, q store.FTSQuery) (store.FTSResult, error) {
 	assert.Pre(q.Limit > 0, "FTS: limit=%d must be positive", q.Limit)
+	w := store.DefaultBM25()
+	if q.Weights != nil {
+		w = *q.Weights
+	}
+	assert.Pre(validWeight(w.Text) && validWeight(w.Heading) && validWeight(w.Title), "FTS: bm25 weights %+v must be finite and 0 or more", w)
 	match := MatchExpr(q.Terms, q.Op)
-	if match == "" {
-		return store.FTSResult{}, nil
+	if match == "" || (q.ChunkIDs != nil && len(q.ChunkIDs) == 0) {
+		return store.FTSResult{Match: match}, nil
 	}
-	query := `
-		SELECT rowid, bm25(chunks_fts, 1.0, 2.0, 3.0) AS s
-		FROM chunks_fts
-		WHERE chunks_fts MATCH ?
-		ORDER BY s
-		LIMIT ?`
-	args := []any{match, q.Limit}
-	if q.Tag != "" {
-		query = `
-			SELECT f.rowid, bm25(chunks_fts, 1.0, 2.0, 3.0) AS s
-			FROM chunks_fts f
-			JOIN chunks c ON c.id = f.rowid
-			JOIN entries e ON e.id = c.entry_id
-			WHERE chunks_fts MATCH ? AND e.tags LIKE ? ESCAPE '\'
-			ORDER BY s
-			LIMIT ?`
-		args = []any{match, tagPattern(q.Tag), q.Limit}
-	}
+	query, args := ftsSQL(match, w, q)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return store.FTSResult{}, wrap(ctx, fmt.Errorf("match %q: %w", match, err), s.path, "sqlite.FTS", "full-text search failed")
@@ -61,6 +51,34 @@ func (s *Store) FTS(ctx context.Context, q store.FTSQuery) (store.FTSResult, err
 	}
 	return res, nil
 }
+
+// ftsSQL builds the FTS statement and its arguments. Only the optional clauses vary; every value
+// is a bound parameter.
+func ftsSQL(match string, w store.BM25Weights, q store.FTSQuery) (string, []any) {
+	var b strings.Builder
+	b.WriteString(`SELECT f.rowid, bm25(chunks_fts, ?, ?, ?) AS s FROM chunks_fts f`)
+	args := []any{w.Text, w.Heading, w.Title}
+	if q.Tag != "" {
+		b.WriteString(` JOIN chunks c ON c.id = f.rowid JOIN entries e ON e.id = c.entry_id`)
+	}
+	b.WriteString(` WHERE chunks_fts MATCH ?`)
+	args = append(args, match)
+	if q.Tag != "" {
+		b.WriteString(` AND e.tags LIKE ? ESCAPE '\'`)
+		args = append(args, tagPattern(q.Tag))
+	}
+	if q.ChunkIDs != nil {
+		b.WriteString(` AND f.rowid IN (` + placeholders(len(q.ChunkIDs)) + `)`)
+		for _, id := range q.ChunkIDs {
+			args = append(args, id)
+		}
+	}
+	b.WriteString(` ORDER BY s LIMIT ?`)
+	return b.String(), append(args, q.Limit)
+}
+
+// validWeight reports whether a bm25 column weight is usable: finite and not negative.
+func validWeight(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 }
 
 // KNN runs the sqlite-vec KNN inside SQLite (no vectors leave the database). vec0 cannot filter
 // on another table, so with a tag it fetches max(K, OverFetch) and keeps the first K that carry
@@ -158,8 +176,8 @@ func (s *Store) filterByTag(ctx context.Context, rows []store.VecRow, tag string
 	return out, nil
 }
 
-// ChunkMeta reads the entry path, heading and text of the given chunks in one query. Ids can
-// dangle if the index was rebuilt mid-search; those are absent from the map.
+// ChunkMeta reads the display data and position of the given chunks in one query. Ids can dangle
+// if the index was rebuilt mid-search; those are absent from the map.
 func (s *Store) ChunkMeta(ctx context.Context, ids []int64) (map[int64]store.ChunkMeta, error) {
 	out := make(map[int64]store.ChunkMeta, len(ids))
 	if len(ids) == 0 {
@@ -169,7 +187,7 @@ func (s *Store) ChunkMeta(ctx context.Context, ids []int64) (map[int64]store.Chu
 	for i, id := range ids {
 		args[i] = id
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id, e.path, c.heading, c.text
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, e.path, c.heading, c.text, e.id, COALESCE(e.updated, ''), c.ord, c.source_file
 		FROM chunks c JOIN entries e ON e.id = c.entry_id
 		WHERE c.id IN (`+placeholders(len(args))+`)`, args...)
 	if err != nil {
@@ -179,7 +197,7 @@ func (s *Store) ChunkMeta(ctx context.Context, ids []int64) (map[int64]store.Chu
 	for rows.Next() {
 		var id int64
 		var m store.ChunkMeta
-		if err := rows.Scan(&id, &m.EntryPath, &m.Heading, &m.Text); err != nil {
+		if err := rows.Scan(&id, &m.EntryPath, &m.Heading, &m.Text, &m.EntryID, &m.EntryUpdated, &m.Ord, &m.SourceFile); err != nil {
 			return nil, wrap(ctx, err, s.path, "sqlite.ChunkMeta", "could not read the matching chunks")
 		}
 		out[id] = m

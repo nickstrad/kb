@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"math"
 	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -38,7 +37,7 @@ const testDim768 = 768
 func newSearchTestRepo(t *testing.T, embedModel string, embedDim int) string {
 	t.Helper()
 	root := t.TempDir()
-	dbPath := filepath.Join(root, ".kb", "kb.sqlite")
+	dbPath := testDBPath(root)
 
 	st, err := sqlite.Open(context.Background(), dbPath, sqlite.Options{})
 	if err != nil {
@@ -234,7 +233,7 @@ func TestSearchNoDatabase(t *testing.T) {
 	if !strings.Contains(stderr, "kb reindex --all") {
 		t.Errorf("stderr missing reindex hint: %s", stderr)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".kb", "kb.sqlite")); !os.IsNotExist(err) {
+	if _, err := os.Stat(testDBPath(root)); !os.IsNotExist(err) {
 		t.Errorf("search without a database created .kb: stat error = %v", err)
 	}
 }
@@ -383,7 +382,7 @@ func TestSearchFallbackLogFailurePrintsBothWarnings(t *testing.T) {
 
 func loggedSearchCaller(t *testing.T, root string) string {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), filepath.Join(root, ".kb", "kb.sqlite"), sqlite.Options{})
+	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("open store for caller assertion: %v", err)
 	}
@@ -397,7 +396,7 @@ func loggedSearchCaller(t *testing.T, root string) string {
 
 func disableSearchLog(t *testing.T, root string) {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), filepath.Join(root, ".kb", "kb.sqlite"), sqlite.Options{})
+	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{})
 	if err != nil {
 		t.Fatalf("open store to disable search logging: %v", err)
 	}

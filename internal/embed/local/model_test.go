@@ -7,14 +7,25 @@ package local
 import (
 	"context"
 	"math"
+	"os"
 	"testing"
+
+	"github.com/nickstrad/kb/internal/workspace"
 )
 
-func TestDefaultModelEmbeds(t *testing.T) {
-	cache, err := DefaultCacheDir()
+// userModelsDir is the real model cache kb model pull writes to: the workspace rule
+// (workspace.ModelsDirOf) applied to the user cache directory.
+func userModelsDir(t *testing.T) string {
+	t.Helper()
+	base, err := os.UserCacheDir()
 	if err != nil {
 		t.Fatal(err)
 	}
+	return workspace.ModelsDirOf(base)
+}
+
+func TestDefaultModelEmbeds(t *testing.T) {
+	cache := userModelsDir(t)
 	e := New(models[DefaultModel], cache)
 	defer e.Close()
 	if !e.Cached() {

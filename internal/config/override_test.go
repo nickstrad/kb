@@ -115,12 +115,30 @@ func TestEffectiveJSON(t *testing.T) {
 	if string(again) != string(data) || hash2 != hash {
 		t.Errorf("EffectiveJSON is not deterministic")
 	}
-	other := Default()
-	other.Search.RRFK = 61
-	if _, h, _ := other.EffectiveJSON(); h == hash {
-		t.Errorf("changing search.rrf_k did not change the hash")
+	// Every key kb search reads changes the hash.
+	for _, tc := range []struct {
+		key  string
+		edit func(*Search)
+	}{
+		{"search.k", func(s *Search) { s.K = 9 }},
+		{"search.list_limit", func(s *Search) { s.ListLimit = 21 }},
+		{"search.candidate_limit", func(s *Search) { s.CandidateLimit = 41 }},
+		{"search.per_entry_cap", func(s *Search) { s.PerEntryCap = 4 }},
+		{"search.rrf_k", func(s *Search) { s.RRFK = 61 }},
+		{"search.vec_overfetch", func(s *Search) { s.VecOverfetch = 61 }},
+		{"search.bm25.text", func(s *Search) { s.BM25.Text = 1.5 }},
+		{"search.bm25.heading", func(s *Search) { s.BM25.Heading = 2.5 }},
+		{"search.bm25.title", func(s *Search) { s.BM25.Title = 3.5 }},
+		{"search.list_weights.fts", func(s *Search) { s.ListWeights.FTS = 0.5 }},
+		{"search.list_weights.vec", func(s *Search) { s.ListWeights.Vec = 0.5 }},
+	} {
+		other := Default()
+		tc.edit(&other.Search)
+		if _, h, _ := other.EffectiveJSON(); h == hash {
+			t.Errorf("changing %s did not change the hash", tc.key)
+		}
 	}
-	other = Default()
+	other := Default()
 	other.Log.OpenWindow = "2h"
 	other.Agent.Caller = "x"
 	if _, h, _ := other.EffectiveJSON(); h != hash {

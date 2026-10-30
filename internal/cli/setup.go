@@ -21,7 +21,7 @@ import (
 // store's config file over the defaults. The model is checked against the supported table, so an unknown model fails here,
 // naming the file and the key, before any work starts.
 //
-// A store with no config.toml (add/reindex on a fresh --root, until kb init) gets the defaults.
+// The store exists (workspace resolution checked its config.toml), so the file is read as is.
 // The model recorded in the index plays no part: the config is the one source, and a mismatch
 // with the index is reported with the fix (kb reindex --all).
 func (d *deps) workspaceConfig(cmd *cobra.Command) (*workspace.Workspace, config.Config, error) {
@@ -88,20 +88,19 @@ func (d *deps) newEmbedder(cmd *cobra.Command, ecfg config.Embed) (embed.Embedde
 }
 
 // downloadsModel reports whether cmd may download a missing model: only the commands that build
-// the index do, so search, show and doctor never wait on the network.
+// the index (and kb init) do, so search, show and doctor never wait on the network.
 func downloadsModel(cmd *cobra.Command) bool {
 	switch cmd.Name() {
-	case "reindex", "add":
+	case "reindex", "add", "init":
 		return true
 	}
 	return false
 }
 
-// openStoreForWrite opens the store's database, creating the store directory and the file if necessary.
+// openStoreForWrite opens the store's database, creating the file if it is not there yet (an
+// initialised store that was never indexed). It never creates the location or the store: only
+// kb init does.
 func (d *deps) openStoreForWrite(ctx context.Context, ws *workspace.Workspace) (store.Store, error) {
-	if err := os.MkdirAll(ws.KBDir, 0o755); err != nil {
-		return nil, usageErr("create %s: %v", ws.KBDir, err)
-	}
 	return d.openStore(ctx, ws.DBPath, false)
 }
 

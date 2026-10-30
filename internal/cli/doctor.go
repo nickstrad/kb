@@ -1,6 +1,10 @@
 // `kb doctor`: check the driver, the embedder, and the drift between the database, the files and
 // index.md.
 //
+// The checks, in order: config, sources, database, driver, entries, embed_meta, model,
+// entries/db-vs-files, index.md, version. A location or store that does not resolve is one
+// "FAIL location" / "FAIL store" line ("not initialised: run kb init").
+//
 // Every check prints exactly one line while it runs — "ok   <check>: <detail>",
 // "FAIL <check>: <detail>" or "warn <check>: <detail>" — except entries/db-vs-files, which print
 // one FAIL or warn line per offending path plus a summary ok line when there were none. The
@@ -9,17 +13,21 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/entry"
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/index"
 	"github.com/nickstrad/kb/internal/store"
 	"github.com/nickstrad/kb/internal/store/sqlite"
@@ -35,13 +43,33 @@ func newDoctorCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Resolution failures are doctor's findings, not aborts: one FAIL line, the summary
+			// and the failing exit code, like any other failed check.
+			if _, _, _, _, err := d.location(cmd); err != nil {
+				return doctorUnresolved(stdout, "location", locationProblem(err), err)
+			}
 			ws, err := d.workspace(cmd)
 			if err != nil {
-				return err
+				return doctorUnresolved(stdout, "store", err.Error(), err)
 			}
 			return runDoctor(cmd.Context(), cmd, d, stdout, ws)
 		},
 	}
+}
+
+// locationProblem is the detail of the location FAIL line: a missing location says to run kb init.
+func locationProblem(err error) string {
+	if errs.KindOf(err) == errs.NotFound {
+		return "not initialised: run kb init (" + err.Error() + ")"
+	}
+	return err.Error()
+}
+
+// doctorUnresolved prints the one FAIL line for a location or store that could not be resolved.
+func doctorUnresolved(stdout io.Writer, check, detail string, cause error) error {
+	fmt.Fprintf(stdout, "FAIL %s: %s\n", check, detail)
+	fmt.Fprintln(stdout, "doctor: 1 failed, 0 warnings")
+	return errs.Wrap(cause, errs.KindOf(cause), "cli.doctor", "1 check(s) failed")
 }
 
 // doctorState accumulates the ok/FAIL/warn lines doctor prints and the counts that decide its
@@ -78,15 +106,14 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 	if err != nil {
 		d.fail("config", err.Error())
 		cfg = config.Default()
-	} else if _, statErr := os.Stat(ws.ConfigPath); statErr != nil {
-		d.ok("config", fmt.Sprintf("none at %s; defaults apply", ws.ConfigPath))
 	} else {
 		d.ok("config", ws.ConfigPath)
+		checkSources(d, cfg)
 	}
 
 	var st store.Store
 	if _, statErr := os.Stat(dbPath); statErr != nil {
-		d.fail("database", fmt.Sprintf("none at %s; run kb reindex --all", dbPath))
+		d.warn("database", fmt.Sprintf("not indexed: run kb reindex --all (no database at %s)", dbPath))
 	} else if opened, err := dp.openStore(ctx, dbPath, false); err != nil {
 		d.fail("driver", err.Error())
 	} else {
@@ -99,6 +126,8 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 	if err != nil {
 		d.fail("entries", err.Error())
 		entries = nil
+	} else if _, statErr := os.Stat(entry.DataRoot(root)); errors.Is(statErr, fs.ErrNotExist) {
+		d.warn("entries", fmt.Sprintf("no %s directory: nothing to index; kb add creates it", entry.DataRoot(root)))
 	}
 	goodEntries := make([]entry.Entry, 0, len(entries))
 	for _, e := range entries {
@@ -109,7 +138,7 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 
 	embedder, err := dp.newEmbedder(cmd, cfg.Embed)
 	if err != nil {
-		d.fail("embedder", err.Error())
+		d.fail("model", err.Error())
 	} else {
 		if st != nil {
 			checkEmbedMeta(ctx, d, st, embedder)
@@ -181,25 +210,49 @@ func checkEmbedMeta(ctx context.Context, d *doctorState, st store.Index, embedde
 	d.ok("embed_meta", fmt.Sprintf("model=%s dim=%d", m.Model, m.Dim))
 }
 
-// checkEmbedder pings the configured embedder when it supports it (the pinger interface, defined
-// in reindex.go, is satisfied by embed/local, which loads the model). The none embedder has
-// nothing to reach. A test embedder (internal/embed/fake) does not implement Ping, so it is
-// reported as a warning rather than skipped silently or faked as ok.
+// checkSources reports the configured sources. [[sources]] is reserved until in-place sources
+// arrive, so a store has none and kb reads data/ only; the line says so instead of warning about
+// something the user cannot fix.
+func checkSources(d *doctorState, cfg config.Config) {
+	if len(cfg.Sources) == 0 {
+		d.ok("sources", "none configured: kb indexes the entries under data/")
+		return
+	}
+	d.ok("sources", fmt.Sprintf("%d configured", len(cfg.Sources)))
+}
+
+// checkEmbedder loads the configured embedder when it supports it (the pinger interface, defined
+// in reindex.go, is satisfied by embed/local, which loads the model), then embeds the text "ping"
+// and reports both timings. The none embedder has nothing to reach. A test embedder
+// (internal/embed/fake) does not implement Ping, so it is reported as a warning rather than
+// skipped silently or faked as ok. The check is called "model".
 func checkEmbedder(ctx context.Context, d *doctorState, embedder embed.Embedder) {
 	if embed.IsNone(embedder) {
-		d.ok("embedder", "none: FTS-only index and search")
+		d.ok("model", "none: FTS-only index and search")
 		return
 	}
 	p, isPinger := embedder.(pinger)
 	if !isPinger {
-		d.warn("embedder", "not checked (test embedder)")
+		d.warn("model", "not checked (test embedder)")
 		return
 	}
+	t0 := time.Now()
 	if err := p.Ping(ctx); err != nil {
-		d.fail("embedder", err.Error())
+		d.fail("model", err.Error())
 		return
 	}
-	d.ok("embedder", fmt.Sprintf("loaded, model %s", embedder.Model()))
+	load := time.Since(t0)
+	t1 := time.Now()
+	vecs, err := embedder.Embed(ctx, []string{embed.DocText(embedder, "ping")})
+	if err != nil {
+		d.fail("model", fmt.Sprintf("loaded %s but embedding \"ping\" failed: %v", embedder.Model(), err))
+		return
+	}
+	if len(vecs) != 1 || len(vecs[0]) != embedder.Dim() {
+		d.fail("model", fmt.Sprintf("%s returned the wrong shape for \"ping\": want 1 vector of %d dims", embedder.Model(), embedder.Dim()))
+		return
+	}
+	d.ok("model", fmt.Sprintf("loaded %s in %dms, embeds \"ping\" in %dms", embedder.Model(), load.Milliseconds(), time.Since(t1).Milliseconds()))
 }
 
 // checkEntries reports every entry whose front matter failed to parse or validate as a FAIL, and

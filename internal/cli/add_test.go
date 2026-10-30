@@ -26,15 +26,21 @@ func useFakeEmbedder(t *testing.T) {
 }
 
 // testWS is the workspace of a store root, for tests that call a run function directly.
-func testWS(root string) *workspace.Workspace { return workspace.New(root, "") }
+func testWS(root string) *workspace.Workspace {
+	ws, err := workspace.NewLocation(root, "").StoreAt("default")
+	if err != nil {
+		panic(err)
+	}
+	return ws
+}
 
 // testDBPath is the database file of a store root.
 func testDBPath(root string) string { return testWS(root).DBPath }
 
-// ensureKBDir creates <root>/.kb.
-func ensureKBDir(root string) error { return os.MkdirAll(testWS(root).KBDir, 0o755) }
+// ensureKBDir creates the default store's directory <root>/.kb/stores/default.
+func ensureKBDir(root string) error { return os.MkdirAll(testWS(root).StoreDir, 0o755) }
 
-// writeConfig writes the store's .kb/config.toml, replacing the empty one newTempRoot made.
+// writeConfig writes the default store's config.toml, replacing the empty one newTempRoot made.
 func writeConfig(t *testing.T, root, body string) {
 	t.Helper()
 	writeFile(t, testWS(root).ConfigPath, body)
@@ -46,30 +52,45 @@ func useNoneModel(t *testing.T, root string) {
 	writeConfig(t, root, "[embed]\nmodel = \"none\"\n")
 }
 
-// newTempRoot creates a fresh store root (an empty .kb/config.toml, no database yet), makes it
-// the working directory for the test and returns it with symlinks resolved, the form root
-// discovery reports. The CLI tests are not parallel, so t.Chdir is safe.
+// newTempRoot creates a fresh location root (.kb/kb.toml and an empty default store config, no
+// database yet), makes it the working directory for the test and returns it with symlinks
+// resolved, the form root discovery reports. The CLI tests are not parallel, so t.Chdir is safe.
 func newTempRoot(t *testing.T) string {
 	t.Helper()
 	return useRoot(t, t.TempDir())
 }
 
-// useRoot makes dir the store the CLI discovers for the test: it adds an empty .kb/config.toml
-// unless the directory is already a store (has .kb/kb.sqlite or .kb/config.toml), then chdirs
-// there. It returns dir with symlinks resolved.
+// useRoot makes dir the location the CLI discovers for the test: it adds .kb/kb.toml (default
+// store "default") and an empty stores/default/config.toml unless the directory already has a
+// kb.toml, then chdirs there. It returns dir with symlinks resolved.
 func useRoot(t *testing.T, dir string) string {
 	t.Helper()
 	real, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		t.Fatalf("resolve %s: %v", dir, err)
 	}
-	_, e1 := os.Stat(filepath.Join(real, ".kb", "config.toml"))
-	_, e2 := os.Lstat(filepath.Join(real, ".kb", "kb.sqlite"))
-	if e1 != nil && e2 != nil {
-		writeFile(t, filepath.Join(real, ".kb", "config.toml"), "")
+	if _, err := os.Stat(filepath.Join(real, ".kb", "kb.toml")); err != nil {
+		makeLocation(t, real, "default")
 	}
 	t.Chdir(real)
 	return real
+}
+
+// makeLocation writes root/.kb/kb.toml with default_store def and an empty config for that store.
+func makeLocation(t *testing.T, root, def string) {
+	t.Helper()
+	writeFile(t, filepath.Join(root, ".kb", "kb.toml"), "version = 1\ndefault_store = \""+def+"\"\n")
+	addStore(t, root, def)
+}
+
+// addStore adds a store called name, with an empty config, to the location at root. An existing
+// config is kept.
+func addStore(t *testing.T, root, name string) {
+	t.Helper()
+	cfg := filepath.Join(root, ".kb", "stores", name, "config.toml")
+	if _, err := os.Stat(cfg); err != nil {
+		writeFile(t, cfg, "")
+	}
 }
 
 // writeFile writes content to path, creating parent directories as needed.

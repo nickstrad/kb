@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -63,6 +64,34 @@ func TestReadFoundFlag(t *testing.T) {
 	if err == nil || found {
 		t.Errorf("unreadable: found=%v err=%v, want not found and an error", found, err)
 	}
+	// A regular file kb refuses still counts as found; a path it cannot even stat does not.
+	big := filepath.Join(t.TempDir(), "big.toml")
+	if err := os.WriteFile(big, make([]byte, MaxFileBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err = Read(big); err == nil || !found {
+		t.Errorf("over the cap: found=%v err=%v, want found and an error", found, err)
+	}
+	locked := writeFile(t, "version = 1\n")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o644) })
+	if _, found, err = Read(locked); err == nil || !found {
+		t.Errorf("mode 000: found=%v err=%v, want found and an error", found, err)
+	}
+	dir := t.TempDir()
+	hidden := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(hidden, []byte("version = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	if _, found, err = Read(hidden); err == nil || found || errs.KindOf(err) != errs.Usage {
+		t.Errorf("cannot stat: found=%v err=%v, want not found and a Usage error", found, err)
+	}
 }
 
 // TestDefaultsGolden pins every default value to testdata/default.toml, the reviewed list.
@@ -117,6 +146,56 @@ func TestPartialFileKeepsDefaults(t *testing.T) {
 }
 
 // TestParseErrors: every rejected file names the file, and where it can the key or line.
+// TestReadSizeCapBoundary: a valid config padded with a TOML comment to each size around
+// MaxFileBytes. At the cap and one under it the file is read; one over, it is refused unread.
+func TestReadSizeCapBoundary(t *testing.T) {
+	base, err := Save(Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	padded := func(t *testing.T, size int) string {
+		t.Helper()
+		pad := size - len(base)
+		if pad < 2 {
+			t.Fatalf("size %d is below the base config (%d bytes)", size, len(base))
+		}
+		// "#" + (pad-2) filler bytes + "\n" is pad bytes: a comment line that makes the total size.
+		return string(base) + "#" + strings.Repeat("x", pad-2) + "\n"
+	}
+	cases := []struct {
+		name    string
+		content func(t *testing.T) string
+		wantErr bool
+	}{
+		{"zero bytes is defaults", func(t *testing.T) string { return "" }, false},
+		{"one MiB minus one is accepted", func(t *testing.T) string { return padded(t, MaxFileBytes-1) }, false},
+		{"exactly one MiB is accepted", func(t *testing.T) string { return padded(t, MaxFileBytes) }, false},
+		{"one MiB plus one is refused", func(t *testing.T) string { return padded(t, MaxFileBytes+1) }, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := writeFile(t, tc.content(t))
+			c, found, err := Read(p)
+			if tc.wantErr {
+				if errs.KindOf(err) != errs.Usage {
+					t.Fatalf("Read kind = %v (%v), want Usage", errs.KindOf(err), err)
+				}
+				if !strings.Contains(err.Error(), p) || !strings.Contains(err.Error(), "1048576") {
+					t.Errorf("error %q must name the file and the 1 MiB limit", err)
+				}
+				return
+			}
+			if err != nil || !found {
+				t.Fatalf("Read: found=%v err=%v, want found and no error", found, err)
+			}
+			// Comments and empty input change nothing: every accepted file reads as the defaults.
+			if !reflect.DeepEqual(c, Default()) {
+				t.Errorf("got %+v, want defaults", c)
+			}
+		})
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	tests := []struct {
 		name, body string
@@ -221,7 +300,24 @@ func TestValidateBoundaries(t *testing.T) {
 		{"rrf_k 0", set(func(c *Config) { c.Search.RRFK = 0 }), "search.rrf_k"},
 		{"rrf_k -1", set(func(c *Config) { c.Search.RRFK = -1 }), "search.rrf_k"},
 		{"rrf_k 1", set(func(c *Config) { c.Search.RRFK = 1 }), ""},
+		{"list_limit = MaxListLimit", set(func(c *Config) { c.Search.ListLimit = MaxListLimit }), ""},
+		{"list_limit = MaxListLimit+1", set(func(c *Config) { c.Search.ListLimit = MaxListLimit + 1 }), "search.list_limit"},
+		{"candidate_limit = MaxCandidateLimit", set(func(c *Config) { c.Search.CandidateLimit = MaxCandidateLimit }), ""},
+		{"candidate_limit = MaxCandidateLimit+1", set(func(c *Config) { c.Search.CandidateLimit = MaxCandidateLimit + 1 }), "search.candidate_limit"},
+		{"per_entry_cap large (no upper bound)", set(func(c *Config) { c.Search.PerEntryCap = 1 << 30 }), ""},
+		{"rrf_k = MaxRRFK", set(func(c *Config) { c.Search.RRFK = MaxRRFK }), ""},
+		{"rrf_k = MaxRRFK+1", set(func(c *Config) { c.Search.RRFK = MaxRRFK + 1 }), "search.rrf_k"},
 		{"vec_overfetch 0", set(func(c *Config) { c.Search.VecOverfetch = 0 }), "search.vec_overfetch"},
+		{"vec_overfetch 1", set(func(c *Config) { c.Search.VecOverfetch = 1 }), ""},
+		{"vec_overfetch = MaxVecOverfetch", set(func(c *Config) { c.Search.VecOverfetch = MaxVecOverfetch }), ""},
+		{"vec_overfetch = MaxVecOverfetch+1", set(func(c *Config) { c.Search.VecOverfetch = MaxVecOverfetch + 1 }), "search.vec_overfetch"},
+		{"bm25 heading = MaxWeight", set(func(c *Config) { c.Search.BM25.Heading = MaxWeight }), ""},
+		{"bm25 heading above MaxWeight", set(func(c *Config) { c.Search.BM25.Heading = math.Nextafter(MaxWeight, 2*MaxWeight) }), "search.bm25.heading"},
+		{"bm25 text +Inf", set(func(c *Config) { c.Search.BM25.Text = math.Inf(1) }), "search.bm25.text"},
+		{"list weight fts 0", set(func(c *Config) { c.Search.ListWeights.FTS = 0 }), ""},
+		{"list weight fts = MaxWeight", set(func(c *Config) { c.Search.ListWeights.FTS = MaxWeight }), ""},
+		{"list weight fts MaxWeight+1", set(func(c *Config) { c.Search.ListWeights.FTS = MaxWeight + 1 }), "search.list_weights.fts"},
+		{"list weight memory MaxWeight+1 (reserved, still bounded)", set(func(c *Config) { c.Search.ListWeights.Memory = MaxWeight + 1 }), "search.list_weights.memory"},
 		{"bm25 title -0.1", set(func(c *Config) { c.Search.BM25.Title = -0.1 }), "search.bm25.title"},
 		{"bm25 title 0", set(func(c *Config) { c.Search.BM25.Title = 0 }), ""},
 		{"bm25 text NaN", set(func(c *Config) { c.Search.BM25.Text = nan() }), "search.bm25.text"},

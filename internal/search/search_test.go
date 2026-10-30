@@ -61,7 +61,7 @@ func TestFuse(t *testing.T) {
 	}
 
 	t.Run("both lists beat one list", func(t *testing.T) {
-		got := Fuse(fts(1, 2), vec(1, 3))
+		got := Fuse(fts(1, 2), vec(1, 3), DefaultParams())
 		wantOrder := []int64{1, 2, 3}
 		assertOrder(t, got, wantOrder)
 		if want := 1/float64(61) + 1/float64(61); !almostEqual(got[0].RRFScore, want) {
@@ -83,7 +83,7 @@ func TestFuse(t *testing.T) {
 
 	t.Run("tie broken by fts rank then vec rank then id", func(t *testing.T) {
 		// 7 is fts#1/vec#2, 8 is fts#2/vec#1: identical scores, 7 wins on fts rank.
-		got := Fuse(fts(7, 8), vec(8, 7))
+		got := Fuse(fts(7, 8), vec(8, 7), DefaultParams())
 		assertOrder(t, got, []int64{7, 8})
 		if !almostEqual(got[0].RRFScore, got[1].RRFScore) {
 			t.Fatalf("expected tied scores, got %v and %v", got[0].RRFScore, got[1].RRFScore)
@@ -91,11 +91,11 @@ func TestFuse(t *testing.T) {
 
 		// Two chunks seen only by vec at the same rank cannot happen, but two chunks with no
 		// fts rank and distinct vec ranks must still order by vec rank.
-		got = Fuse(nil, vec(9, 4))
+		got = Fuse(nil, vec(9, 4), DefaultParams())
 		assertOrder(t, got, []int64{9, 4})
 
 		// Equal scores and no ranks to separate them falls through to the chunk id.
-		got = Fuse(fts(5), fts5ToVec(fts(3)))
+		got = Fuse(fts(5), fts5ToVec(fts(3)), DefaultParams())
 		if !almostEqual(got[0].RRFScore, got[1].RRFScore) {
 			t.Fatalf("expected tied scores, got %v and %v", got[0].RRFScore, got[1].RRFScore)
 		}
@@ -103,7 +103,7 @@ func TestFuse(t *testing.T) {
 	})
 
 	t.Run("vec only", func(t *testing.T) {
-		got := Fuse(nil, vec(42))
+		got := Fuse(nil, vec(42), DefaultParams())
 		assertOrder(t, got, []int64{42})
 		if got[0].FTSRank != nil || got[0].FTSScore != nil {
 			t.Errorf("fts fields = %v/%v, want nil", got[0].FTSRank, got[0].FTSScore)
@@ -117,7 +117,7 @@ func TestFuse(t *testing.T) {
 	})
 
 	t.Run("fts only", func(t *testing.T) {
-		got := Fuse(fts(11), nil)
+		got := Fuse(fts(11), nil, DefaultParams())
 		assertOrder(t, got, []int64{11})
 		if got[0].VecRank != nil || got[0].VecDistance != nil {
 			t.Errorf("vec fields = %v/%v, want nil", got[0].VecRank, got[0].VecDistance)
@@ -125,7 +125,7 @@ func TestFuse(t *testing.T) {
 	})
 
 	t.Run("empty", func(t *testing.T) {
-		if got := Fuse(nil, nil); len(got) != 0 {
+		if got := Fuse(nil, nil, DefaultParams()); len(got) != 0 {
 			t.Errorf("Fuse(nil, nil) = %v, want empty", got)
 		}
 	})
@@ -138,7 +138,7 @@ func TestFuse(t *testing.T) {
 			v = append(v, VecRow{ChunkID: 100 + i})
 		}
 		f = append(f, FTSRow{ChunkID: 999}) // a 21st, as if the limit had not been applied
-		if got := Fuse(f, v); len(got) != CandidateLimit {
+		if got := Fuse(f, v, DefaultParams()); len(got) != CandidateLimit {
 			t.Errorf("len = %d, want %d", len(got), CandidateLimit)
 		}
 	})
@@ -187,14 +187,14 @@ func TestApplyCap(t *testing.T) {
 	}
 	entryOf := map[int64]string{1: "a.md", 2: "a.md", 3: "a.md", 4: "a.md", 5: "b.md"}
 
-	got := applyCap(cands, entryOf, 8)
+	got := applyCap(cands, entryOf, 8, PerEntryCap)
 	if want := []int64{1, 2, 3, 5}; !equalIDs(chunkIDs(got), want) {
 		t.Errorf("applyCap = %v, want %v (chunk 4 capped, chunk 6 unknown)", chunkIDs(got), want)
 	}
-	if got := applyCap(cands, entryOf, 2); len(got) != 2 {
+	if got := applyCap(cands, entryOf, 2, PerEntryCap); len(got) != 2 {
 		t.Errorf("applyCap with k=2 returned %d, want 2", len(got))
 	}
-	if got := applyCap(nil, entryOf, 5); len(got) != 0 {
+	if got := applyCap(nil, entryOf, 5, PerEntryCap); len(got) != 0 {
 		t.Errorf("applyCap(nil) = %v, want empty", got)
 	}
 }
@@ -664,7 +664,7 @@ func TestSearchHyphenatedQuery(t *testing.T) {
 }
 
 // TestSearchANDThenORRetry: one unknown word must not empty the result. The AND query matches
-// nothing, the OR retry finds the quokka chunk.
+// nothing, the OR retry finds the quokka chunk, and the trace reports the OR expression.
 func TestSearchANDThenORRetry(t *testing.T) {
 	s, _ := testSearcher(t)
 	ctx := context.Background()
@@ -677,12 +677,12 @@ func TestSearchANDThenORRetry(t *testing.T) {
 	if len(andOnly.Rows) != 0 {
 		t.Fatalf("AND query matched %d rows, want 0 (the fixture must not contain 'fluffernutter')", len(andOnly.Rows))
 	}
-	retried, err := s.ftsList(ctx, terms, "")
+	res, _, err := s.ftsList(ctx, terms, "", DefaultParams())
 	if err != nil {
 		t.Fatalf("fts AND/OR: %v", err)
 	}
-	if len(retried) != 1 {
-		t.Fatalf("OR retry matched %d rows, want 1", len(retried))
+	if len(res.Rows) != 1 {
+		t.Fatalf("OR retry matched %d rows, want 1", len(res.Rows))
 	}
 
 	out, err := s.Search(ctx, Request{Query: "quokka fluffernutter", Mode: ModeFTS, K: 8})
@@ -694,6 +694,9 @@ func TestSearchANDThenORRetry(t *testing.T) {
 	}
 	if !strings.Contains(out.Result.Hits[0].Text, "quokka") {
 		t.Errorf("hit = %q, want the quokka chunk", out.Result.Hits[0].Text)
+	}
+	if want := `"quokka" OR "fluffernutter"`; !out.FTSFallbackToOr || out.FTSMatch != want {
+		t.Errorf("trace: or=%v match=%q, want true and %q", out.FTSFallbackToOr, out.FTSMatch, want)
 	}
 }
 
