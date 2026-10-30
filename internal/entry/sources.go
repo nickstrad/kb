@@ -12,10 +12,6 @@ import (
 	"github.com/nickstrad/kb/internal/glob"
 )
 
-// neverWalked are directory names a files source never descends into, at any depth: kb's own
-// stores (.kb, also a nested location's), git metadata and npm's dependency tree.
-var neverWalked = map[string]bool{".kb": true, ".git": true, "node_modules": true}
-
 // filesSource walks one files source: every regular *.md file under the glob's base that the
 // glob matches and no exclude pattern matches becomes a file entry. Symlinked directories are not
 // followed; a symlinked file is read only when it resolves inside the root.
@@ -44,8 +40,12 @@ func (d *discovery) filesSource(idx int, src config.Source) error {
 		}
 		rel := filepath.ToSlash(r)
 		if de.IsDir() {
-			if rel != "." && (neverWalked[de.Name()] || !glob.CouldMatchUnder(src.Glob, rel)) {
+			if rel != "." && (config.NeverWalkedDir(de.Name()) || !glob.CouldMatchUnder(src.Glob, rel) ||
+				excludesWholeDir(src.Exclude, rel)) {
 				return filepath.SkipDir
+			}
+			if d.onDir != nil {
+				d.onDir(rel)
 			}
 			return nil
 		}
@@ -81,6 +81,29 @@ func excluded(patterns []string, rel string) bool {
 	for _, p := range patterns {
 		if glob.Match(p, rel) {
 			return true
+		}
+	}
+	return false
+}
+
+// excludesWholeDir reports whether an exclude pattern matches every path below the directory dir,
+// so the walk need not descend. That is a pattern ending in "/**" (or "**" alone) whose remainder
+// matches dir or one of its ancestors: the trailing "**" absorbs whatever follows. It is
+// conservative: a false answer only means the files are visited and matched one by one.
+func excludesWholeDir(patterns []string, dir string) bool {
+	segs := strings.Split(dir, "/")
+	for _, p := range patterns {
+		if p == "**" {
+			return true
+		}
+		head, ok := strings.CutSuffix(p, "/**")
+		if !ok {
+			continue
+		}
+		for i := 1; i <= len(segs); i++ {
+			if glob.Match(head, strings.Join(segs[:i], "/")) {
+				return true
+			}
 		}
 	}
 	return false

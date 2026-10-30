@@ -663,3 +663,51 @@ func TestDiskFullAndIOErrorAreUsage(t *testing.T) {
 		}
 	}
 }
+
+// TestVecInsertDiskFullIsUsage: a real SQLITE_FULL (the page limit pinned at the current size)
+// inside a sqlite-vec insert surfaces from the extension as a generic SQLITE_ERROR; ReplaceEntry
+// probes and reports the disk-full Usage error, keeping the cause (Q47). A generic vec failure
+// with room left stays Internal.
+func TestVecInsertDiskFullIsUsage(t *testing.T) {
+	ctx := context.Background()
+	entry := store.EntryInput{Path: "a.md", Kind: "file", Title: "T", Summary: "S"}
+	for _, tc := range []struct {
+		name  string
+		limit bool
+		want  errs.Kind
+	}{
+		{"page limit reached", true, errs.Usage},
+		{"vec failure with room left", false, errs.Internal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openFaulty(t, 4)
+			st.DB().SetMaxOpenConns(1) // max_page_count is per connection
+			if tc.limit {
+				var pages int
+				if err := st.DB().QueryRow("PRAGMA page_count").Scan(&pages); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := st.DB().Exec(fmt.Sprintf("PRAGMA max_page_count = %d", pages)); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				fail(t, "INSERT INTO chunks_vec (chunk_id", 1)
+				faultMu.Lock()
+				faultHook = func() error {
+					return fmt.Errorf("%s: %w", vecChunkFailure, sqlite3.Error{Code: sqlite3.ErrError})
+				}
+				faultMu.Unlock()
+			}
+			_, err := st.ReplaceEntry(ctx, entry, faultChunks(4, "x"))
+			if errs.KindOf(err) != tc.want {
+				t.Fatalf("kind = %v (%v), want %v", errs.KindOf(err), err, tc.want)
+			}
+			if tc.want == errs.Usage && !strings.Contains(err.Error(), "disk full or unwritable") {
+				t.Errorf("err = %v, want the disk-full message", err)
+			}
+			if tc.limit && !strings.Contains(errors.Unwrap(err).Error(), "for vector search") {
+				t.Errorf("err = %v, want the failure to come from the vec insert (the probe path)", err)
+			}
+		})
+	}
+}

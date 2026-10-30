@@ -117,6 +117,9 @@ func TestResolve(t *testing.T) {
 		{name: "unknown word near a store", ref: "adrs", cur: f.proj, kind: errs.NotFound, msg: `did you mean "adr"?`},
 		{name: "unknown word near an alias", ref: "note", cur: f.proj, kind: errs.NotFound, msg: `did you mean "notes"?`},
 		{name: "unknown word with no location", ref: "nope", cur: "", kind: errs.NotFound, msg: "no kb location here"},
+		{name: "unknown word with no location lists the global aliases", ref: "nope", cur: "", kind: errs.NotFound, msg: "(stores: none; aliases: docs, dup, gal, proj)"},
+		{name: "unknown word two edits from a store", ref: "adrxy", cur: f.proj, kind: errs.NotFound, msg: `did you mean "adr"?`},
+		{name: "local-only message lists no aliases", ref: "nope", cur: f.proj, local: true, kind: errs.NotFound, msg: "stores: adr, default, docs; aliases: none"},
 		{name: "local-only ignores aliases", ref: "notes", cur: f.proj, local: true, kind: errs.NotFound, msg: `no store "notes"`},
 		{name: "local-only keeps stores, no shadow warning", ref: "adr", cur: f.proj, local: true, want: canon("adr", f.proj)},
 		{name: "global", ref: "global", cur: f.proj, want: canon("default", f.global), via: "global"},
@@ -292,6 +295,22 @@ func TestListAliases(t *testing.T) {
 	if rows := f.resolver(false).ListAliases(nil, LocationInfo{}); len(rows) != 4 || rows[0].Scope != "global" {
 		t.Errorf("no current location: %+v", rows)
 	}
+	// An empty target is a broken row with a Usage problem, not a row that resolves to nothing.
+	empty := f.resolver(false).ListAliases(cur, LocationInfo{Aliases: map[string]string{"empty": ""}})
+	if len(empty) == 0 || empty[0].Name != "empty" || empty[0].Resolved != "" || !strings.Contains(empty[0].Problem, "empty target") {
+		t.Errorf("empty target row: %+v", empty)
+	}
+	// When cur is the global location, its aliases are listed once, as its own (location) scope.
+	gcur := NewLocation(f.global, "")
+	own := f.resolver(false).ListAliases(gcur, f.infos[f.global])
+	if len(own) != 4 {
+		t.Fatalf("aliases of the global location listed %d times, want 4: %+v", len(own), own)
+	}
+	for _, r := range own {
+		if r.Scope != "location" {
+			t.Errorf("global location alias %q has scope %q, want location", r.Name, r.Scope)
+		}
+	}
 }
 
 func TestExpandPath(t *testing.T) {
@@ -328,6 +347,13 @@ func TestEditDistanceAndNearest(t *testing.T) {
 	}
 	if got := nearest("adr", []string{"adr"}); got != "" {
 		t.Errorf("nearest must not suggest the word itself: %q", got)
+	}
+	// Distance 2 is accepted for a three-rune word (limit len/3+1 = 2) but not for a two-rune one.
+	if got := nearest("abc", []string{"axy"}); got != "axy" {
+		t.Errorf("nearest at distance 2 of a 3-rune word = %q, want axy", got)
+	}
+	if got := nearest("ab", []string{"cd"}); got != "" {
+		t.Errorf("nearest at distance 2 of a 2-rune word = %q, want none", got)
 	}
 }
 

@@ -70,7 +70,7 @@ func newStoresCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			loc, lf, _, how, err := d.location(cmd)
+			loc, lf, _, how, err := d.locationLenient(cmd)
 			if err != nil {
 				return err
 			}

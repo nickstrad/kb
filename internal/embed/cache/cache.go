@@ -76,16 +76,6 @@ type Cache struct {
 	path string
 }
 
-// DefaultPath is the cache file used when the caller does not choose one:
-// os.UserCacheDir()/kb/embed-cache.sqlite (on macOS ~/Library/Caches/kb/embed-cache.sqlite).
-func DefaultPath() (string, error) {
-	base, err := os.UserCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("find user cache directory: %w", err)
-	}
-	return filepath.Join(base, "kb", "embed-cache.sqlite"), nil
-}
-
 // Open opens the cache at path, creating the file and its directory if needed. It puts the file
 // in WAL mode and applies the schema. A file that is not a SQLite database, or has a newer schema
 // (ErrNewerSchema), is an error.

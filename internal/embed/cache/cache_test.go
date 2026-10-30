@@ -339,23 +339,6 @@ func TestClear(t *testing.T) {
 	}
 }
 
-func TestDefaultPath(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	p, err := cache.DefaultPath()
-	if err != nil {
-		t.Fatalf("DefaultPath: %v", err)
-	}
-	base, _ := os.UserCacheDir() // same HOME; error already ruled out by DefaultPath
-	if want := filepath.Join(base, "kb", "embed-cache.sqlite"); p != want {
-		t.Fatalf("DefaultPath = %q, want %q", p, want)
-	}
-	t.Setenv("HOME", "")
-	if _, err := cache.DefaultPath(); err == nil {
-		t.Fatal("DefaultPath with no HOME succeeded")
-	}
-}
-
 // Several processes share one cache file. Each "process" here is its own Open (its own *sql.DB
 // and connection pool) on a brand-new file, so the first opens race on WAL and the schema; then
 // all of them, and several goroutines per handle, write and read overlapping keys at once.

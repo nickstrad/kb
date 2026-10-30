@@ -219,7 +219,11 @@ func printResults(ctx context.Context, stdout io.Writer, st store.Store, result 
 	if len(result.Hits) == 0 {
 		fmt.Fprintln(stdout, "no results")
 	} else {
-		if text := render.Render(renderHits(ctx, st, result.Hits), budget).Text; text != "" {
+		rendered, err := renderHits(ctx, st, result.Hits)
+		if err != nil {
+			return err
+		}
+		if text := render.Render(rendered, budget).Text; text != "" {
 			fmt.Fprintln(stdout, text)
 		}
 	}
@@ -249,16 +253,20 @@ func newFeedbackCommands(searchID int64, nHits int) *feedbackCommands {
 }
 
 // renderHits adds each hit's entry summary and updated date (search.Hit carries neither) from
-// the store. A missing or unreadable entry just leaves those two fields empty: the hit still
-// renders from what the search returned.
-func renderHits(ctx context.Context, st store.Store, hits []search.Hit) []render.Hit {
+// the store. An entry missing from the index (the file was removed since) leaves those two fields
+// empty: the hit still renders from what the search returned. Any other failure, a cancel or a
+// database error, is returned: it is not "no such entry".
+func renderHits(ctx context.Context, st store.Store, hits []search.Hit) ([]render.Hit, error) {
 	out := make([]render.Hit, len(hits))
 	cache := map[string]*store.EntryRow{}
 	for i, h := range hits {
 		out[i] = render.Hit{Rank: h.Rank, Path: h.Path, Heading: h.Heading, Text: h.Text}
 		row, seen := cache[h.Path]
 		if !seen {
-			row, _ = st.Entry(ctx, h.Path)
+			var err error
+			if row, err = st.Entry(ctx, h.Path); err != nil {
+				return nil, err // a cancel or a database error is not "no such entry"
+			}
 			cache[h.Path] = row
 		}
 		if row != nil {
@@ -266,7 +274,7 @@ func renderHits(ctx context.Context, st store.Store, hits []search.Hit) []render
 			out[i].Summary = row.Summary
 		}
 	}
-	return out
+	return out, nil
 }
 
 // openSearch is the setup kb search and kb explain share: the index must exist (it is never
@@ -280,7 +288,7 @@ func (d *deps) openSearch(cmd *cobra.Command, ws *workspace.Workspace, cfg confi
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil, "", errs.Wrap(err, errs.NotFound, op, "no index at %s; run kb reindex --all", ws.DBPath)
 		}
-		return nil, nil, "", usageErr("stat %s: %v", ws.DBPath, err)
+		return nil, nil, "", errs.Wrap(err, errs.Usage, op, "cannot read the index %s: check the file and its permissions", ws.DBPath).With("path", ws.DBPath)
 	}
 	st, err := d.openStore(ctx, ws.DBPath, readOnly)
 	if err != nil {

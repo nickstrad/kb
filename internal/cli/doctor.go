@@ -29,6 +29,7 @@ import (
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/index"
+	"github.com/nickstrad/kb/internal/migrate"
 	"github.com/nickstrad/kb/internal/store"
 	"github.com/nickstrad/kb/internal/store/sqlite"
 	"github.com/nickstrad/kb/internal/workspace"
@@ -124,6 +125,10 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 		st = opened
 		defer st.Close()
 		checkDriver(ctx, d, st)
+	}
+
+	if partials := migrate.Partials(dbPath); len(partials) > 0 {
+		d.warn("migrate", fmt.Sprintf("%d unfinished backup(s) from an interrupted migration, e.g. %s; delete them or run kb migrate up", len(partials), partials[0]))
 	}
 
 	entries, skipped, err := entry.Discover(root, cfg.Sources)

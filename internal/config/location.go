@@ -51,6 +51,50 @@ func ReadLocation(path string) (Location, error) {
 	return ParseLocation(data, path)
 }
 
+// ReadLocationLenient is ReadLocation, except that a file written by an older kb (version 1 up to
+// but not including LocationSchemaVersion) is read as far as kb.toml's stable keys go
+// (default_store, aliases) instead of being refused. The commands that must run before kb migrate
+// has (kb stores) read it this way; a newer file is still refused. Everything else uses
+// ReadLocation (explicit migration policy: only kb migrate up changes a durable file).
+func ReadLocationLenient(path string) (Location, error) {
+	data, _, err := readCapped("config.ReadLocationLenient", "location", path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Location{}, errs.Wrap(err, errs.NotFound, "config.ReadLocationLenient", "no kb location file at %s; run kb init", path)
+	}
+	if err != nil {
+		return Location{}, err
+	}
+	if l, ok, err := olderLocation(data, path, LocationSchemaVersion); ok || err != nil {
+		return l, err
+	}
+	return ParseLocation(data, path)
+}
+
+// olderLocation reads the stable keys of a location file whose version is at least 1 and below
+// current; ok is false for any other file (current, newer, unversioned or unparseable), which the
+// caller hands to ParseLocation for its full checks.
+func olderLocation(data []byte, file string, current int64) (l Location, ok bool, err error) {
+	var head struct {
+		Version      int64             `toml:"version"`
+		DefaultStore string            `toml:"default_store"`
+		Aliases      map[string]string `toml:"aliases"`
+	}
+	if _, derr := toml.Decode(string(data), &head); derr != nil || head.Version < 1 || head.Version >= current {
+		return Location{}, false, nil
+	}
+	if head.DefaultStore == "" {
+		head.DefaultStore = DefaultStoreName
+	}
+	l = DefaultLocation(head.DefaultStore)
+	for k, v := range head.Aliases {
+		l.Aliases[k] = v
+	}
+	if err := l.Validate(file); err != nil {
+		return Location{}, true, err
+	}
+	return l, true, nil
+}
+
 // ParseLocation decodes location-file TOML onto the defaults and validates it. file names the
 // origin in errors.
 func ParseLocation(data []byte, file string) (Location, error) {

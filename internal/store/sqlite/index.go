@@ -22,9 +22,11 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"time"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
+	sqlite3 "github.com/mattn/go-sqlite3"
 
 	"github.com/nickstrad/kb/internal/assert"
 	"github.com/nickstrad/kb/internal/errs"
@@ -407,7 +409,7 @@ func (s *Store) replaceEntry(ctx context.Context, e store.EntryInput, chunks []s
 			return 0, fmt.Errorf("serialize embedding of chunk %d of %s: %w", c.Ord, e.Path, err)
 		}
 		if _, err := insertVec.ExecContext(ctx, chunkID, blob); err != nil {
-			return 0, fmt.Errorf("index chunk %d of %s for vector search: %w", c.Ord, e.Path, err)
+			return 0, fmt.Errorf("index chunk %d of %s for vector search: %w", c.Ord, e.Path, vecInsertCause(ctx, tx, err))
 		}
 	}
 
@@ -626,3 +628,24 @@ func nullString(s string) any {
 
 // nowUTC is the ISO-8601 UTC stamp used for indexed_at, created_at and ts columns.
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
+
+// vecChunkFailure is the generic message sqlite-vec returns, as SQLITE_ERROR, when the write of a
+// vector chunk fails for any reason, a full disk included (queue Q47).
+const vecChunkFailure = "Could not insert a new vector chunk"
+
+// vecInsertCause returns err, or, when err is sqlite-vec's generic chunk failure, the SQLITE_FULL
+// that a probe write in the same transaction hits when the database cannot grow: the probe creates
+// a table (it needs a new page, as the vec chunk did) and the transaction rolls back with the
+// error. The probe error comes first so classify sees SQLITE_FULL and the cause chain keeps both.
+func vecInsertCause(ctx context.Context, tx *sql.Tx, err error) error {
+	var se sqlite3.Error
+	if !errors.As(err, &se) || se.Code != sqlite3.ErrError || !strings.Contains(err.Error(), vecChunkFailure) {
+		return err
+	}
+	_, perr := tx.ExecContext(ctx, "CREATE TABLE kb_full_probe (x)")
+	var pe sqlite3.Error
+	if errors.As(perr, &pe) && pe.Code == sqlite3.ErrFull {
+		return fmt.Errorf("%w (%w)", perr, err)
+	}
+	return err
+}

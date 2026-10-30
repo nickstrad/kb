@@ -332,12 +332,6 @@ func TestEmbedCacheFile(t *testing.T) {
 	if _, err := embedCacheFile(""); err == nil {
 		t.Error("no cache base must be an error")
 	}
-	if def, err := cache.DefaultPath(); err == nil {
-		base, _ := os.UserCacheDir()
-		if want, _ := embedCacheFile(base); def != want {
-			t.Errorf("cache.DefaultPath %q != embedCacheFile %q", def, want)
-		}
-	}
 }
 
 // TestEmbedCacheConcurrentReindex: several reindexes of the same documents share one cache file

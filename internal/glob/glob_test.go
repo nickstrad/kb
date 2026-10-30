@@ -34,6 +34,8 @@ func TestMatch(t *testing.T) {
 		{"*.md", ".hidden.md", true}, // path.Match: * matches a leading dot
 		{"[", "[", false},            // invalid pattern matches nothing
 		{"docs/*.md", "", false},
+		{"**", "", false},       // an empty name matches nothing, even "**"
+		{"../x", "../x", false}, // ".." is not a valid pattern segment, so nothing matches
 	}
 	for _, tt := range tests {
 		if got := Match(tt.pattern, tt.name); got != tt.want {
@@ -100,6 +102,9 @@ func TestCouldMatchUnder(t *testing.T) {
 		{"**/*.md", "a/b/c", true},
 		{"a/**", "a", true},
 		{"[", "", false},
+		{"docs/x.md", "docs/x.md/sub", false}, // a file is not a directory: nothing lies under it
+		{"docs", "docs", false},               // a one-segment pattern never matches below its dir
+		{"a.md", "x", false},                  // a literal segment that differs prunes the walk
 	}
 	for _, tt := range tests {
 		if got := CouldMatchUnder(tt.pattern, tt.dir); got != tt.want {

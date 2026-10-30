@@ -11,13 +11,13 @@ changes the bytes of a database kb must leave alone (`TestRefusedOpenLeavesFileA
 upgrades. There is no `Options.Create`: creation is implicit in a read-write open of a missing or
 version-0 file (kb reindex and kb add rely on it), so `kb init` needed no switch.
 `migrate.Run` writes the backup to `<dst>.partial` and renames it on success, and removes the partial
-on any failure: an interrupted `VACUUM INTO` otherwise left an invalid "backup" that pruning would
+on any clean failure (a SIGKILL leaves the `.partial`: `migrate.Partials(file)` lists them, `kb migrate status` and doctor report them, and the next Run that migrates the file deletes them with a warning, under the lock): an interrupted `VACUUM INTO` otherwise left an invalid "backup" that pruning would
 count (found by harness `migrate-interrupt` on its first run).
 The config and location files are `config.NewArtefact` / `NewLocationArtefact` (`internal/config/migrate.go`):
 decode to `map[string]any`, run steps, re-check with Parse/ParseLocation, temp file + rename. A
 missing file is version 0 with nothing pending (kb migrate never creates them); a file without
 `version` reads as current, as Parse does.
-`kb migrate` resolves the location without `config.ReadLocation` (strict), so an older kb.toml can
+`kb stores` reads an older kb.toml through `config.ReadLocationLenient` (`deps.locationLenient`); `kb migrate` resolves the location without `config.ReadLocation` (strict), so an older kb.toml can
 still be migrated; the cache is listed but never touched (`Info` items). It resolves `--store` with
 the same `workspace.Resolver` as every command (NAME@LOC, PATH, aliases), only with
 `Read = rawLocationInfo` (lenient); `TestMigrateScopeMatchesStoreRefs` checks it lists the store

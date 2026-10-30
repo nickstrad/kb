@@ -287,6 +287,8 @@ type migrateRow struct {
 	State    string        `json:"state"` // current, pending, newer, absent
 	Auto     bool          `json:"auto,omitempty"`
 	Pending  []migrateStep `json:"pending,omitempty"`
+	// Partials are unfinished backups an interrupted migration left beside the file (Q65).
+	Partials []string `json:"partials,omitempty"`
 }
 
 type migrateStep struct {
@@ -313,6 +315,7 @@ func statusRows(ctx context.Context, items []migrateItem) ([]migrateRow, error) 
 			return nil, err
 		}
 		row := migrateRow{Scope: it.Scope, Location: it.Where, Artefact: st.Artefact, Path: it.Path, Current: st.Current, Target: st.Target, Auto: it.Info}
+		row.Partials = migrate.Partials(it.Path)
 		switch {
 		case it.Absent:
 			row.State, row.Pending = "absent", nil
@@ -408,6 +411,14 @@ func writeMigrateStatus(w io.Writer, rows []migrateRow) error {
 				note = "  [needs kb reindex; effect " + s.Effect + "]"
 			}
 			fmt.Fprintf(w, "  %s  %s%s\n", s.ID, s.Desc, note)
+		}
+	}
+	for _, r := range rows {
+		for i, p := range r.Partials {
+			if i == 0 {
+				fmt.Fprintf(w, "\n%s %s: unfinished backups from an interrupted migration (not usable; the next kb migrate up deletes them, or delete them yourself):\n", r.Scope, r.Artefact)
+			}
+			fmt.Fprintf(w, "  %s\n", p)
 		}
 	}
 	return nil

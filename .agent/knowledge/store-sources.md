@@ -16,6 +16,8 @@
 - `Entry.InPlace()` (files layout) drives: empty summary allowed (chunk 0 = title), kb rm
   refuses, index.md skips it, doctor skips the tags/updated warnings.
 
+Reserved names live once, in `config` (`NeverWalkedDir`, `ReservedEntryDir`, `ReservedEntryFile[Fold]`): config validation, entry discovery and `kb add` all ask them. A files-source exclude ending in `/**` whose head matches a directory or an ancestor prunes the walk (`excludesWholeDir`; `discoverWalk`'s onDir hook counts visits in tests).
+
 **Why it matters.** The old implicit data/ is gone (D9/N11); a forgotten source silently empties
 a store, and an in-place file must never be deleted or copied by kb.
 

@@ -187,3 +187,57 @@ func TestReadRefusesSpecialFiles(t *testing.T) {
 		})
 	}
 }
+
+// TestOlderLocation is the decision table for the lenient reader's older-file branch (Q64). The
+// real LocationSchemaVersion is 1, so the table passes a current of 2 to see a v1 file as older.
+func TestOlderLocation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		data    string
+		current int64
+		ok      bool
+		want    string // DefaultStore when ok
+		wantErr bool
+	}{
+		{"older with keys", "version = 1\ndefault_store = \"work\"\n[aliases]\nw = \"work\"\n", 2, true, "work", false},
+		{"older, default store absent", "version = 1\n", 2, true, "default", false},
+		{"current", "version = 2\ndefault_store = \"work\"\n", 2, false, "", false},
+		{"newer", "version = 3\n", 2, false, "", false},
+		{"unversioned", "default_store = \"work\"\n", 2, false, "", false},
+		{"unparseable", "version = [", 2, false, "", false},
+		{"older with a bad store name", "version = 1\ndefault_store = \"../x\"\n", 2, true, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l, ok, err := olderLocation([]byte(tc.data), "kb.toml", tc.current)
+			if ok != tc.ok || (err != nil) != tc.wantErr {
+				t.Fatalf("ok = %v, err = %v; want ok %v, err %v", ok, err, tc.ok, tc.wantErr)
+			}
+			if tc.ok && !tc.wantErr && (l.DefaultStore != tc.want || l.Version != LocationSchemaVersion) {
+				t.Errorf("location = %+v, want default_store %q", l, tc.want)
+			}
+		})
+	}
+}
+
+// TestReadLocationLenientCurrent: at the current version it is ReadLocation: same result, same
+// refusal of a newer file, NotFound for a missing one.
+func TestReadLocationLenientCurrent(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.toml")
+	newer := filepath.Join(dir, "newer.toml")
+	if err := os.WriteFile(good, []byte("version = 1\ndefault_store = \"a\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newer, []byte("version = 9\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if l, err := ReadLocationLenient(good); err != nil || l.DefaultStore != "a" {
+		t.Errorf("good = %+v, %v", l, err)
+	}
+	if _, err := ReadLocationLenient(newer); err == nil {
+		t.Error("a newer file was read")
+	}
+	if _, err := ReadLocationLenient(filepath.Join(dir, "none.toml")); errs.KindOf(err) != errs.NotFound {
+		t.Errorf("missing: kind %v, want NotFound", errs.KindOf(err))
+	}
+}

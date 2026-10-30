@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -203,14 +204,22 @@ func readCapped(op, what, path string) (data []byte, regular bool, err error) {
 		return nil, true, errs.Wrap(err, errs.Usage, op, "cannot read %s %s: %v", what, path, err)
 	}
 	defer f.Close() // read-only: a close error loses nothing
-	data, err = io.ReadAll(io.LimitReader(f, MaxFileBytes+1))
+	data, err = readLimited(op, what, path, f)
+	return data, true, err
+}
+
+// readLimited reads r through the cap. It is the check that holds when a file grows between
+// readCapped's stat and its read (the stat alone cannot see that), split out so a test can feed it
+// a reader longer than the cap without a racing writer.
+func readLimited(op, what, path string, r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, MaxFileBytes+1))
 	if err != nil {
-		return nil, true, errs.Wrap(err, errs.Usage, op, "cannot read %s %s: %v", what, path, err)
+		return nil, errs.Wrap(err, errs.Usage, op, "cannot read %s %s: %v", what, path, err)
 	}
 	if len(data) > MaxFileBytes {
-		return nil, true, errs.New(errs.Usage, op, "%s: file is over %d bytes; a %s file may be at most %d bytes (1 MiB)", path, MaxFileBytes, what, MaxFileBytes)
+		return nil, errs.New(errs.Usage, op, "%s: file is over %d bytes; a %s file may be at most %d bytes (1 MiB)", path, MaxFileBytes, what, MaxFileBytes)
 	}
-	return data, true, nil
+	return data, nil
 }
 
 // fileKind names a non-regular file type for messages.
@@ -580,9 +589,37 @@ func validateSources(sources []Source, problem func(key, format string, args ...
 	return nil
 }
 
-// reservedSourceDirs are the top-level directories no source may name or reach into: kb's own
-// .kb (every store's database and config), git's metadata, and node_modules.
-var reservedSourceDirs = []string{".kb", ".git", "node_modules"}
+// The reserved-name tables below are the one place kb says which names are machinery. Config
+// validation (checkSourcePath), entry discovery (internal/entry) and kb add (internal/cli) all ask
+// the predicates, so a new reserved name is one edit. config is the package all three already
+// import and it imports none of them.
+
+// neverWalkedDirs are the directory names kb never indexes or descends into, at any depth: its own
+// stores (.kb, also a nested location's), git's metadata and npm's dependency tree.
+var neverWalkedDirs = []string{".kb", ".git", "node_modules"}
+
+// reservedEntryDirs are the directories in an entries directory that are never entries even with
+// a README.md (the never-walked ".kb" and ".git" among them, plus "skill").
+var reservedEntryDirs = []string{"skill", ".kb", ".git"}
+
+// reservedEntryFiles are the *.md files in an entries directory that are repository machinery,
+// not entries.
+var reservedEntryFiles = []string{"AGENTS.md", "CLAUDE.md", "index.md", "plan.md", "README.md"}
+
+// NeverWalkedDir reports whether a directory of this name is never walked or indexed.
+func NeverWalkedDir(name string) bool { return slices.Contains(neverWalkedDirs, name) }
+
+// ReservedEntryDir reports whether a directory of this name is never a directory entry.
+func ReservedEntryDir(name string) bool { return slices.Contains(reservedEntryDirs, name) }
+
+// ReservedEntryFile reports whether a file of exactly this name is never an entry.
+func ReservedEntryFile(name string) bool { return slices.Contains(reservedEntryFiles, name) }
+
+// ReservedEntryFileFold is ReservedEntryFile ignoring case: kb add takes lowercase names only, and
+// "agents.md" would be the same file as AGENTS.md on a case-insensitive filesystem.
+func ReservedEntryFileFold(name string) bool {
+	return slices.ContainsFunc(reservedEntryFiles, func(r string) bool { return strings.EqualFold(r, name) })
+}
 
 // checkSourcePath checks an entries directory: relative, clean, inside the root and not reserved.
 func checkSourcePath(p string) error {
@@ -595,7 +632,7 @@ func checkSourcePath(p string) error {
 	if path.Clean(p) != p || p == "." || p == ".." || strings.HasPrefix(p, "../") {
 		return fmt.Errorf("%q must be a clean directory path inside the location root, such as \"data\"", p)
 	}
-	for _, r := range reservedSourceDirs {
+	for _, r := range neverWalkedDirs {
 		if p == r || strings.HasPrefix(p, r+"/") {
 			return fmt.Errorf("%q is inside %s, which kb never indexes", p, r)
 		}

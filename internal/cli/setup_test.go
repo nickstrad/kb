@@ -55,7 +55,9 @@ func TestNewEmbedderKinds(t *testing.T) {
 	}
 }
 
-var errFakeCache = errors.New("no cache dir")
+// errFakeCache is the kind production returns for a missing cache dir (root.go modelCacheDir):
+// a test double returns only the error kinds production returns.
+var errFakeCache = errs.New(errs.Usage, "test.modelCacheDir", "no cache dir")
 
 // TestConfigConstantsMatchServices pins the values config repeats so it need not import a
 // service or the embedder: the k bounds, the default model and the open window.

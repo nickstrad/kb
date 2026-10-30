@@ -383,15 +383,11 @@ Every versioned artefact (CODING_STYLE.md §6.1) has these, in its own package. 
 
 - **Embedder:** `internal/embed/fake` (hash-based, deterministic, honours `ctx`) is the default. When a test needs an embedder failure, it wraps `fake` in a stub whose `Embed` returns the chosen error (§4.3).
 - **Store:** real SQLite in `t.TempDir()`. Never mock the database in store, search or reindex tests, because FTS5 and sqlite-vec behaviour is the thing under test.
-- **HTTP embedders** (until v2 deletes them): `httptest.Server`, never a real endpoint.
+- **Doubles keep the error contract.** A test double returns only errors the real dependency can return, with the same `errs` kind (e.g. a fake cache fails with `errs.Usage`, as `cache.Open` does). A double that returns a bare error passes tests that production would fail (testability `test-doubles-break-error-contract`).
 - **Real models (`embed/local`, rembed):** these tests carry `//go:build model`, not a `testing.Short` or "skip if not cached" gate. Default runs never download a model. The `model` job fetches it in an explicit step before the tests run. Under the tag, a missing model is `t.Fatal`, not a skip, so the job cannot pass vacuously.
 - **Time:** assert durations (`EmbedMs`, `TotalMs`) are `>= 0`, never exact. No `time.Sleep`. Synchronise with channels or `ctx`.
 - **Randomness:** seed explicitly and print the seed on failure. Map iteration order must never reach output (the total order in `Fuse` guarantees this for search).
-- **No host tools: a defect in today's tests.** `internal/cli/p44_test.go` and `internal/cli/p42_regression_test.go` set `EDITOR` to `sed -i 's/…/…/'`. That is GNU syntax. macOS `/usr/bin/sed` reads the script as a backup suffix and fails. The result on macOS today:
-  - `TestMutationCommandsLeaveOptionalIndexAlone` **fails**.
-  - `TestEditModelMismatchUsesEditPrefix` **passes vacuously**: it expects exit 1 with a `kb edit:` prefix, and the sed failure produces exactly that.
-
-  The target fix is the injectable `editor func(ctx, path) error` in `deps` (CODING_STYLE.md §5): tests pass a Go function that rewrites the file. PLAN.md's interim fix (a generated `sh` script using POSIX `sed` without `-i`) works on macOS, and is acceptable only until `deps` lands. Either way, the mismatch test must also check that the file actually changed.
+- **No host tools.** Tests never shell out to `sed`, `awk` or other host tools: an injected `deps.editor` (a Go func) replaces `$EDITOR`. Only the rows that test `runEditor` itself shell out (DEFAULTS #103).
 - **Env vars:** v2 reads none. Until then, tests that need one use `t.Setenv`. Note that `t.Setenv` and `t.Parallel` cannot be combined. Once config arrives through `deps`, these tests can run in parallel.
 
 ## 8. Build tags

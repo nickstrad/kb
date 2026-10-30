@@ -15,6 +15,8 @@
 - `quote()` gives exact SQL literals (`X'…'` for blobs). `VACUUM INTO` is refused on a
   `_query_only` connection: back up through a read-write handle.
 
+- A full disk inside a sqlite-vec insert comes back as SQLITE_ERROR "Could not insert a new vector chunk"; `vecInsertCause` probes with a `CREATE TABLE` in the same tx to surface SQLITE_FULL (test: `PRAGMA max_page_count` pinned at `page_count`, one connection).
+
 **Why it matters.** Per-version migration fixtures must be small, exact and reloadable, or the
 "fixture == steps at its version" check is noise.
 

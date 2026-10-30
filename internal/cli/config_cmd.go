@@ -64,6 +64,8 @@ func runConfig(cmd *cobra.Command, d *deps, stdout io.Writer, pathOnly, asJSON b
 			return err
 		}
 	}
+	// loadConfig already checked the model of the file, so this only fires for a --set
+	// value. A second source layer (named stores) must check its own source here instead.
 	if err := cfg.CheckModel("--set", knownModel); err != nil {
 		return err
 	}

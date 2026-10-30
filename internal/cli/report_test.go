@@ -511,8 +511,8 @@ func TestReplaceFileIsAtomicRename(t *testing.T) {
 // TestDiskFullIsExit1: a real SQLITE_FULL (the page limit is pinned at the current size and the
 // feedback note needs new pages) reaches report as a well-formed failure: exit 1 with the "free
 // space and retry" message and no incident, not exit 3. Feedback is the probe because it writes
-// only plain tables; a full disk met inside a sqlite-vec insert is reported by that extension as a
-// generic error and stays Internal (queue Q47).
+// only plain tables; a full disk met inside a sqlite-vec insert is classified by the store's probe
+// (sqlite TestVecInsertDiskFullIsUsage).
 func TestDiskFullIsExit1(t *testing.T) {
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	useRoot(t, root)

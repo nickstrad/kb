@@ -102,6 +102,40 @@ func (d *deps) location(cmd *cobra.Command) (loc *workspace.Location, lf config.
 	return rr.loc, rr.lf, rr.ref, rr.how, nil
 }
 
+// locationLenient is location for the commands exempt from the migration refusal (kb stores): when
+// the location's kb.toml is older than this kb reads (a Conflict from ReadLocation), the location
+// is found by the same flags and its kb.toml read with config.ReadLocationLenient, so the command
+// can still list what is there. A --store ref that names its own location is not retried: the
+// refusal stands (queue Q64).
+func (d *deps) locationLenient(cmd *cobra.Command) (loc *workspace.Location, lf config.Location, ref workspace.Ref, how string, err error) {
+	loc, lf, ref, how, err = d.location(cmd)
+	if err == nil || errs.KindOf(err) != errs.Conflict {
+		return loc, lf, ref, how, err
+	}
+	root, _ := cmd.Flags().GetString("root")
+	global, _ := cmd.Flags().GetBool("global")
+	storeFlag, _ := cmd.Flags().GetString("store")
+	if storeFlag != "" {
+		return nil, config.Location{}, ref, "", err
+	}
+	env := d.workspaceEnv()
+	loc, rerr := workspace.ResolveLocation(root, global, env)
+	if rerr != nil {
+		return nil, config.Location{}, ref, "", err
+	}
+	if lf, rerr = config.ReadLocationLenient(loc.FilePath); rerr != nil {
+		return nil, config.Location{}, ref, "", err
+	}
+	how = "discovered from " + env.Cwd
+	switch {
+	case root != "":
+		how = "--root"
+	case global:
+		how = "--global"
+	}
+	return loc, lf, ref, how, nil
+}
+
 // workspace resolves the store this command runs on: --store (a store name, an alias, global,
 // NAME@LOC or a path; see workspace.Ref), else the location's default_store. A store missing from
 // the location is NotFound, listing the stores and aliases that exist; so is a default_store that

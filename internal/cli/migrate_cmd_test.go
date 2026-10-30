@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -11,7 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed/cache"
+	"github.com/nickstrad/kb/internal/migrate"
 	"github.com/nickstrad/kb/internal/store"
 	"github.com/nickstrad/kb/internal/store/sqlite"
 )
@@ -604,5 +607,112 @@ func TestMigrateScopeErrors(t *testing.T) {
 	empty := realTempDir(t)
 	if _, stderr, code := run(t, "--root", empty, "migrate", "status"); code != ExitUsage || !strings.Contains(stderr, "kb init") {
 		t.Errorf("--root without kb.toml: exit %d %q", code, stderr)
+	}
+}
+
+// TestPrintMigrateReport is the output table of `kb migrate up` and its dry run, over synthetic
+// reports: what is said for an upgrade with a backup, a config file with a warning, --no-backup,
+// a dry run, and nothing to do.
+func TestPrintMigrateReport(t *testing.T) {
+	idx := migrateItem{Scope: "location", Path: "/loc/.kb/kb.sqlite"}
+	cfg := migrateItem{Scope: "store docs", Path: "/loc/.kb/stores/docs/config.toml"}
+	step := func(from int, id, desc string, e migrate.Effect) migrate.Info {
+		return migrate.Info{From: from, ID: id, Desc: desc, Effect: e}
+	}
+	for _, tc := range []struct {
+		name  string
+		items []migrateItem
+		rep   migrate.Report
+		want  string   // exact output, "" = check contains/absent only
+		has   []string // substrings that must appear
+		not   []string // substrings that must not appear
+	}{
+		{
+			name:  "upgrade with a backup and effects",
+			items: []migrateItem{idx},
+			rep: migrate.Report{Artefacts: []migrate.Outcome{{
+				Status:  migrate.Status{Artefact: "index", Path: idx.Path, Current: 1, Target: 3},
+				Applied: []migrate.Info{step(1, "index/0002-a", "add column", migrate.EffectReindex), step(2, "index/0003-b", "vec width", migrate.EffectReembed)},
+				Backup:  "/loc/.kb/kb.sqlite.bak-v1-x",
+			}}},
+			want: "migrated location index: v1 -> v3 (/loc/.kb/kb.sqlite)\n" +
+				"  backup: /loc/.kb/kb.sqlite.bak-v1-x\n" +
+				"  applied index/0002-a: add column\n" +
+				"  applied index/0003-b: vec width\n" +
+				"needs: kb reindex (location: index/0002-a; location: index/0003-b)\n",
+			not: []string{"everything is up to date", "comments in the file"},
+		},
+		{
+			name:  "config upgrade notes the lost comments and the warning, with no needs line",
+			items: []migrateItem{cfg},
+			rep: migrate.Report{Artefacts: []migrate.Outcome{{
+				Status:   migrate.Status{Artefact: config.ConfigArtefactName, Path: cfg.Path, Current: 0, Target: 1},
+				Applied:  []migrate.Info{step(0, "config/0001-x", "set the default", migrate.EffectNone)},
+				Warnings: []string{"an old backup could not be pruned"},
+			}}},
+			want: "migrated store docs config: v0 -> v1 (/loc/.kb/stores/docs/config.toml)\n" +
+				"  applied config/0001-x: set the default\n" +
+				"  comments in the file are not kept; the backup has the original text\n" +
+				"  warning: an old backup could not be pruned\n",
+			not: []string{"needs:"},
+		},
+		{
+			name:  "--no-backup on an existing artefact says so",
+			items: []migrateItem{idx},
+			rep: migrate.Report{Artefacts: []migrate.Outcome{{
+				Status:  migrate.Status{Artefact: "index", Path: idx.Path, Current: 2, Target: 3},
+				Applied: []migrate.Info{step(2, "index/0003-b", "vec width", migrate.EffectReembed)},
+			}}},
+			has: []string{"  no backup (--no-backup)\n", "needs: kb reindex (location: index/0003-b)"},
+			not: []string{"backup:"},
+		},
+		{
+			name:  "dry run names what would happen and writes nothing",
+			items: []migrateItem{idx},
+			rep: migrate.Report{DryRun: true, Artefacts: []migrate.Outcome{{
+				Status: migrate.Status{Artefact: "index", Path: idx.Path, Current: 1, Target: 2,
+					Pending: []migrate.Info{step(1, "index/0002-a", "add column", migrate.EffectReindex)}},
+				Backup: "/loc/.kb/kb.sqlite.bak-v1-x",
+			}}},
+			want: "would migrate location index: v1 -> v2 (/loc/.kb/kb.sqlite)\n" +
+				"  backup would be written to /loc/.kb/kb.sqlite.bak-v1-x\n" +
+				"  would apply index/0002-a: add column\n" +
+				"needs: kb reindex (location: index/0002-a)\n",
+			not: []string{"migrated ", "comments in the file"},
+		},
+		{
+			name:  "nothing pending is up to date",
+			items: []migrateItem{idx, cfg},
+			rep: migrate.Report{Artefacts: []migrate.Outcome{
+				{Status: migrate.Status{Artefact: "index", Path: idx.Path, Current: 3, Target: 3}},
+				{Status: migrate.Status{Artefact: config.ConfigArtefactName, Path: cfg.Path, Current: 1, Target: 1}},
+			}},
+			want: "everything is up to date\n",
+		},
+		{
+			name:  "an empty report is up to date",
+			items: nil,
+			rep:   migrate.Report{},
+			want:  "everything is up to date\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printMigrateReport(&buf, tc.items, tc.rep)
+			out := buf.String()
+			if tc.want != "" && out != tc.want {
+				t.Errorf("output:\n%s\nwant:\n%s", out, tc.want)
+			}
+			for _, s := range tc.has {
+				if !strings.Contains(out, s) {
+					t.Errorf("output lacks %q:\n%s", s, out)
+				}
+			}
+			for _, s := range tc.not {
+				if strings.Contains(out, s) {
+					t.Errorf("output has %q:\n%s", s, out)
+				}
+			}
+		})
 	}
 }

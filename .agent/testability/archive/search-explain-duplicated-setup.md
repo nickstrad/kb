@@ -2,7 +2,7 @@
 > About 45 lines (mode check, index stat, store open, embedder build, none→fts, embed_meta mismatch, settings) live in both handlers, and each copy has a different untested branch.
 
 - **Smell:** duplicated rule · decision+effect mixed
-- **Status:** needs work
+- **Status:** resolved (2026-10-30)
 - **Where:** `internal/cli/search.go:runSearch`, `internal/cli/explain.go:runExplain`; also `search.go:printResults`/`renderHits` (take the whole `store.Store` to call `Entry`)
 - **Symptoms in tests:**
   - The mode/embedder decision (hybrid|vec × none|real × meta matches|differs) can only be tested through a full CLI run on a populated store (`newSearchTestRepo`).
@@ -12,4 +12,5 @@
 - **Why it happens:** the setup is inline in each RunE, and the decision is interleaved with opening the store and building the embedder.
 - **Remedy:** (1) A pure `resolveMode(mode, embedder, stored EmbedMeta, ok bool) (string, error)`, table-tested once per branch outcome. (2) `d.openSearcher(cmd, cfg, mode) (store.Store, *search.Searcher, string, error)`, called by both commands. (3) `renderHits` takes `interface{ Entry(ctx, path) (*store.EntryRow, error) }`. → **3.2** (W8 owns `cli/search.go`; cross-store search would otherwise add a third copy).
 - **Cost/benefit:** small, about 1 file plus a table test. It removes about 45 duplicated lines, closes both untested branches, and gives 3.2 one place to fan out.
-- **Last reviewed:** 2026-10-30 · testability first pass
+- **Resolution:** Q63 (W7, item 2.2 after 4.1): `deps.openSearch` (internal/cli/search.go) runs the index stat, store open and embedder step for both `runSearch` and `runExplain` (explain opens read-only); `deps.searchEmbedder` holds the mode/none/embed_meta decision. Tests through the shared helper: `TestExplainFlagErrors` (explain, "vec with none embedder") and `TestSearchEmbedMetaMismatch` (search, meta mismatch). Not done: the pure `resolveMode` table (remedy 1), and explain has no meta-mismatch test. Still open, now in PLAN 3.2: `renderHits` (search.go:254) takes `store.Store`, so the per-hit summary lookup still needs a real store. Also still 0 test hits for "--mode vec needs an embedder" (search.go:308).
+- **Last reviewed:** 2026-10-30 · W7 pass

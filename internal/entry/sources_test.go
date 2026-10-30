@@ -392,6 +392,7 @@ func TestFallbackMeta(t *testing.T) {
 		{"summary cut to 200 runes", FrontMatter{}, long, "x.md", "X", strings.TrimSpace(long[:199*1]) + ""},
 		{"control characters stripped", FrontMatter{}, "# a\x1bb\tc\n\nx\x00y\n", "x.md", "ab c", "xy"},
 		{"name made of separators", FrontMatter{}, "", "dir/-_-.md", "dir/-_-.md", ""},
+		{"invalid UTF-8 in the name is dropped, not upper-cased", FrontMatter{}, "", "dir/\xffab.md", "ab", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -588,5 +589,70 @@ func TestDiscoverFilesDanglingSymlink(t *testing.T) {
 	}
 	if got[0].Err == nil || got[1].Err != nil {
 		t.Errorf("Err: dangling %v, ok %v; want only the dangling link to fail", got[0].Err, got[1].Err)
+	}
+}
+
+// TestExcludesWholeDir is the decision table for pruning: only an exclude ending in "/**" whose
+// head matches the directory or an ancestor covers it; a file-level exclude never does.
+func TestExcludesWholeDir(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		excludes []string
+		dir      string
+		want     bool
+	}{
+		{"no excludes", nil, "docs/vendor", false},
+		{"**/vendor/** at depth 2", []string{"**/vendor/**"}, "docs/vendor", true},
+		{"**/vendor/** at the top", []string{"**/vendor/**"}, "vendor", true},
+		{"**/vendor/** below the match", []string{"**/vendor/**"}, "docs/vendor/a/b", true},
+		{"**/vendor/** other dir", []string{"**/vendor/**"}, "docs/other", false},
+		{"**/vendor/** name prefix only", []string{"**/vendor/**"}, "docs/vendors", false},
+		{"literal head", []string{"drafts/**"}, "drafts", true},
+		{"literal head, sibling", []string{"drafts/**"}, "docs/drafts", false},
+		{"wildcard head", []string{"d*/old/**"}, "docs/old", true},
+		{"file pattern", []string{"**/*.md"}, "docs", false},
+		{"dir name without /**", []string{"docs/vendor"}, "docs/vendor", false},
+		{"** alone", []string{"**"}, "docs", true},
+		{"second pattern matches", []string{"x/**", "**/vendor/**"}, "a/vendor", true},
+	} {
+		if got := excludesWholeDir(tc.excludes, tc.dir); got != tc.want {
+			t.Errorf("%s: excludesWholeDir(%v, %q) = %v, want %v", tc.name, tc.excludes, tc.dir, got, tc.want)
+		}
+	}
+}
+
+// TestExcludePrunesWalk: an exclude covering a directory stops the walk at it (the directory
+// visits are counted, not the time), and the entries found are the same with or without pruning.
+func TestExcludePrunesWalk(t *testing.T) {
+	root := mkTree(t, map[string]string{
+		"docs/a.md":                validFM,
+		"docs/vendor/x/y/deep.md":  validFM,
+		"docs/vendor/x/z/other.md": validFM,
+		"docs/sub/b.md":            validFM,
+	})
+	var visited []string
+	got, _, err := discoverWalk(root, []config.Source{files("docs/**/*.md", "**/vendor/**")}, false,
+		func(rel string) { visited = append(visited, rel) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"docs/a.md", "docs/sub/b.md"}; !reflect.DeepEqual(paths(got), want) {
+		t.Errorf("entries = %v, want %v", paths(got), want)
+	}
+	for _, v := range visited {
+		if strings.Contains(v, "vendor") {
+			t.Errorf("walk descended into %s, want the excluded directory pruned (visited %v)", v, visited)
+		}
+	}
+	if want := []string{"docs", "docs/sub"}; !reflect.DeepEqual(visited, want) {
+		t.Errorf("directories visited = %v, want %v", visited, want)
+	}
+	// Without the exclude the walk goes in: the count above is the pruning, not the layout.
+	visited = nil
+	if _, _, err := discoverWalk(root, []config.Source{files("docs/**/*.md")}, false, func(rel string) { visited = append(visited, rel) }); err != nil {
+		t.Fatal(err)
+	}
+	if len(visited) != 6 {
+		t.Errorf("unpruned visits = %v, want 6 directories", visited)
 	}
 }

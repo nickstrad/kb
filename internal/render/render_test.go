@@ -327,4 +327,51 @@ func TestTrim(t *testing.T) {
 			t.Errorf("Trim(\"\", 600) = %q, want \"\"", got)
 		}
 	})
+
+	t.Run("a space exactly eighty runes before the limit is used", func(t *testing.T) {
+		s := strings.Repeat("a", 520) + " " + strings.Repeat("b", 100) // space at index 520 = limit-80
+		want := strings.Repeat("a", 520) + " …"
+		if got := Trim(s, 600); got != want {
+			t.Errorf("Trim(...) = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a space eighty-one runes before the limit is not used", func(t *testing.T) {
+		s := strings.Repeat("a", 519) + " " + strings.Repeat("b", 100) // space at index 519 = limit-81
+		want := strings.Repeat("a", 519) + " " + strings.Repeat("b", 80) + " …"
+		if got := Trim(s, 600); got != want {
+			t.Errorf("Trim(...) = %q, want a hard cut %q", got, want)
+		}
+	})
+
+	t.Run("cuts at the last newline before the limit", func(t *testing.T) {
+		s := strings.Repeat("a", 590) + "\n" + strings.Repeat("b", 20)
+		want := strings.Repeat("a", 590) + " …"
+		if got := Trim(s, 600); got != want {
+			t.Errorf("Trim(...) = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("limit under eighty cuts at the last space", func(t *testing.T) {
+		if got, want := Trim("ab cdefgh", 5), "ab …"; got != want {
+			t.Errorf("Trim(\"ab cdefgh\", 5) = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("limit under eighty with no space hard cuts", func(t *testing.T) {
+		if got, want := Trim("abcdefgh", 5), "abcde …"; got != want {
+			t.Errorf("Trim(\"abcdefgh\", 5) = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestLimitsPinned pins the rune caps of the render levels; a change here changes every
+// rendered block, so it must be a deliberate edit of this test too.
+func TestLimitsPinned(t *testing.T) {
+	if TextLimit != 600 {
+		t.Errorf("TextLimit = %d, want 600", TextLimit)
+	}
+	if SummaryLimit != 300 {
+		t.Errorf("SummaryLimit = %d, want 300", SummaryLimit)
+	}
 }

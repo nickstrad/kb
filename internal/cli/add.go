@@ -32,6 +32,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/reindex"
 	"github.com/nickstrad/kb/internal/store"
@@ -42,26 +43,6 @@ var (
 	fileNameRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*\.md$`)
 	dirNameRe  = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 )
-
-// reservedFileNames are the *.md basenames at the repo root that are never entries (AGENTS.md,
-// CLAUDE.md.txt and README.md are already excluded by fileNameRe's lowercase rule; index.md and
-// plan.md are the two that would otherwise pass it), mirroring internal/entry's excludedRootFiles.
-var reservedFileNames = map[string]bool{
-	"agents.md": true,
-	"claude.md": true,
-	"index.md":  true,
-	"plan.md":   true,
-	"readme.md": true,
-}
-
-// reservedDirNames are the directory names that are never a directory entry even with a
-// README.md, mirroring internal/entry's excludedDirs (".kb" and ".git" cannot pass dirNameRe
-// anyway, since it disallows a leading dot; "skill" can, so it needs the explicit check).
-var reservedDirNames = map[string]bool{
-	"skill": true,
-	".kb":   true,
-	".git":  true,
-}
 
 // newAddCmd builds `kb add <file.md>` and `kb add --dir <topic>/`.
 func newAddCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
@@ -103,7 +84,7 @@ func runAddFile(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, srcArg st
 	if !fileNameRe.MatchString(basename) {
 		return usageErr("%q must be lowercase kebab-case matching ^[a-z0-9]+(-[a-z0-9]+)*\\.md$", basename)
 	}
-	if reservedFileNames[basename] {
+	if config.ReservedEntryFileFold(basename) {
 		return usageErr("%q is a reserved repository file, not a knowledge entry", basename)
 	}
 
@@ -229,7 +210,7 @@ func runAddDir(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, argPath st
 	if !dirNameRe.MatchString(name) {
 		return usageErr("%q must be lowercase kebab-case matching ^[a-z0-9]+(-[a-z0-9]+)*$", name)
 	}
-	if reservedDirNames[name] {
+	if config.ReservedEntryDir(name) {
 		return usageErr("%q is a reserved directory name, not a knowledge entry", name)
 	}
 

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/nickstrad/kb/internal/errs"
 )
@@ -517,3 +519,82 @@ func TestOpenWindowDuration(t *testing.T) {
 }
 
 var _ = errors.Is
+
+// TestReadLimited is the boundary table for the in-read cap (Q62): a file that grew past the cap
+// after readCapped's stat is refused as Usage; exactly the cap passes; a failing reader is Usage.
+func TestReadLimited(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		r       io.Reader
+		wantErr bool
+	}{
+		{"empty", strings.NewReader(""), false},
+		{"cap-1", strings.NewReader(strings.Repeat("a", MaxFileBytes-1)), false},
+		{"cap", strings.NewReader(strings.Repeat("a", MaxFileBytes)), false},
+		{"cap+1 (grew after the stat)", strings.NewReader(strings.Repeat("a", MaxFileBytes+1)), true},
+		{"endless", zeroReader{}, true},
+		{"read error", iotest.ErrReader(errors.New("boom")), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := readLimited("config.Read", "config", "p", tc.r)
+			if tc.wantErr {
+				if errs.KindOf(err) != errs.Usage || data != nil {
+					t.Fatalf("err = %v (kind %v), data %d bytes; want Usage and no data", err, errs.KindOf(err), len(data))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// zeroReader never ends, like /dev/zero.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+// TestReservedNamePredicates is the decision table for the shared reserved-name predicates (Q76):
+// exact, case-sensitive for discovery; the Fold form also matches the lowercase spellings kb add
+// accepts. Config validation uses the never-walked table, so a source under any of them is refused.
+func TestReservedNamePredicates(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		neverWalked, entryDir bool
+		file, fileFold        bool
+	}{
+		{name: ".kb", neverWalked: true, entryDir: true},
+		{name: ".git", neverWalked: true, entryDir: true},
+		{name: "node_modules", neverWalked: true},
+		{name: "skill", entryDir: true},
+		{name: "AGENTS.md", file: true, fileFold: true},
+		{name: "agents.md", fileFold: true},
+		{name: "index.md", file: true, fileFold: true},
+		{name: "INDEX.md", fileFold: true},
+		{name: "plan.md", file: true, fileFold: true},
+		{name: "README.md", file: true, fileFold: true},
+		{name: "readme.md", fileFold: true},
+		{name: "notes.md"},
+		{name: "data"},
+		{name: ""},
+	} {
+		if got := NeverWalkedDir(tc.name); got != tc.neverWalked {
+			t.Errorf("NeverWalkedDir(%q) = %v, want %v", tc.name, got, tc.neverWalked)
+		}
+		if got := ReservedEntryDir(tc.name); got != tc.entryDir {
+			t.Errorf("ReservedEntryDir(%q) = %v, want %v", tc.name, got, tc.entryDir)
+		}
+		if got := ReservedEntryFile(tc.name); got != tc.file {
+			t.Errorf("ReservedEntryFile(%q) = %v, want %v", tc.name, got, tc.file)
+		}
+		if got := ReservedEntryFileFold(tc.name); got != tc.fileFold {
+			t.Errorf("ReservedEntryFileFold(%q) = %v, want %v", tc.name, got, tc.fileFold)
+		}
+	}
+	for _, p := range []string{".kb", ".git/x", "node_modules/a/b"} {
+		if err := checkSourcePath(p); err == nil {
+			t.Errorf("checkSourcePath(%q) = nil, want a refusal", p)
+		}
+	}
+}

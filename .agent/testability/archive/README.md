@@ -13,3 +13,4 @@ again is moved back and re-reviewed.
 ## Archived entries
 
 - [package-level-test-seams](package-level-test-seams.md) — resolved (2026-10-29) · `var newEmbedder`, `hubLoad` and a sh+sed `$EDITOR` were swapped by tests; now fields of `deps` and `local.puller`
+- [search-explain-duplicated-setup](search-explain-duplicated-setup.md) — resolved (2026-10-30) · search and explain each carried their own mode/embedder/meta setup; now one `deps.openSearch`/`searchEmbedder` (Q63). `renderHits` still takes `store.Store` (PLAN 3.2)

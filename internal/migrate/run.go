@@ -114,13 +114,14 @@ func runOne(ctx context.Context, a Artefact, o Options) (Outcome, error) {
 		return Outcome{Status: st}, err
 	}
 	out := Outcome{Status: st}
+	out.Warnings = prunePartials(st.Path)
 	if !o.NoBackup && st.Current > 0 {
 		dst := backupPath(st.Path, st.Current, o.Now())
 		if err := backupTo(ctx, a, dst); err != nil {
 			return out, wrap(ctx, err, op, "could not back up %s to %s; nothing was migrated", st.Path, dst).With("path", st.Path)
 		}
 		out.Backup = dst
-		out.Warnings = prune(st.Path, KeepBackups)
+		out.Warnings = append(out.Warnings, prune(st.Path, KeepBackups)...)
 	}
 	applied, err := a.Apply(ctx)
 	out.Applied = applied
@@ -169,6 +170,44 @@ func backupTo(ctx context.Context, a Artefact, dst string) error {
 		return err
 	}
 	return nil
+}
+
+// partialRe matches a backup that never finished: a good backup's name plus partialSuffix.
+func partialRe(file string) *regexp.Regexp {
+	return regexp.MustCompile(`^` + regexp.QuoteMeta(filepath.Base(file)) + `\.bak-v[0-9]+-[0-9]{8}-[0-9]{6}(?:-[0-9]+)?` + regexp.QuoteMeta(partialSuffix) + `$`)
+}
+
+// Partials lists the unfinished backups ("<file>.bak-v<N>-<ts>.partial") beside file, sorted. A
+// kill (SIGKILL, power loss) during a backup leaves one, because only a clean failure removes it.
+// kb migrate status and kb doctor report them; the next Run that migrates the file deletes them.
+func Partials(file string) []string {
+	dir := filepath.Dir(file)
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil // a missing directory has no partials; a real error shows up on the real work
+	}
+	re := partialRe(file)
+	var out []string
+	for _, e := range ents {
+		if e.Type().IsRegular() && re.MatchString(e.Name()) {
+			out = append(out, filepath.Join(dir, e.Name()))
+		}
+	}
+	return out // ReadDir is sorted by name
+}
+
+// prunePartials deletes the unfinished backups of file and returns a warning for each. Run calls
+// it under the lock, so no live backup of the file can be among them.
+func prunePartials(file string) []string {
+	var warns []string
+	for _, p := range Partials(file) {
+		if err := os.Remove(p); err != nil {
+			warns = append(warns, fmt.Sprintf("could not delete the unfinished backup %s: %v", filepath.Base(p), err))
+			continue
+		}
+		warns = append(warns, fmt.Sprintf("deleted the unfinished backup %s (an earlier migration was interrupted)", filepath.Base(p)))
+	}
+	return warns
 }
 
 func backupNote(path string) string {

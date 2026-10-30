@@ -54,24 +54,6 @@ const (
 	DataDir = "data"
 )
 
-// excludedRootFiles are the *.md files in an entries directory that are repository machinery,
-// not entries.
-var excludedRootFiles = map[string]bool{
-	"AGENTS.md": true,
-	"CLAUDE.md": true,
-	"index.md":  true,
-	"plan.md":   true,
-	"README.md": true,
-}
-
-// excludedDirs are the directories in an entries directory that are never entries even with a
-// README.md.
-var excludedDirs = map[string]bool{
-	"skill": true,
-	".kb":   true,
-	".git":  true,
-}
-
 // ValidationError marks front matter that parses structurally but fails a documented content
 // rule: no title, no summary, or a summary that spans more than one line. `kb add` refuses an
 // entry that fails this way before it is ever written; `kb reindex` logs a warning and skips it,
@@ -190,7 +172,13 @@ func Discover(root string, sources []config.Source) ([]Entry, []Skipped, error) 
 // discover is Discover; with lazy set it leaves every Entry's Meta and Err unread (no file is
 // opened), for Resolve, which reads only the entry it returns.
 func discover(root string, sources []config.Source, lazy bool) ([]Entry, []Skipped, error) {
-	d := discovery{root: root, lazy: lazy, owner: map[string]int{}, folded: map[string]string{}}
+	return discoverWalk(root, sources, lazy, nil)
+}
+
+// discoverWalk is discover with onDir, when set, called with the root-relative path of every
+// directory a files source descends into (a test counts them to prove an exclude prunes the walk).
+func discoverWalk(root string, sources []config.Source, lazy bool, onDir func(rel string)) ([]Entry, []Skipped, error) {
+	d := discovery{root: root, lazy: lazy, onDir: onDir, owner: map[string]int{}, folded: map[string]string{}}
 	if real, err := filepath.EvalSymlinks(root); err == nil {
 		d.realRoot = real
 	} else {
@@ -218,7 +206,8 @@ func discover(root string, sources []config.Source, lazy bool) ([]Entry, []Skipp
 // discovery is the state of one Discover run.
 type discovery struct {
 	root, realRoot string
-	lazy           bool // skip loadMeta (see discover)
+	lazy           bool             // skip loadMeta (see discover)
+	onDir          func(rel string) // see discoverWalk
 	entries        []Entry
 	skipped        []Skipped
 	owner          map[string]int    // root-relative file -> index of the source that claimed it
@@ -295,7 +284,7 @@ func (d *discovery) entriesSource(idx int, src config.Source) error {
 		rel := dir + "/" + name
 		switch {
 		case item.IsDir():
-			if excludedDirs[name] {
+			if config.ReservedEntryDir(name) {
 				continue
 			}
 			readme := filepath.Join(d.root, filepath.FromSlash(rel), "README.md")
@@ -318,7 +307,7 @@ func (d *discovery) entriesSource(idx int, src config.Source) error {
 			if err := d.add(e, src); err != nil {
 				return err
 			}
-		case strings.HasSuffix(name, ".md") && !excludedRootFiles[name]:
+		case strings.HasSuffix(name, ".md") && !config.ReservedEntryFile(name):
 			if item.Type()&fs.ModeSymlink != 0 {
 				if out, why := d.outside(rel); out {
 					d.skip(rel, why)

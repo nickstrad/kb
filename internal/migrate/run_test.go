@@ -608,3 +608,70 @@ func TestBackupIsAtomic(t *testing.T) {
 		}
 	})
 }
+
+// TestStalePartials is the table for the unfinished-backup leftovers a kill leaves (Q65): Partials
+// lists exactly "<file>.bak-v<N>-<ts>[-n].partial" regular files of this file; a migrating Run
+// deletes them with a warning each, including on a NoBackup run, and leaves lookalikes alone; a
+// Run with nothing pending and a dry run leave them for status to report.
+func TestStalePartials(t *testing.T) {
+	const ts = "20260101-120000"
+	for _, tc := range []struct {
+		name    string
+		file    string // created beside art.db
+		partial bool
+	}{
+		{"partial", "art.db.bak-v1-" + ts + ".partial", true},
+		{"partial with suffix", "art.db.bak-v2-" + ts + "-3.partial", true},
+		{"finished backup", "art.db.bak-v1-" + ts, false},
+		{"other artefact's partial", "other.db.bak-v1-" + ts + ".partial", false},
+		{"no version", "art.db.bak-" + ts + ".partial", false},
+		{"bare .partial", "art.db.partial", false},
+		{"extra tail", "art.db.bak-v1-" + ts + ".partial.x", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake(t, 1)
+			p := filepath.Join(filepath.Dir(f.path), tc.file)
+			if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := Partials(f.path); (len(got) == 1) != tc.partial {
+				t.Fatalf("Partials = %v, want listed = %v", got, tc.partial)
+			}
+			dry, err := Run(context.Background(), []Artefact{f}, Options{DryRun: true})
+			if err != nil || len(dry.Artefacts[0].Warnings) != 0 {
+				t.Fatalf("dry run = %+v, %v; want no change", dry, err)
+			}
+			rep, err := Run(context.Background(), []Artefact{f}, Options{NoBackup: tc.name == "partial"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, statErr := os.Lstat(p)
+			if gone := os.IsNotExist(statErr); gone != tc.partial {
+				t.Errorf("file removed = %v, want %v", gone, tc.partial)
+			}
+			warned := false
+			for _, w := range rep.Artefacts[0].Warnings {
+				warned = warned || strings.Contains(w, "unfinished backup "+tc.file)
+			}
+			if warned != tc.partial {
+				t.Errorf("warnings = %v, want a warning for %s = %v", rep.Artefacts[0].Warnings, tc.file, tc.partial)
+			}
+		})
+	}
+}
+
+// TestPartialsKeptWhenNothingToMigrate: a Run that has nothing pending takes no lock and leaves
+// the leftover for kb migrate status to report.
+func TestPartialsKeptWhenNothingToMigrate(t *testing.T) {
+	f := newFake(t, fakeTarget)
+	p := f.path + ".bak-v1-20260101-120000.partial"
+	if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), []Artefact{f}, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := Partials(f.path); len(got) != 1 {
+		t.Errorf("Partials after a no-op run = %v, want the leftover kept", got)
+	}
+}
