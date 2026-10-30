@@ -61,9 +61,9 @@ func newExplainCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().IntVarP(&k, "k", "k", search.DefaultK, "number of hits to return (1..20; default [search] k, 8)")
+	cmd.Flags().IntVarP(&k, "k", "k", search.DefaultK, "number of hits to return, 1..20 (config [search] k sets the default)")
 	cmd.Flags().StringVar(&mode, "mode", search.ModeHybrid, "hybrid, fts or vec")
-	cmd.Flags().StringVar(&tag, "tag", "", "only entries carrying this tag")
+	cmd.Flags().StringVar(&tag, "tag", "", "only entries carrying this tag, matched case-insensitively (an alias is searched like the title)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
 	cmd.Flags().StringArrayVar(&sets, "set", nil, "override a key for this run: section.key=value (repeatable)")
 	return cmd
@@ -109,17 +109,11 @@ func runExplain(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts expl
 	}
 	defer st.Close()
 
-	settings, err := search.NewSettings(cfg)
-	if err != nil {
-		return err
-	}
-	syn, err := d.loadSynonyms(cmd, ws, cfg)
-	if err != nil {
-		return err
-	}
-	settings = settings.WithSynonyms(syn.Hash())
 	// No Log: explain must not write the search log.
-	searcher := &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: settings, Synonyms: syn}
+	searcher, _, err := d.newSearcher(cmd, ws, cfg, st, embedder, nil, false)
+	if err != nil {
+		return err
+	}
 	ex, err := searcher.Explain(ctx, search.Request{
 		Query:  opts.query,
 		Mode:   mode,
@@ -159,9 +153,9 @@ func renderExplanation(ex *search.Explanation) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "explain %q · mode %s · k %d · settings %s\n", ex.Query, ex.Mode, ex.K, shortHash(ex.SettingsHash))
 	s := ex.Settings
-	fmt.Fprintf(&b, "settings: rrf_k=%d fts_weight=%s vec_weight=%s bm25 text=%s heading=%s title=%s list_limit=%d candidate_limit=%d per_entry_cap=%d\n",
+	fmt.Fprintf(&b, "settings: rrf_k=%d fts_weight=%s vec_weight=%s bm25 text=%s heading=%s title=%s list_limit=%d candidate_limit=%d per_entry_cap=%d exact=%s\n",
 		s.RRFK, num(s.FTSWeight), num(s.VecWeight), num(s.BM25Text), num(s.BM25Heading), num(s.BM25Title),
-		s.ListLimit, s.CandidateLimit, s.PerEntryCap)
+		s.ListLimit, s.CandidateLimit, s.PerEntryCap, exactSetting(s))
 	switch {
 	case ex.FTS == nil:
 		b.WriteString("fts: not run (no list)\n")
@@ -260,4 +254,12 @@ func shortHash(h string) string {
 		return h[:12]
 	}
 	return h
+}
+
+// exactSetting is the settings line's exact-list entry: its weight, or "off" (search.exact_list = false).
+func exactSetting(s search.ExplainParams) string {
+	if !s.ExactList {
+		return "off"
+	}
+	return num(s.ExactWeight)
 }

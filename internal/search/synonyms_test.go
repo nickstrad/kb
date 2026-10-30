@@ -16,6 +16,7 @@ import (
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 )
 
 // TestParseSynonyms is the file-format table: comments, blanks, duplicates, overlap, case,
@@ -83,6 +84,19 @@ func TestSynonymsHash(t *testing.T) {
 	if a, b := ParseSynonyms([]byte("a, b, c\nc, d")).Hash(), ParseSynonyms([]byte("c, d\nb, a, c")).Hash(); a != b {
 		t.Errorf("overlapping groups hash by line order: %s != %s", a, b)
 	}
+	// Encodings tell apart: where a separator falls, and that terms and alternatives are written.
+	for _, pair := range [][2]map[string][]string{
+		{{"ab": {"c"}}, {"a": {"bc"}}},                      // the \0 between a term and its alternative
+		{{"a": {"b"}, "c": {"d"}}, {"a": {"b", "c", "d"}}},  // the \n between terms
+		{{"a": {"b", "c"}}, {"a": {"bc"}}},                  // the \0 between alternatives
+		{{"a": {"b"}}, {"a": {"c"}}},                        // the alternative is written
+		{{"a": {"b"}}, {"c": {"b"}}},                        // the term is written
+		{{"a": {"b"}, "c": {"d"}}, {"a": {"b"}, "cd": nil}}, // a term with no alternatives
+	} {
+		if synonymsHash(pair[0]) == synonymsHash(pair[1]) {
+			t.Errorf("synonymsHash(%v) == synonymsHash(%v)", pair[0], pair[1])
+		}
+	}
 	var nilSyn *Synonyms
 	if nilSyn.Hash() != "" || nilSyn.Len() != 0 || nilSyn.Lookup("x") != nil || nilSyn.Expand([]string{"x"}) != nil {
 		t.Error("nil Synonyms is not empty")
@@ -110,6 +124,35 @@ func TestSynonymsLookup(t *testing.T) {
 	} {
 		if got := syn.Lookup(tc.field); !slices.Equal(got, tc.want) {
 			t.Errorf("Lookup(%q) = %v, want %v", tc.field, got, tc.want)
+		}
+	}
+}
+
+// TestSynonymsHas: has is an exact pair test over the kept alternatives (a pair past
+// MaxAlternatives is not in force), nil is empty and a punctuated field is not trimmed.
+func TestSynonymsHas(t *testing.T) {
+	members := make([]string, MaxAlternatives+4)
+	for i := range members {
+		members[i] = fmt.Sprintf("m%d", i)
+	}
+	syn := ParseSynonyms([]byte(strings.Join(members, ",") + "\nk8s, kubernetes"))
+	var nilSyn *Synonyms
+	for _, tc := range []struct {
+		name     string
+		syn      *Synonyms
+		from, to string
+		want     bool
+	}{
+		{"pair in a small group", syn, "k8s", "kubernetes", true},
+		{"reverse direction", syn, "kubernetes", "k8s", true},
+		{"last kept alternative", syn, "m0", fmt.Sprintf("m%d", MaxAlternatives), true},
+		{"first alternative past the cap", syn, "m0", fmt.Sprintf("m%d", MaxAlternatives+1), false},
+		{"unknown term", syn, "zzz", "k8s", false},
+		{"punctuated field is not trimmed", syn, "k8s,", "kubernetes", false},
+		{"nil Synonyms", nilSyn, "k8s", "kubernetes", false},
+	} {
+		if got := tc.syn.has(tc.from, tc.to); got != tc.want {
+			t.Errorf("%s: has(%q, %q) = %v, want %v", tc.name, tc.from, tc.to, got, tc.want)
 		}
 	}
 }
@@ -208,6 +251,8 @@ func TestSearchSynonymExpansion(t *testing.T) {
 		{"multi-word synonym is a phrase", "wombat, quokka widget", "wombat", `("wombat" OR "quokka widget")`, false, true, map[string][]string{"wombat": {"quokka widget"}}},
 		{"OR retry is expanded too", "wombat, quokka", "wombat fluffernutter", `("wombat" OR "quokka") OR "fluffernutter"`, true, true, map[string][]string{"wombat": {"quokka"}}},
 		{"unrelated group changes nothing", "alpha, beta", "quokka", `"quokka"`, false, true, nil},
+		{"operator-only query field lists no synonyms", "or, quokka", "or wombat", `"wombat"`, true, false, nil},
+		{"an operator field next to a real one lists only the real one", "or, quokka\nwombat, quokka", "or wombat", `("wombat" OR "quokka")`, false, true, map[string][]string{"wombat": {"quokka"}}},
 		{"operator-only alternative is dropped", "wombat, or", "wombat", `"wombat"`, false, false, map[string][]string{"wombat": {"or"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -311,12 +356,13 @@ func ftsChunkSet(t testing.TB, s *Searcher, terms []string, alts map[string][]st
 var synonymVocab = []string{"widget", "zebracorn", "quokka", "enclosure", "gate", "latch", "docker", "bridge", "networks", "dns", "alpha", "beta", "nothing", "k8s", "wombat"}
 
 // TestSynonymExpansionIsASuperset is the property: for random queries and random groups,
-// expanding never drops a chunk the unexpanded query found (AND and OR alike).
+// expanding never drops a chunk the unexpanded query found (AND and OR alike). A few generated
+// cases only: FuzzSynonyms owns the property over arbitrary bytes, and its seeds run in go test.
 func TestSynonymExpansionIsASuperset(t *testing.T) {
 	s, _ := testSearcher(t)
 	r := rand.New(rand.NewSource(55))
 	pick := func() string { return synonymVocab[r.Intn(len(synonymVocab))] }
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 20; i++ {
 		var terms []string
 		for n := 1 + r.Intn(3); n > 0; n-- {
 			terms = append(terms, pick())
@@ -346,6 +392,12 @@ func FuzzSynonyms(f *testing.F) {
 	f.Add([]byte("\"a\", NEAR, OR, *, ((\n"), `"a" OR (NEAR* ) `)
 	f.Add([]byte("\x00,\xff\xfe,é"), "é \x00")
 	f.Add([]byte(""), "")
+	// Seeds that were generated cases of the superset property: random groups over the fixture words.
+	f.Add([]byte("widget, zebracorn, quokka enclosure\ngate, latch"), "widget gate")
+	f.Add([]byte("docker, bridge, networks dns\nalpha, beta, nothing"), "docker alpha nothing")
+	f.Add([]byte("k8s, wombat, quokka\nlatch, gate, widget bridge"), "k8s latch")
+	f.Add([]byte("enclosure, widget, dns networks\nenclosure, gate"), "enclosure")
+	f.Add([]byte("beta, nothing, k8s wombat"), "beta quokka dns")
 	s, _ := testSearcher(f)
 	f.Fuzz(func(t *testing.T, file []byte, query string) {
 		syn := ParseSynonyms(file)
@@ -354,6 +406,14 @@ func FuzzSynonyms(f *testing.F) {
 			alts := syn.Lookup(fld)
 			if len(alts) > MaxAlternatives {
 				t.Fatalf("Lookup(%q) has %d alternatives", fld, len(alts))
+			}
+			low := strings.ToLower(fld)
+			for _, a := range alts {
+				// Only the field as typed: a quoted member (`"01`) may name its own trimmed form,
+				// which the MATCH expression dedupes.
+				if a == low {
+					t.Fatalf("Lookup(%q) names the term itself: %q", fld, a)
+				}
 			}
 		}
 		alts := syn.Expand(fields)
@@ -403,5 +463,17 @@ func TestParseSynonymsLargeGroup(t *testing.T) {
 	}
 	if got := ParseSynonyms([]byte(big.String())).Lookup("w0"); got[0] != "w1" || got[MaxAlternatives-1] != fmt.Sprint("w", MaxAlternatives) {
 		t.Errorf("Lookup(w0) = %q, want the first %d other members in file order", got, MaxAlternatives)
+	}
+}
+
+// TestFieldRendersMatchesStore: the Searcher's restated rule for a field that the MATCH expression
+// drops agrees with the store's own rendering, so FTSSynonyms never lists an expansion the
+// expression ignores.
+func TestFieldRendersMatchesStore(t *testing.T) {
+	for _, field := range []string{"or", "OR", "and", "Not", "near", "NEAR*", "wombat", "k8s", "c#", "\"or\"", "*", "\"\"", "--", "(or)", "or-not", "é", "日本", "\x00", "a*", "\U000f0000", "-", "#"} {
+		want := sqlite.MatchExprAlts([]string{field}, store.OpAnd, nil) != ""
+		if got := fieldRenders(field); got != want {
+			t.Errorf("fieldRenders(%q) = %v, store renders it = %v", field, got, want)
+		}
 	}
 }

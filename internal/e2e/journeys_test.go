@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"database/sql"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,12 @@ import (
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
+)
+
+// The journey flags exist only in e2e builds, the only builds that read them.
+var (
+	update = flag.Bool("update", false, "rewrite the expected output of the journeys in place")
+	kbFlag = flag.String("kb", "", "use this prebuilt kb binary (built with -tags fts5,harnessfake) instead of building one")
 )
 
 var (

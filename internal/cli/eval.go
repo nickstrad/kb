@@ -3,11 +3,8 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -95,7 +92,7 @@ func newEvalCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.mode, "mode", search.ModeHybrid, "hybrid, fts or vec")
-	cmd.Flags().IntVarP(&opts.k, "k", "k", search.DefaultK, "score the top k hits (1..20; default [search] k, 8)")
+	cmd.Flags().IntVarP(&opts.k, "k", "k", search.DefaultK, "score the top k hits (1..20)")
 	cmd.Flags().StringVar(&opts.since, "since", "", "only searches this recent: a duration (7d, 24h) or a date (YYYY-MM-DD)")
 	cmd.Flags().StringVar(&opts.caller, "caller", "", "only searches by this caller")
 	cmd.Flags().BoolVar(&opts.perQuery, "per-query", false, "print one line per query")
@@ -160,15 +157,7 @@ func evalSetup(cmd *cobra.Command, d *deps, opts evalOpts) (*workspace.Workspace
 func openJudged(cmd *cobra.Command, d *deps, ws *workspace.Workspace, since time.Time, caller string) (store.Store, []store.JudgedSearch, error) {
 	const op = "cli.eval"
 	ctx := cmd.Context()
-	if _, err := os.Stat(ws.DBPath); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil, errs.Wrap(err, errs.NotFound, op, "no index at %s; run kb reindex --all", ws.DBPath)
-		}
-		// Driver-only: an unreadable database file whose directory (and config.toml) is still
-		// readable; a test cannot take one without the other (Q86).
-		return nil, nil, errs.Wrap(err, errs.Usage, op, "cannot read the index %s: check the file and its permissions", ws.DBPath).With("path", ws.DBPath)
-	}
-	st, err := d.openStore(ctx, ws.DBPath, true)
+	st, err := d.openIndexReadOnly(ctx, ws.DBPath, op)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -215,6 +204,10 @@ func runEval(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOpt
 	}
 	defer st.Close()
 
+	syn, err := d.loadSynonyms(cmd, ws, cfg)
+	if err != nil {
+		return err
+	}
 	mode := opts.mode
 	var embedder embed.Embedder
 	if queries, _ := eval.Extract(searches); eval.Replayable(queries) {
@@ -227,8 +220,9 @@ func runEval(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOpt
 	if err != nil { // unreachable: Internal from encoding a config that validation already accepted (Q86)
 		return err
 	}
+	settings = settings.WithSynonyms(syn.Hash()) // as search does: the hash and the baseline carry the synonyms
 	// No Log: replays must not write the log they are scored against.
-	searcher := &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: settings}
+	searcher := &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: settings, Synonyms: syn}
 	rep, err := eval.Evaluate(ctx, searches, st, searcher, eval.Options{
 		Mode:         mode,
 		K:            search.ClampK(searchK(opts.kChanged, opts.k, cfg.Search.K)),
@@ -463,10 +457,14 @@ func runSweep(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOp
 	if err != nil {
 		return err
 	}
+	syn, err := d.loadSynonyms(cmd, ws, cfg)
+	if err != nil {
+		return err
+	}
 	memo := &search.QueryMemo{} // one per sweep: the vector of a query does not depend on [search]
 	newSearcher := func(s search.Settings) eval.Searcher {
 		// No Log: replays must not write the log they are scored against.
-		return &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: s, Queries: memo}
+		return &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: s, Queries: memo, Synonyms: syn}
 	}
 	rep, err := eval.Sweep(ctx, p, cfg, axes, grid, newSearcher, eval.SweepOptions{
 		Mode: mode, K: search.ClampK(searchK(opts.kChanged, opts.k, cfg.Search.K)),

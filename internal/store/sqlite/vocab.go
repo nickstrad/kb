@@ -50,8 +50,17 @@ func (s *Store) VocabTerms(ctx context.Context, q store.VocabQuery) ([]store.Voc
 // `:`), as search's words are; deeper variants (`foo.:`) are not looked up.
 func (s *Store) DocFreq(ctx context.Context, terms []string) (map[string]int, error) {
 	out := map[string]int{}
-	for start := 0; start < len(terms); start += docFreqBatch {
-		if err := s.docFreq(ctx, terms[start:min(start+docFreqBatch, len(terms))], out); err != nil {
+	// Dedupe once, so a term repeated across two batches is not counted twice.
+	seen := make(map[string]bool, len(terms))
+	distinct := make([]string, 0, len(terms))
+	for _, t := range terms {
+		if !seen[t] {
+			seen[t] = true
+			distinct = append(distinct, t)
+		}
+	}
+	for start := 0; start < len(distinct); start += docFreqBatch {
+		if err := s.docFreq(ctx, distinct[start:min(start+docFreqBatch, len(distinct))], out); err != nil {
 			return nil, wrap(ctx, err, s.path, "sqlite.DocFreq", "could not read the index vocabulary")
 		}
 	}
@@ -63,14 +72,10 @@ const docFreqBatch = 256
 
 // docFreq adds the counts of one batch of distinct terms to out.
 func (s *Store) docFreq(ctx context.Context, terms []string, out map[string]int) error {
-	seen := make(map[string]bool, len(terms))
 	args := make([]any, 0, 3*len(terms)+1)
 	args = append(args, vocabTrim)
 	for _, t := range terms {
-		if !seen[t] {
-			seen[t] = true
-			args = append(args, t, t+".", t+":")
-		}
+		args = append(args, t, t+".", t+":")
 	}
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
 		`SELECT rtrim(term, ?1), doc FROM chunks_exact_vocab WHERE term IN (%s)`, placeholdersFrom(2, len(args)-1)), args...)

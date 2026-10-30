@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/errs"
@@ -481,8 +480,8 @@ func FuzzSpell(f *testing.F) {
 		word := strings.ToLower(a)
 		fix, ok := Correct(word, []store.VocabTerm{{Term: b, Doc: 2}, {Term: strings.ToLower(b), Doc: 3}})
 		if ok {
-			n := utf8.RuneCountInString(word)
-			if fix.Distance < 1 || fix.Distance > MaxEdits(n) || fix.Distance != EditDistance(word, fix.Correction) || !onlyLetters(fix.Correction) {
+			// The range [1, MaxEdits] is Correct's own assert.Post; these are what it does not check.
+			if fix.Distance != EditDistance(word, fix.Correction) || !onlyLetters(fix.Correction) {
 				t.Fatalf("Correct(%q) = %+v breaks the rules", word, fix)
 			}
 		}
@@ -495,11 +494,12 @@ type recordingVocab struct {
 	df    map[string]int
 	terms []store.VocabTerm
 	got   []store.VocabQuery
+	err   error // returned by VocabTerms only (DocFreq keeps working)
 }
 
 func (r *recordingVocab) VocabTerms(_ context.Context, q store.VocabQuery) ([]store.VocabTerm, error) {
 	r.got = append(r.got, q)
-	return r.terms, nil
+	return r.terms, r.err
 }
 func (r *recordingVocab) DocFreq(_ context.Context, terms []string) (map[string]int, error) {
 	out := map[string]int{}
@@ -567,5 +567,51 @@ func TestWithAlternatives(t *testing.T) {
 	got := withAlternatives(many[:MaxAlternatives-1], "w", many[MaxAlternatives-1:])
 	if len(got) != MaxAlternatives || got[MaxAlternatives-1] != many[MaxAlternatives-1] {
 		t.Errorf("cap: %d alternatives (last %q), want %d", len(got), got[len(got)-1], MaxAlternatives)
+	}
+}
+
+// TestPlanSpellVocabTermsError: DocFreq answers but the vocabulary read fails; planSpell returns
+// that error with its kind and no plan.
+func TestPlanSpellVocabTermsError(t *testing.T) {
+	boom := errs.New(errs.Internal, "test", "vocab terms broke")
+	v := &recordingVocab{err: boom}
+	plan, err := (&Searcher{}).planSpell(context.Background(), v, []string{"widgte"}, nil)
+	if !errors.Is(err, boom) || errs.KindOf(err) != errs.Internal || len(plan.fixes) != 0 {
+		t.Errorf("plan %+v, err %v; want the VocabTerms error and no fixes", plan, err)
+	}
+	if len(v.got) != 1 {
+		t.Errorf("vocabulary reads = %d, want 1 (the failing one)", len(v.got))
+	}
+}
+
+// vocabFaulty is a faultyRetriever that also serves the vocabulary of the real store, so spell
+// correction is reachable while an FTS call is made to fail.
+type vocabFaulty struct {
+	*faultyRetriever
+	v store.Vocab
+}
+
+func (f vocabFaulty) VocabTerms(ctx context.Context, q store.VocabQuery) ([]store.VocabTerm, error) {
+	return f.v.VocabTerms(ctx, q)
+}
+func (f vocabFaulty) DocFreq(ctx context.Context, terms []string) (map[string]int, error) {
+	return f.v.DocFreq(ctx, terms)
+}
+
+// TestSpellRerunError: the spelled list's second FTS call fails; the search fails with that error
+// (and without it the same query corrects, so the failing call is the rerun).
+func TestSpellRerunError(t *testing.T) {
+	s := spellSearcher(t, func(*config.Search) {})
+	real := s.Store
+	req := Request{Query: "zebracron", Mode: ModeFTS, K: 8}
+	ok := &faultyRetriever{Retriever: real}
+	s.Store = vocabFaulty{ok, real.(store.Vocab)}
+	out, err := s.Search(context.Background(), req)
+	if err != nil || len(out.Spell) != 1 || len(ok.ftsOps) != 2 {
+		t.Fatalf("control: err %v spell %v FTS calls %d; want a correction after 2 FTS calls", err, out.Spell, len(ok.ftsOps))
+	}
+	s.Store = vocabFaulty{&faultyRetriever{Retriever: real, failOn: "FTS#2"}, real.(store.Vocab)}
+	if _, err := s.Search(context.Background(), req); !errors.Is(err, errDriver) {
+		t.Errorf("err = %v, want the driver error from the rerun", err)
 	}
 }

@@ -21,7 +21,7 @@ func (d *deps) loadSynonyms(cmd *cobra.Command, ws *workspace.Workspace, cfg con
 	if p := cfg.Search.Synonyms; p != "" {
 		path, err := workspace.ExpandPath(p, ws.Root, d.workspaceEnv().Home)
 		if err != nil {
-			return nil, err
+			return nil, errs.Wrap(err, errs.KindOf(err), "cli.loadSynonyms", "search.synonyms: %v", err)
 		}
 		syn, err := search.LoadSynonyms(path)
 		if err != nil {
@@ -46,19 +46,35 @@ func (d *deps) loadSynonyms(cmd *cobra.Command, ws *workspace.Workspace, cfg con
 }
 
 // globalSynonymsPath is where the global location's default store keeps its synonyms. ok is false
-// when there is no global location (or its kb.toml is unusable, which only earns a warning here:
-// the search itself does not need it).
+// when there is no global location (or its kb.toml or default store is unusable, which only earns
+// a warning here: the search itself does not need it). The answer, and so the warning, is resolved
+// once per command: a --stores fan-out loads synonyms for every store.
 func (d *deps) globalSynonymsPath(cmd *cobra.Command) (path string, ok bool) {
+	const key = "kb.global-synonyms"
+	if v, done := cmd.Annotations[key]; done {
+		return v, v != ""
+	}
+	path = d.resolveGlobalSynonyms(cmd)
+	if cmd.Annotations == nil {
+		cmd.Annotations = map[string]string{}
+	}
+	cmd.Annotations[key] = path
+	return path, path != ""
+}
+
+// resolveGlobalSynonyms is globalSynonymsPath without the memo: "" when there is none.
+func (d *deps) resolveGlobalSynonyms(cmd *cobra.Command) string {
 	loc, info, err := d.resolver(cmd, config.ReadLocation).Location(workspace.Ref{Global: true})
 	if err != nil {
 		if errs.KindOf(err) != errs.NotFound {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: global synonyms skipped: %v\n", err)
 		}
-		return "", false
+		return ""
 	}
 	gws, err := loc.StoreAt(info.DefaultStore)
 	if err != nil {
-		return "", false
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: global synonyms skipped: %v\n", err)
+		return ""
 	}
-	return filepath.Join(gws.StoreDir, search.SynonymsFile), true
+	return filepath.Join(gws.StoreDir, search.SynonymsFile)
 }

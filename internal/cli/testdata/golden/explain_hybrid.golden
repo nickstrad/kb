@@ -1,5 +1,5 @@
 explain "tmux logout" · mode hybrid · k 8 · settings 2349c3420c7d
-settings: rrf_k=60 fts_weight=1 vec_weight=1 bm25 text=1 heading=2 title=3 list_limit=20 candidate_limit=40 per_entry_cap=3
+settings: rrf_k=60 fts_weight=1 vec_weight=1 bm25 text=1 heading=2 title=3 list_limit=20 candidate_limit=40 per_entry_cap=3 exact=1
 fts: match "tmux" AND "logout" · AND
 lists: fts 2 rows · vec 8 rows · 8 candidates
 

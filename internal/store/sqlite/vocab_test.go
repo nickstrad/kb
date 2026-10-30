@@ -83,6 +83,8 @@ func TestDocFreq(t *testing.T) {
 	// Last, so its last variant is the statement's last placeholder: zebracorn's second chunk
 	// holds only `zebracorn:`.
 	terms = append(terms, "café", "zebracorn")
+	// A duplicate far past the first batch's end: with per-batch dedupe it was counted twice.
+	terms = append(terms, "kubernetes")
 	got, err := s.DocFreq(context.Background(), terms)
 	if err != nil {
 		t.Fatal(err)

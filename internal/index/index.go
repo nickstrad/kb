@@ -55,7 +55,13 @@ const repositoryFiles = "\n" +
 
 // Today is the date Write and Diff callers normally pass as today: UTC, YYYY-MM-DD.
 func Today() string {
-	return time.Now().UTC().Format("2006-01-02")
+	return Date(time.Now())
+}
+
+// Date formats t as the "Last reviewed:" date: UTC, YYYY-MM-DD. Callers with an injected clock
+// pass its reading here.
+func Date(t time.Time) string {
+	return t.UTC().Format("2006-01-02")
 }
 
 // Generate renders the whole index.md for the given entries. today is written into the

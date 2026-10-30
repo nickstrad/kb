@@ -35,7 +35,7 @@ func TestEvalSweepWiring(t *testing.T) {
 	for _, q := range queries {
 		mustKB(t, "feedback", searchID(t, q), "1", "--useful")
 	}
-	before := feedbackRows(t, root, "")
+	before := feedbackRows(t, root)
 	builds, calls := withCountingEmbedder(t)
 
 	stdout, stderr, exit := runKB(t, []string{"eval", "--sweep", "search.rrf_k=10,60", "--sweep", "search.bm25.title=1,5", "--force", "-k", "5", "--json"})
@@ -64,7 +64,7 @@ func TestEvalSweepWiring(t *testing.T) {
 		!strings.Contains(stdout, "held-out Δ vs current") {
 		t.Errorf("human sweep: exit %d\n%s", exit, stdout)
 	}
-	if after := feedbackRows(t, root, ""); after != before {
+	if after := feedbackRows(t, root); after != before {
 		t.Errorf("sweep changed the feedback rows: %d -> %d", before, after)
 	}
 	if next := searchID(t, "tmux logout"); next != "5" {

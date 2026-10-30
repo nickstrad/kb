@@ -4,6 +4,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -34,7 +35,7 @@ func newIndexCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 				// replace the default store's snapshot (W7 pass).
 				return usageErr("index.md at %s describes the default store (%q); kb index does not run for store %q", ws.Root, def, ws.Store)
 			}
-			return runIndex(stdout, stderr, ws.Root, cfg.Sources)
+			return runIndex(stdout, stderr, ws.Root, cfg.Sources, d.clock())
 		},
 	}
 }
@@ -43,12 +44,12 @@ func newIndexCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 // are left out of the table, per discoverGoodEntries), writes index.md from the rest, and reports
 // how many entries it wrote. A broken entry does not stop index.md from being written from the
 // good ones, but it does make the command exit non-zero so scripts can detect the problem.
-func runIndex(stdout, stderr io.Writer, root string, sources []config.Source) error {
+func runIndex(stdout, stderr io.Writer, root string, sources []config.Source, now time.Time) error {
 	good, broken, err := discoverGoodEntries(root, sources, stderr)
 	if err != nil {
 		return err
 	}
-	if err := index.Write(root, good, index.Today()); err != nil {
+	if err := index.Write(root, good, index.Date(now)); err != nil {
 		return usageErr("%s", err)
 	}
 	owned := 0 // in-place entries are not listed in index.md (index.Generate)

@@ -108,6 +108,8 @@ and `kb eval` take the same `--set` to try a setting for one run. Commonly chang
 | `search.k` | 8 | hits returned (1–20) |
 | `search.rrf_k`, `search.list_weights.*`, `search.bm25.*` | 60, 1, 1/2/3 | ranking (see `kb explain`) |
 | `search.exact_list` | true | the exact-identifier list (below) |
+| `search.synonyms` | `""` | the synonyms file (default: the store's `synonyms.txt`, below) |
+| `search.spell` | true | correct a query word when the full-text list is short (below) |
 | `search.stores` | `[]` | stores every search also reaches |
 | `output.budget`, `output.expand` | 0, `none` | defaults for `--budget` and `--expand` |
 | `agent.caller` | `""` | default `--caller` |
@@ -134,7 +136,8 @@ read is recorded as an "open" of the search. Agents and scripts should use `--js
 with `rank`, `rrf_score`, `fts_rank`, `vec_rank`, `exact_rank` (omitted when the chunk was not in
 the exact list), `path`, `heading` and `text`, plus the exact `kb feedback` commands for that search.
 
-- `--mode hybrid|fts|vec` (default hybrid). `-k N`, `--tag T`.
+- `--mode hybrid|fts|vec` (default hybrid). `-k N`, `--tag T`. Tags match without regard to case:
+  `--tag Docker` finds an entry tagged `docker`. An entry's `aliases` are searched like its title.
 - `--budget N` caps the human output at about N tokens (`ceil(chars/4)`): lower-ranked hits are
   condensed first, and the output says how many were.
 - `--expand section|entry` shows each hit's whole section or whole entry instead of the chunk.
@@ -152,6 +155,33 @@ the exact list), `path`, `heading` and `text`, plus the exact `kb feedback` comm
   `reindex_test` above one that says "reindex test". `exact_list = false` in `[search]` turns it
   off (`kb eval --set search.exact_list=false --compare` shows what that costs). A query that
   starts with `-` goes after the flags and `--`: `kb search --json -- --embed-model`.
+
+**Synonyms.** The file `synonyms.txt` in the store's directory (`.kb/stores/<name>/`) lists words
+that mean the same thing. Each line is one comma-separated group; a line that starts with `#` is a
+comment:
+
+```
+# product names
+gadget, gizmo
+```
+
+A query word that is in a group also matches the other words of that group in the full-text list.
+Synonyms do not reach the exact-identifier list or vector search. `search.synonyms` names another
+file (kb stops with an error if it is missing). Without a store file, kb uses the machine-wide
+store's `synonyms.txt`.
+
+`kb synonyms suggest` proposes groups from the search log. It finds reworded searches: one caller
+searches, gets no useful hit, and searches again within five minutes with one word changed, and
+the second search works. Each candidate prints as a `synonyms.txt` line under a comment with its
+evidence. The output also lists gap words (words of unsuccessful searches that no chunk holds).
+Flags: `--since`, `--window`, `--min`, `--gaps` and `--json`. kb never writes `synonyms.txt`; copy in
+the groups you want.
+
+**Spelling.** When the full-text list finds fewer than 3 rows, a query word that no chunk holds is
+also searched as the closest common word in the store: one edit away, or two for a word of 8
+letters or more. A note on stderr names the word used (`note: also searched "gadget" for
+"gadgte"`). Identifiers, numbers and words under 4 letters are not corrected. `search.spell = false`
+turns this off.
 
 Feedback is optional: `kb feedback N <rank> --useful` (or `--not-useful`, or `kb feedback N --none`
 when nothing helped; `--last` targets your newest search, `--note` adds a reason).

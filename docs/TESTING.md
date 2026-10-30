@@ -306,6 +306,8 @@ func FuzzFuse(f *testing.F) {
 
 `ClampK` is a three-row unit table, not a property.
 
+The table lists the properties, not every fuzz target. The `make fuzz` block in §9 names all 29 targets, including the ones this table does not describe (`FuzzExactTerms`, `FuzzExactMatch`, `FuzzMerge`, `FuzzSpell`, `FuzzSynonyms`, `FuzzPrior`, `FuzzSteps`, `FuzzExtract`, `FuzzTranscript` and others).
+
 ### 5.3 Practicalities
 
 - **Expensive fixtures go outside `f.Fuzz`.** `FuzzSanitizeFTS` opens SQLite once, pins one `*sql.Conn` (temp tables are per connection) and resets its temp table on each iteration. The store model test does the same: one store per fuzz worker, cleared with `ResetForReindex` at the start of each iteration. Never open a new database per input.
@@ -407,7 +409,7 @@ Combine tags with commas: `-tags fts5,noassert`. There is no `integration` tag. 
 
 ## 9. Commands, Makefile, CI
 
-The repo `Makefile` has `test`, `e2e` and `e2e-update` today (PLAN E1). The block below is the target set; until a target exists, run its command by hand. CI (`.github/workflows/ci.yml`) runs vet, `go test -tags fts5 ./...`, the E2E step and `index-check` on every PR, and the model tests plus the repeated, shuffled E2E nightly; `make check` and `make fuzz` are not wired yet.
+The repo `Makefile` has `test`, `e2e` and `e2e-update` today (PLAN E1). The block below is the target set; until a target exists, run its command by hand. CI (`.github/workflows/ci.yml`) runs vet, `go test -tags fts5 ./...`, the E2E step and `index-check` on every PR, and the model tests plus the repeated, shuffled E2E nightly; `make check` and `make fuzz` are not wired yet. `make fuzz` below runs all 29 fuzz targets (the list matches `grep -rn '^func Fuzz' internal`).
 
 ```make
 TAGS    := fts5
@@ -422,15 +424,36 @@ cover:
 	go test -tags $(TAGS) -covermode=atomic -coverprofile=cover.out $(PKGS)
 	go tool github.com/vladopajic/go-test-coverage/v2 --config=.testcoverage.yml
 
-fuzz:   # time-boxed; FUZZTIME=2m in CI
-	go test -tags $(TAGS) ./internal/store/sqlite -run '^$$' -fuzz '^FuzzSanitizeFTS$$'     -fuzztime $(FUZZTIME)
-	go test -tags $(TAGS) ./internal/entry  -run '^$$' -fuzz '^FuzzParseFrontMatter$$' -fuzztime $(FUZZTIME)
-	go test -tags $(TAGS) ./internal/entry  -run '^$$' -fuzz '^FuzzFallbackMeta$$'     -fuzztime $(FUZZTIME)
-	go test -tags $(TAGS) ./internal/chunk  -run '^$$' -fuzz '^FuzzSplit$$'            -fuzztime $(FUZZTIME) -fuzzminimizetime 2s
-	go test -tags $(TAGS) ./internal/chunk  -run '^$$' -fuzz '^FuzzSplitInPlace$$'     -fuzztime $(FUZZTIME) -fuzzminimizetime 2s
-	go test -tags $(TAGS) ./internal/glob   -run '^$$' -fuzz '^FuzzMatch$$'            -fuzztime $(FUZZTIME)
-	go test -tags $(TAGS) ./internal/render -run '^$$' -fuzz '^FuzzRender$$'           -fuzztime $(FUZZTIME)
-	go test -tags $(TAGS) ./internal/workspace -run '^$$' -fuzz '^FuzzParseRef$$'      -fuzztime $(FUZZTIME)
+fuzz:   # time-boxed; FUZZTIME=2m in CI. One -fuzz per run: the regex must match one target.
+	go test -tags $(TAGS) ./internal/chunk     -run '^$$' -fuzz '^FuzzSplit$$'               -fuzztime $(FUZZTIME) -fuzzminimizetime 2s
+	go test -tags $(TAGS) ./internal/chunk     -run '^$$' -fuzz '^FuzzSplitInPlace$$'        -fuzztime $(FUZZTIME) -fuzzminimizetime 2s
+	go test -tags $(TAGS) ./internal/chunk     -run '^$$' -fuzz '^FuzzSplitDocs$$'           -fuzztime $(FUZZTIME) -fuzzminimizetime 2s
+	go test -tags $(TAGS) ./internal/config    -run '^$$' -fuzz '^FuzzParseSave$$'           -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/config    -run '^$$' -fuzz '^FuzzParseLocation$$'       -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/e2e       -run '^$$' -fuzz '^FuzzTranscript$$'          -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/embed     -run '^$$' -fuzz '^FuzzCachedMatchesInner$$'  -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/embed/cache -run '^$$' -fuzz '^FuzzPutGetRoundTrip$$'   -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/entry     -run '^$$' -fuzz '^FuzzParseFrontMatter$$'    -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/entry     -run '^$$' -fuzz '^FuzzFallbackMeta$$'        -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/eval      -run '^$$' -fuzz '^FuzzScoreRanking$$'        -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/eval      -run '^$$' -fuzz '^FuzzParseAxis$$'           -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/glob      -run '^$$' -fuzz '^FuzzMatch$$'               -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/links     -run '^$$' -fuzz '^FuzzExtract$$'             -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/migrate   -run '^$$' -fuzz '^FuzzSteps$$'               -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/prior     -run '^$$' -fuzz '^FuzzPrior$$'               -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/render    -run '^$$' -fuzz '^FuzzRender$$'              -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/search    -run '^$$' -fuzz '^FuzzExactTerms$$'          -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/search    -run '^$$' -fuzz '^FuzzExactMatch$$'          -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/search    -run '^$$' -fuzz '^FuzzFuse$$'                -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/search    -run '^$$' -fuzz '^FuzzApplyCap$$'            -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/search    -run '^$$' -fuzz '^FuzzMerge$$'               -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/search    -run '^$$' -fuzz '^FuzzSpell$$'               -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/search    -run '^$$' -fuzz '^FuzzSynonyms$$'            -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/store/sqlite -run '^$$' -fuzz '^FuzzSanitizeFTS$$'      -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/store/sqlite -run '^$$' -fuzz '^FuzzStoreModel$$'       -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/workspace -run '^$$' -fuzz '^FuzzParseRef$$'            -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/workspace -run '^$$' -fuzz '^FuzzValidName$$'           -fuzztime $(FUZZTIME)
+	go test -tags $(TAGS) ./internal/workspace -run '^$$' -fuzz '^FuzzDiscoveryUnderLocation$$' -fuzztime $(FUZZTIME)
 
 golden-update: ; go test -tags $(TAGS) ./internal/chunk -run '^TestSplitGolden$$' -update
 test-model:    ; go test -tags $(TAGS),model ./internal/embed/local/...

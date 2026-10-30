@@ -14,7 +14,8 @@
   mode, and reuses `lexicalList` (AND, then OR retry). `Fuse(fts, vec, exact, p)`; tie-break
   appends exact rank before chunk id, so with no exact rows the order is the two-list order.
 - Every write path fills it: ReplaceEntry insert + clearChunks delete + ResetIndex 'delete-all';
-  `assertRowSets` checks chunks = chunks_fts = chunks_exact (= chunks_vec). So ReplaceEntry needs
+  `assertRowSets` checks chunks = chunks_fts = chunks_exact (= chunks_vec). Seven tables move together
+  with a chunk write: those four plus `entry_tags` and `edges` (v7, `assertLinkSets`); see edges-tags-aliases.md. So ReplaceEntry needs
   today's schema: tests that open at an old version must upgrade before writing.
 - Common terms are never dropped: FTS5 clamps idf to ~1e-6, so a term in N-1 of N chunks scores
   about -1e-6 but every match is a row (`commonTerm` storetest row, `TestCommonTermIsNeverDropped`).

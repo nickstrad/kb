@@ -33,7 +33,7 @@ func baselineFile(root, name string) string {
 // the log is untouched.
 func TestEvalBaselineFlow(t *testing.T) {
 	root := judgedRepo(t)
-	before := feedbackRows(t, root, "")
+	before := feedbackRows(t, root)
 
 	stdout, stderr, exit := runKB(t, []string{"eval", "--mode", "fts", "--save-baseline"})
 	if exit != 0 || stderr != "" || !strings.Contains(stdout, `saved baseline "default" (1 queries, settings `) {
@@ -95,7 +95,7 @@ func TestEvalBaselineFlow(t *testing.T) {
 		t.Errorf("comparison %+v", doc.Comparison)
 	}
 
-	if after := feedbackRows(t, root, ""); after != before {
+	if after := feedbackRows(t, root); after != before {
 		t.Errorf("eval changed the feedback rows: %d -> %d", before, after)
 	}
 	if ents, _ := os.ReadDir(filepath.Dir(baselineFile(root, "x"))); len(ents) != 2 {

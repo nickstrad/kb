@@ -118,7 +118,7 @@ func TestSearchSynonymsFailures(t *testing.T) {
 
 	writeConfig(t, root, "[embed]\nmodel = \""+testModel768+"\"\n[search]\nsynonyms = \"nope.txt\"\n")
 	_, stderr, exit = synHits(t, "logout")
-	if exit == 0 || !strings.Contains(stderr, "nope.txt") || !strings.Contains(stderr, "search.synonyms") {
+	if exit != ExitUsage || !strings.Contains(stderr, "nope.txt") || !strings.Contains(stderr, "search.synonyms") {
 		t.Errorf("missing named file: exit %d stderr %q, want failure naming search.synonyms and the file", exit, stderr)
 	}
 }
@@ -199,6 +199,40 @@ func TestLoadSynonymsLookup(t *testing.T) {
 			}
 			if got := stderr.String() != ""; got != tc.wantWarn {
 				t.Errorf("stderr %q, want a warning: %v", stderr.String(), tc.wantWarn)
+			}
+		})
+	}
+}
+
+// TestGlobalSynonymsWarnsOnce: a broken global kb.toml, and a global default store that cannot be
+// opened, each earn one warning per command however many stores load synonyms (a --stores
+// fan-out), and the failed lookup is no synonyms.
+func TestGlobalSynonymsWarnsOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, groot string)
+	}{
+		{"broken kb.toml", func(t *testing.T, groot string) {
+			writeFile(t, filepath.Join(groot, ".kb", "kb.toml"), "colour = 1\n")
+		}},
+		{"default store is not a name", func(t *testing.T, groot string) {
+			writeFile(t, filepath.Join(groot, ".kb", "kb.toml"), "default_store = \"Bad Name\"\n")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := newTempRoot(t)
+			tc.setup(t, useGlobalLocation(t, "default"))
+			var stderr strings.Builder
+			cmd := &cobra.Command{}
+			cmd.SetErr(&stderr)
+			for range 3 {
+				syn, err := testDeps.loadSynonyms(cmd, testWS(root), config.Config{})
+				if err != nil || syn.Len() != 0 {
+					t.Fatalf("Len = %d, err %v; want no synonyms", syn.Len(), err)
+				}
+			}
+			if n := strings.Count(stderr.String(), "warning: global synonyms skipped"); n != 1 {
+				t.Errorf("%d warnings, want 1: %q", n, stderr.String())
 			}
 		})
 	}

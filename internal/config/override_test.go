@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -161,6 +162,11 @@ func TestApplyAs(t *testing.T) {
 		if errs.KindOf(err) != errs.Usage || !strings.Contains(err.Error(), "--sweep "+assign) || strings.Contains(err.Error(), "--set") {
 			t.Errorf("%s: %v, want a Usage error naming --sweep only", assign, err)
 		}
+	}
+	// A parse failure reports the ApplyAs op, not Apply's.
+	var e *errs.Error
+	if _, err := ApplyAs(Default(), "--sweep", "search.nope=1"); !errors.As(err, &e) || e.Op != "config.ApplyAs" {
+		t.Errorf("op of %v, want config.ApplyAs", err)
 	}
 	if c, err := ApplyAs(Default(), "--sweep", "search.rrf_k=7"); err != nil || c.Search.RRFK != 7 {
 		t.Errorf("ApplyAs: %v %d", err, c.Search.RRFK)

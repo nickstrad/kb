@@ -437,7 +437,8 @@ func TestSweepPicksBestAndReportsHeldOut(t *testing.T) {
 func TestSweepTopIsCapped(t *testing.T) {
 	w := &sweepWorld{n: 30, rank: func(p search.Params, _ string) int { return p.RRFK }}
 	rep := mustSweep(t, w, SweepOptions{}, "search.rrf_k="+values(8))
-	if got := sets(rep.Top); len(got) != DefaultTop || got[0] != "search.rrf_k=1" || got[4] != "search.rrf_k=5" || len(rep.Warnings) != 0 {
+	// Literal 5: the default is pinned here, so changing DefaultTop fails this row.
+	if got := sets(rep.Top); len(got) != 5 || got[0] != "search.rrf_k=1" || got[4] != "search.rrf_k=5" || len(rep.Warnings) != 0 {
 		t.Errorf("top %q", got)
 	}
 	opt := SweepOptions{Mode: "fts", K: 8, MinJudged: 30, Holdout: 0.3, Top: 2}
@@ -520,6 +521,29 @@ func TestSweepOverfit(t *testing.T) {
 	}
 }
 
+// TestOverfit: the decision is a win on train (MRR delta above tieEps) and no win held out (delta
+// at most tieEps). Both boundaries are exact: a delta of exactly tieEps is a tie on either side.
+func TestOverfit(t *testing.T) {
+	above := math.Nextafter(tieEps, 1)
+	for _, tc := range []struct {
+		name          string
+		trainD, testD float64
+		want          bool
+	}{
+		{"train exactly tieEps: a tie, not a win", tieEps, -0.2, false},
+		{"train just above tieEps, held out loses", above, -0.2, true},
+		{"train wins, held-out delta exactly tieEps: a tie", 0.1, tieEps, true},
+		{"train wins, held-out delta just above tieEps: a win", 0.1, above, false},
+		{"train wins, held out wins", 0.1, 0.2, false},
+		{"train loses, held out loses", -0.1, -0.2, false},
+		{"train tie, held out tie", 0, 0, false},
+	} {
+		if got := overfit(tc.trainD, tc.testD); got != tc.want {
+			t.Errorf("%s: overfit(%g, %g) = %v, want %v", tc.name, tc.trainD, tc.testD, got, tc.want)
+		}
+	}
+}
+
 // TestSweepNothingHeldOut: holdout 0 chooses and reports on every query, with a warning; a forced
 // sweep below min_judged says so.
 func TestSweepNothingHeldOut(t *testing.T) {
@@ -555,6 +579,10 @@ func TestSweepFailures(t *testing.T) {
 		_, err := w.sweep(t, SweepOptions{}, "search.rrf_k=10")
 		if errs.KindOf(err) != errs.Conflict || !strings.Contains(err.Error(), "locked") {
 			t.Errorf("failing rrf_k=%d: %v, want the Conflict", failOn, err)
+		}
+		// A failed grid setting is named; the current config's replay has no setting to name.
+		if named := strings.Contains(err.Error(), "--sweep setting search.rrf_k=10"); named != (failOn == 10) {
+			t.Errorf("failing rrf_k=%d: %v, setting named %v", failOn, err, named)
 		}
 	}
 	w := &sweepWorld{n: 3, rank: byRRFK(nil), fallback: true}

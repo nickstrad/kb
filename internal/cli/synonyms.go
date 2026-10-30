@@ -3,11 +3,8 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -129,13 +126,7 @@ func runSynonymsSuggest(cmd *cobra.Command, d *deps, stdout io.Writer, o synonym
 // document count of their words.
 func readSuggestInputs(cmd *cobra.Command, d *deps, ws *workspace.Workspace, since time.Time, op string) ([]store.JudgedSearch, map[string]int, error) {
 	ctx := cmd.Context()
-	if _, err := os.Stat(ws.DBPath); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil, errs.Wrap(err, errs.NotFound, op, "no index at %s; run kb reindex --all", ws.DBPath)
-		}
-		return nil, nil, errs.Wrap(err, errs.Usage, op, "cannot read the index %s: check the file and its permissions", ws.DBPath).With("path", ws.DBPath)
-	}
-	st, err := d.openStore(ctx, ws.DBPath, true)
+	st, err := d.openIndexReadOnly(ctx, ws.DBPath, op)
 	if err != nil {
 		return nil, nil, err
 	}

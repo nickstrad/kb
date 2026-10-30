@@ -324,6 +324,11 @@ func TestExplainExactList(t *testing.T) {
 		}
 	}
 
+	stdout, _, _ = runKB(t, []string{"explain", "reindex_test", "--mode", "fts", "--set", "search.exact_list=false"})
+	if !strings.Contains(stdout, " per_entry_cap=3 exact=off\n") {
+		t.Errorf("settings line lacks exact=off with the exact list turned off:\n%s", stdout)
+	}
+
 	for _, tc := range []struct {
 		args []string
 		want string // path of the top candidate

@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeKb stands in for the kb binary without building it or using host tools: a symlink named kb
@@ -143,6 +144,9 @@ func TestRunnerRelativeClock(t *testing.T) {
 	}
 	if _, err := advance("garbage", "+1d"); err == nil {
 		t.Error("garbage clock accepted")
+	}
+	if _, err := advance(BaseNow, "+99999999999999999999d"); err == nil {
+		t.Error("overflowing step accepted")
 	}
 }
 
@@ -288,5 +292,36 @@ func TestNoWeights(t *testing.T) {
 	os.WriteFile(filepath.Join(d, "w.safetensors"), nil, 0o644)
 	if err := NoWeights(d); err == nil {
 		t.Error("weights not found")
+	}
+}
+
+func TestNoWeightsUnwalkable(t *testing.T) {
+	if err := NoWeights(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("an unwalkable work dir passed the weights guard")
+	}
+}
+
+// TestRunnerEnvUnsetThenSet: unsetting a variable and setting it again lists it once in kb's
+// environment (Q117).
+func TestRunnerEnvUnsetThenSet(t *testing.T) {
+	r := &Runner{Kb: fakeKb(t)}
+	res, err := runText(t, r, "  $ env ZZ=1\n  $ env ZZ=\n  $ env ZZ=2\n  $ kb countzz\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res[len(res)-1].Actual; len(got) != 1 || got[0] != "1" {
+		t.Errorf("ZZ listed %v times, want once", got)
+	}
+}
+
+// TestRunnerTimeoutReported: a kb that outlives Timeout says so on stderr, not only [exit -1].
+func TestRunnerTimeoutReported(t *testing.T) {
+	r := &Runner{Kb: fakeKb(t), Timeout: 200 * time.Millisecond}
+	res, err := runText(t, r, "  $ kb sleep\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(res[0].Actual, "\n"); !strings.Contains(got, "e2e: kb timed out after") {
+		t.Errorf("actual = %q, want the timeout line", got)
 	}
 }

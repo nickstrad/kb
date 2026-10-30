@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"math"
 	"testing"
 
@@ -361,5 +362,20 @@ func TestExplainDoesNotLog(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("searches rows = %d, want 0", n)
+	}
+}
+
+// TestExplainColumnScoresError: the per-column re-scoring FTS call fails; Explain returns that
+// error with its kind (the search's own FTS call, the first, succeeds).
+func TestExplainColumnScoresError(t *testing.T) {
+	s, _ := testSearcher(t)
+	f := &faultyRetriever{Retriever: s.Store, failOn: "FTS#2"}
+	s.Store = f
+	_, err := s.Explain(context.Background(), Request{Query: "quokka", Mode: ModeFTS, K: 3})
+	if !errors.Is(err, errDriver) || errs.KindOf(err) != errs.Internal {
+		t.Errorf("err = %v, want the driver error with its kind", err)
+	}
+	if len(f.ftsOps) != 2 {
+		t.Errorf("FTS calls = %d, want 2 (search, then the first column)", len(f.ftsOps))
 	}
 }

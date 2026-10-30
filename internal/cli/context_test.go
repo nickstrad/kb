@@ -390,6 +390,7 @@ func TestContextFrame(t *testing.T) {
 		{"block: level 2, no summary", contextBlock(render.Hit{Rank: 1, Path: "a.md"}, 2), "### [1] a.md"},
 		{"block: level 3, text", contextBlock(hit, 3), "### [2] tmux.md › Detach · updated 2026-07-01\n\nS\n\n  body  "},
 		{"block: level 3, expanded", contextBlock(render.Hit{Rank: 1, Store: "notes", Path: "a.md", Text: "t", Expanded: "whole"}, 3), "### [1] notes:a.md\n\nwhole"},
+		{"block: also ranks", contextBlock(render.Hit{Rank: 1, Path: "a.md", Also: []int{3, 5}}, 1), "### [1] a.md · also [3] [5]"},
 		{"body: no hits", contextBody(nil, nil), "No results."},
 		{"body: hidden and condensed", contextBody([]render.Hit{hit, hit, hit}, []int{3, 1, 0}), contextBlock(hit, 3) + "\n\n" + contextBlock(hit, 1) + "\n\n(+1 hits not shown, 1 condensed; raise --budget)"},
 		{"body: condensed only", contextBody([]render.Hit{hit}, []int{2}), contextBlock(hit, 2) + "\n\n(+1 condensed; raise --budget)"},

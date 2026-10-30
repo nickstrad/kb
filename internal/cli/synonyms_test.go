@@ -36,6 +36,10 @@ func TestSearchSpellNote(t *testing.T) {
 	if strings.Contains(stdout, "spell:") || stderr != "" || !strings.Contains(stdout, `fts: match "lgout"`) {
 		t.Errorf("spell off still corrected:\n%s\nstderr %q", stdout, stderr)
 	}
+	// kb context runs the same Searcher, so it says so too (DEFAULTS #7).
+	if _, stderr, _ := runKB(t, []string{"context", "lgout", "--json"}); !strings.Contains(stderr, `note: also searched "logout" for "lgout"`) {
+		t.Errorf("context stderr = %q, want the spell note", stderr)
+	}
 	// A word the index has is never corrected, however few rows it finds.
 	if _, stderr, _ := synHits(t, "keepalive"); stderr != "" {
 		t.Errorf("known word got a note: %q", stderr)
@@ -121,5 +125,52 @@ func TestSynonymsSuggestErrors(t *testing.T) {
 	stdout, stderr, exit := runKB(t, []string{"synonyms", "suggest"})
 	if exit == 0 || stdout != "" || !strings.Contains(stderr, "no index") {
 		t.Errorf("no index: exit %d stdout %q stderr %q", exit, stdout, stderr)
+	}
+}
+
+// TestRenderSuggestions: the human form's branches: no groups, one group (plural/singular nouns,
+// both From directions, the typo note) and the gaps block.
+func TestRenderSuggestions(t *testing.T) {
+	group := func(typo bool) search.Suggestion {
+		return search.Suggestion{
+			Terms: [2]string{"login", "signin"}, Line: "login, signin", Pairs: 2, Callers: 1, Typo: typo,
+			From: map[string]int{"login": 2, "signin": 1}, Doc: map[string]int{"login": 5, "signin": 0},
+		}
+	}
+	for _, tc := range []struct {
+		name        string
+		in          search.Suggestions
+		want, never []string
+	}{
+		{"no groups", search.Suggestions{Window: "5m0s", Searches: 1, Pairs: 1, Gaps: []search.Gap{}},
+			[]string{"# kb synonyms suggest · 1 searches · 1 reworded pair (window 5m0s)\n", "# no groups to suggest\n"},
+			[]string{"paste the groups", "gaps:"}},
+		{"group both directions", search.Suggestions{Window: "5m0s", Searches: 4, Pairs: 2, Suggestions: []search.Suggestion{group(false)}},
+			[]string{"2 reworded pairs", "# paste the groups you approve into syn.txt (kb never writes it)\n",
+				"# 2 pairs, 1 caller (login -> signin 2, signin -> login 1); chunks: login 5, signin 0\nlogin, signin\n"},
+			[]string{"a typo", "no groups"}},
+		{"typo note", search.Suggestions{Window: "1m", Suggestions: []search.Suggestion{group(true)}},
+			[]string{"signin 0; a typo: search.spell already corrects it\nlogin, signin\n"}, nil},
+		{"gaps", search.Suggestions{Window: "1m", Gaps: []search.Gap{{Term: "zzz", Searches: 1}, {Term: "qqq", Searches: 3}}},
+			[]string{"# gaps: words of searches", "#   zzz (1 search)\n", "#   qqq (3 searches)\n"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := renderSuggestions(tc.in, "syn.txt")
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("lacks %q:\n%s", w, got)
+				}
+			}
+			for _, n := range tc.never {
+				if strings.Contains(got, n) {
+					t.Errorf("has %q:\n%s", n, got)
+				}
+			}
+			for _, line := range strings.Split(strings.TrimSpace(got), "\n") {
+				if line != "" && !strings.HasPrefix(line, "#") && line != "login, signin" {
+					t.Errorf("non-comment, non-group line %q", line)
+				}
+			}
+		})
 	}
 }

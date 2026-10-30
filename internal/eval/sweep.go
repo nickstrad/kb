@@ -138,7 +138,7 @@ func Gate(judged, minJudged int, force bool) error {
 // keys and seed always split the same way, and a key's side does not depend on the order the
 // log returned it. The test side is round(holdout*n) keys, at least 1 and at most n-1 when
 // holdout > 0 and n >= 2, so both sides are never empty; with n < 2 or holdout 0 nothing is held
-// out. holdout must be in [0, 1).
+// out. holdout must be in [0, 1). The keys are distinct (Extract groups queries by key).
 func Split(keys []string, holdout float64, seed uint64) (train, test []string) {
 	assert.Pre(holdout >= 0 && holdout < 1, "Split: holdout=%g outside [0, 1)", holdout)
 	n := len(keys)
@@ -167,6 +167,14 @@ func Split(keys []string, holdout float64, seed uint64) (train, test []string) {
 	}
 	slices.Sort(train)
 	slices.Sort(test)
+	if assert.Enabled {
+		assert.Post(len(train)+len(test) == n, "Split: %d+%d keys, want %d", len(train), len(test), n)
+		assert.Post(slices.IsSorted(train) && slices.IsSorted(test), "Split: a side is not sorted")
+		inTest := keySet(test)
+		for _, k := range train {
+			assert.Post(!inTest[k], "Split: key %q on both sides", k)
+		}
+	}
 	return train, test
 }
 
@@ -262,7 +270,8 @@ type point struct {
 // the grid size. The judged queries are Split by opt.Holdout; the settings are ranked on the
 // train side by chunk MRR, then nDCG, then hit rate (ties within 1e-9), then the current settings
 // first, then grid order; the top ones are reported on both sides against the current config
-// with Compare. It never writes, and its warnings are data.
+// with Compare. It never writes, and its warnings are data. The judged log must not be empty:
+// callers run Gate first.
 func Sweep(ctx context.Context, p *Prepared, base config.Config, axes []Axis, grid []Combo,
 	newSearcher func(search.Settings) Searcher, opt SweepOptions) (*SweepReport, error) {
 	rep, err := sweep(ctx, p, base, axes, grid, newSearcher, opt)
@@ -285,6 +294,7 @@ func sweep(ctx context.Context, p *Prepared, base config.Config, axes []Axis, gr
 		opt.Top = DefaultTop
 	}
 	judged := p.Judged()
+	assert.Pre(len(judged) > 0, "Sweep: no judged queries; callers run Gate first")
 	train, test := Split(judged, opt.Holdout, opt.Seed)
 	sr := &SweepReport{
 		Mode: opt.Mode, K: opt.K, Axes: axes, Settings: len(grid), Judged: len(judged), MinJudged: opt.MinJudged,
@@ -322,7 +332,7 @@ func sweep(ctx context.Context, p *Prepared, base config.Config, axes []Axis, gr
 	for i, c := range grid {
 		r, h, err := replay(c.Config)
 		if err != nil {
-			return nil, err
+			return nil, errs.Wrap(err, errs.KindOf(err), "eval.Sweep", "--sweep setting %s: %v", strings.Join(c.Set, " "), err).With("set", c.Set)
 		}
 		pt := point{index: i, hash: h, current: h == curHash, rep: r}
 		pt.mrr, pt.ndcg, pt.hit = means(r, inTrain)
@@ -365,15 +375,22 @@ func sweep(ctx context.Context, p *Prepared, base config.Config, axes []Axis, gr
 		warn("nothing is held out (eval.holdout %g, %d judged queries): the setting was chosen and scored on the same queries, so its numbers are optimistic",
 			opt.Holdout, len(judged))
 	} else if !sr.BestIsCurrent {
-		trainWin := metricOf(best.TrainVsCurrent, "mrr").Delta > tieEps
+		trainD := metricOf(best.TrainVsCurrent, "mrr").Delta
 		testD := metricOf(best.TestVsCurrent, "mrr").Delta
-		if trainWin && testD <= tieEps {
+		if overfit(trainD, testD) {
 			sr.Overfit = true
 			warn("the best setting on the %d training queries does not beat the current settings on the %d held-out queries (mrr %+.3f): likely overfitting; keep the current settings",
 				len(train), len(test), testD)
 		}
 	}
 	return sr, nil
+}
+
+// overfit reports whether the best setting beats the current one on train (its MRR delta trainD
+// is more than tieEps) but not on the held-out queries (testD at most tieEps). Only MRR decides:
+// a best that ties MRR and wins nDCG is not checked.
+func overfit(trainD, testD float64) bool {
+	return trainD > tieEps && testD <= tieEps
 }
 
 // rankPoints orders settings best first: train MRR, nDCG, hit rate (higher first; within tieEps

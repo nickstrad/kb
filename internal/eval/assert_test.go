@@ -29,6 +29,9 @@ func TestMetricPreconditions(t *testing.T) {
 		{"grid of no axes", func() { ExpandGrid(config.Default(), nil, MaxGrid) }},
 		{"axis of no values", func() { ExpandGrid(config.Default(), []Axis{{Key: "search.rrf_k"}}, MaxGrid) }},
 		{"sweep of no grid", func() { Sweep(context.Background(), &Prepared{}, config.Default(), nil, nil, nil, SweepOptions{}) }},
+		{"sweep of no judged queries", func() {
+			Sweep(context.Background(), &Prepared{}, config.Default(), nil, []Combo{{}}, nil, SweepOptions{})
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer func() {

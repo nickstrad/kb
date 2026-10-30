@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/nickstrad/kb/internal/assert"
 	"github.com/nickstrad/kb/internal/embed"
@@ -487,11 +488,11 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 		if err != nil {
 			return nil, err
 		}
-		out.FTSMs = time.Since(ftsStart).Milliseconds()
+		out.FTSMs = time.Since(ftsStart).Milliseconds() // the exact list's time is added below (no clock seam: untestable, Q89)
 		fts = res.Rows
 		out.FTSMatch = res.Match
 		if res.Match != "" {
-			out.FTSSynonyms = syn
+			out.FTSSynonyms = renderedSynonyms(syn)
 			out.FTSAlts = alts
 		}
 		out.FTSFallbackToOr = retried
@@ -658,4 +659,50 @@ func ClampK(k int) int {
 		return MaxK
 	}
 	return k
+}
+
+// renderedSynonyms is syn without the query fields the MATCH expression drops (a bare operator
+// word such as "or", a field with no letter or digit): their alternatives are not in the
+// expression, so listing them would claim an expansion that did not happen. nil when none is
+// left. The rule is store/sqlite's quoteTerm, restated for the common cases; an exotic code point
+// (private use, unassigned) agrees, the few the bundled SQLite does not tokenize do not.
+func renderedSynonyms(syn map[string][]string) map[string][]string {
+	var out map[string][]string
+	for f, alts := range syn {
+		if !fieldRenders(f) {
+			continue
+		}
+		if out == nil {
+			out = make(map[string][]string, len(syn))
+		}
+		out[f] = alts
+	}
+	return out
+}
+
+// fieldRenders reports whether a query field survives into the MATCH expression.
+func fieldRenders(field string) bool {
+	cleaned := strings.TrimSpace(strings.Map(func(r rune) rune {
+		switch r {
+		case '*':
+			return -1
+		case '"', 0:
+			return ' '
+		}
+		return r
+	}, field))
+	base := func(r rune) bool {
+		return unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.Is(unicode.Co, r) || unicode.Is(unicode.Cn, r)
+	}
+	if !strings.ContainsFunc(cleaned, base) {
+		return false
+	}
+	words := strings.FieldsFunc(cleaned, func(r rune) bool { return !base(r) && !unicode.IsMark(r) })
+	if len(words) == 1 {
+		switch strings.ToLower(words[0]) {
+		case "and", "or", "not", "near":
+			return false
+		}
+	}
+	return true
 }

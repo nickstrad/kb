@@ -67,6 +67,8 @@ func SaveBaseline(dir string, b Baseline) error {
 	if err := enc.Encode(b); err != nil {
 		return errs.Wrap(err, errs.Internal, op, "encode baseline %q: %v", b.Name, err)
 	}
+	// Driver-only: the 0o755 mode is umask-dependent, so no test pins it, and the failure needs a
+	// filesystem fault seam (testability: fault-seams-only-in-sqlite).
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return errs.Wrap(err, errs.Usage, op, "cannot create %s: %v", dir, err).With("path", dir)
 	}
@@ -76,6 +78,8 @@ func SaveBaseline(dir string, b Baseline) error {
 		return errs.Wrap(err, errs.Usage, op, "cannot write %s: %v", path, err).With("path", path)
 	}
 	_, werr := tmp.Write(buf.Bytes())
+	// Driver-only: a failed write, chmod or close needs a file fault seam (testability:
+	// fault-seams-only-in-sqlite); no unit test reaches this branch.
 	if err := errors.Join(werr, tmp.Chmod(0o644), tmp.Close()); err != nil {
 		os.Remove(tmp.Name()) // best effort: the error that matters is the failed write
 		return errs.Wrap(err, errs.Usage, op, "cannot write %s: %v", path, err).With("path", path)

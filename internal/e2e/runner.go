@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -211,6 +212,9 @@ func (s *session) runKb(args []string) (stdout, stderr string, code int) {
 	default:
 		return "", "e2e: running kb: " + err.Error(), 127
 	}
+	if ctx.Err() == context.DeadlineExceeded {
+		e.WriteString("e2e: kb timed out after " + timeout.String() + "\n")
+	}
 	return o.String(), e.String(), code
 }
 
@@ -258,6 +262,7 @@ func (s *session) builtinOut(args []string) (string, error) {
 			switch {
 			case v == "":
 				delete(s.env, k)
+				s.order = slices.DeleteFunc(s.order, func(o string) bool { return o == k })
 			case k == "KB_HARNESS_NOW" && reRelTime.MatchString(v):
 				nv, err := advance(s.env[k], v)
 				if err != nil {
@@ -368,7 +373,10 @@ func advance(cur, rel string) (string, error) {
 		return "", fmt.Errorf("env: KB_HARNESS_NOW %q is not RFC3339", cur)
 	}
 	m := reRelTime.FindStringSubmatch(rel)
-	n, _ := strconv.Atoi(m[1])
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return "", fmt.Errorf("env: KB_HARNESS_NOW step %q: %w", rel, err)
+	}
 	unit := map[string]time.Duration{"d": 24 * time.Hour, "h": time.Hour, "m": time.Minute}[m[2]]
 	return t.Add(time.Duration(n) * unit).UTC().Format(time.RFC3339), nil
 }
@@ -415,12 +423,18 @@ func splitArgs(line, work string) ([]string, error) {
 // NoWeights fails when model weights appeared under work: a journey must never download a model.
 func NoWeights(work string) error {
 	var found []string
-	_ = filepath.WalkDir(work, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && !d.IsDir() && (strings.HasSuffix(p, ".safetensors") || strings.HasSuffix(p, ".onnx")) {
+	walkErr := filepath.WalkDir(work, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && (strings.HasSuffix(p, ".safetensors") || strings.HasSuffix(p, ".onnx")) {
 			found = append(found, p)
 		}
 		return nil
 	})
+	if walkErr != nil {
+		return fmt.Errorf("checking %s for model weights: %w", work, walkErr)
+	}
 	if len(found) > 0 {
 		return fmt.Errorf("model weights appeared under the journey dir (a journey must not download): %v", found)
 	}

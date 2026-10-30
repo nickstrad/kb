@@ -79,14 +79,14 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().IntVarP(&k, "k", "k", search.DefaultK, "number of hits to return (1..20; default [search] k, 8)")
+	cmd.Flags().IntVarP(&k, "k", "k", search.DefaultK, "number of hits to return, 1..20 (config [search] k sets the default)")
 	cmd.Flags().StringVar(&mode, "mode", search.ModeHybrid, "hybrid, fts or vec")
-	cmd.Flags().StringVar(&tag, "tag", "", "only entries carrying this tag")
+	cmd.Flags().StringVar(&tag, "tag", "", "only entries carrying this tag, matched case-insensitively (an alias is searched like the title)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
-	cmd.Flags().StringVar(&caller, "caller", "", "who is searching (default [agent] caller, else unknown)")
-	cmd.Flags().IntVar(&budget, "budget", 0, "cap the human output at about N tokens (ceil(chars/4)); 0 = unlimited (default [output] budget)")
-	cmd.Flags().StringVar(&stores, "stores", "", "also search these stores, comma-separated ('' = none, all = every store here; default [search] stores)")
-	cmd.Flags().StringVar(&expand, "expand", render.ExpandNone, "show each hit's whole section or entry instead of the chunk: none, section or entry (default [output] expand)")
+	cmd.Flags().StringVar(&caller, "caller", "", "who is searching (config [agent] caller sets the default, else unknown)")
+	cmd.Flags().IntVar(&budget, "budget", 0, "cap the human output at about N tokens (ceil(chars/4)); 0 = unlimited (config [output] budget sets the default)")
+	cmd.Flags().StringVar(&stores, "stores", "", "also search these stores, comma-separated ('' = none, all = every store here; config [search] stores sets the default)")
+	cmd.Flags().StringVar(&expand, "expand", render.ExpandNone, "show each hit's whole section or entry instead of the chunk: none, section or entry (config [output] expand sets the default)")
 	return cmd
 }
 
@@ -127,56 +127,24 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	}
 	ctx := cmd.Context()
 
-	ws, cfg, err := d.workspaceConfig(cmd)
+	ss, err := d.openStoresSearch(cmd, stderr, "cli.search", opts.mode, opts.fanOut, opts.stores)
 	if err != nil {
 		return err
 	}
-	embs := embedderSet{}
-	st, embedder, mode, err := d.openSearchWith(cmd, ws, cfg, opts.mode, "cli.search", false, embs)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-
-	settings, err := search.NewSettings(cfg)
-	if err != nil {
-		return err
-	}
-	syn, err := d.loadSynonyms(cmd, ws, cfg)
-	if err != nil {
-		return err
-	}
-	settings = settings.WithSynonyms(syn.Hash())
-	memo := &search.QueryMemo{}
-	searcher := &search.Searcher{Store: st, Log: st, Embedder: embedder, KBVersion: Version, Settings: settings, Now: d.clock, Queries: memo, Synonyms: syn}
-	refs := fanOutRefs(opts.fanOut, opts.stores, cfg.Search.Stores)
-	extras, err := d.openExtraStores(cmd, ws, refs, mode, settings, memo, embs)
-	defer extras.close()
-	if err != nil {
-		return err
-	}
-	if n := embs.models(); len(n) > 2 {
-		fmt.Fprintf(stderr, "warning: this search loads %d embedding models (%s); each one takes memory and time\n", len(n), strings.Join(n, ", "))
-	}
+	defer ss.close()
+	cfg := ss.cfg
 	req := search.Request{
 		Query:  opts.query,
-		Mode:   mode,
+		Mode:   ss.mode,
 		K:      search.ClampK(searchK(cmd.Flags().Changed("k"), opts.k, cfg.Search.K)),
 		Tag:    opts.tag,
 		Caller: callerFor(opts.caller, cfg),
 	}
-
-	parts := append([]search.Part{{Root: ws.Root, Searcher: searcher}}, extras.parts...)
-	mo, err := search.SearchStores(ctx, parts, req)
+	res, err := ss.run(cmd, d, stderr, req)
 	if err != nil {
 		return err
 	}
-	d.warnSkipped(cmd, mo.Skipped)
-	for _, s := range mo.Degraded {
-		fmt.Fprintf(stderr, "warning: store %s searched with FTS only: %s\n", s.Part.Label, s.Err)
-	}
-	out := mo.Outcome
-	_, logErr := searcher.Record(ctx, req, out)
+	out, logErr, lookups := res.out, res.logErr, res.lookups
 	logged := logErr == nil
 	budget := opts.budget
 	if !cmd.Flags().Changed("budget") {
@@ -186,8 +154,6 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	if !cmd.Flags().Changed("expand") {
 		expand = cfg.Output.Expand
 	}
-	lookups := extras.lookups()
-	lookups[""] = st
 	if err := printResults(ctx, stdout, lookups, out.Result, opts.asJSON, logged, budget, expand); err != nil {
 		return err
 	}

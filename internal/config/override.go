@@ -26,8 +26,9 @@ func Apply(c Config, assignment string) (Config, error) { return ApplyAs(c, "--s
 // ApplyAs is Apply for an assignment that came from another flag (kb eval --sweep): its errors
 // name that flag instead of --set.
 func ApplyAs(c Config, flag, assignment string) (Config, error) {
+	const op = "config.ApplyAs"
 	fail := func(format string, args ...any) (Config, error) {
-		return Config{}, errs.New(errs.Usage, "config.Apply", "%s %s: %s", flag, assignment, fmt.Sprintf(format, args...))
+		return Config{}, errs.New(errs.Usage, op, "%s %s: %s", flag, assignment, fmt.Sprintf(format, args...))
 	}
 	path, value, ok := strings.Cut(assignment, "=")
 	path = strings.TrimSpace(path)

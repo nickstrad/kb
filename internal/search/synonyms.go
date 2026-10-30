@@ -131,6 +131,16 @@ func (s *Synonyms) Hash() string {
 	return s.hash
 }
 
+// has reports whether to is one of from's kept alternatives (exact keys, no trimming): the pair
+// is in force. Unlike Lookup it allocates nothing and cannot confuse a punctuated field with a
+// term. A pair that fell past MaxAlternatives is not in force, so it is not "had".
+func (s *Synonyms) has(from, to string) bool {
+	if s == nil {
+		return false
+	}
+	return slices.Contains(s.byTerm[from], to)
+}
+
 // Lookup returns the alternatives of a query field: the other members of its groups, at most
 // MaxAlternatives. The field is lowercased and, if that finds nothing, stripped of the
 // punctuation around it (`Kubernetes,` finds `kubernetes`).

@@ -94,6 +94,10 @@ func runRm(ctx context.Context, d *deps, stdout, stderr io.Writer, ws *workspace
 		if err := st.DeleteEntry(ctx, e.Path); err != nil {
 			return err
 		}
+		// Inbound edges went NULL; another entry may match them now (a basename tie, a README fallback).
+		if err := st.ResolveEdges(ctx); err != nil {
+			fmt.Fprintf(stderr, "warning: could not re-resolve links after removing %s: %v\n", e.Path, err)
+		}
 	}
 
 	fmt.Fprintln(stdout, removed)

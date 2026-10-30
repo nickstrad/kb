@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestEvalWiring(t *testing.T) {
 	if _, stderr, exit := runKB(t, []string{"feedback", id, "1", "--useful"}); exit != 0 {
 		t.Fatalf("feedback: exit %d %s", exit, stderr)
 	}
-	before := feedbackRows(t, root, "")
+	before := feedbackRows(t, root)
 
 	evalJSON := func(args ...string) eval.Report {
 		t.Helper()
@@ -60,7 +61,7 @@ func TestEvalWiring(t *testing.T) {
 			t.Errorf("human output lacks %q:\n%s", want, stdout)
 		}
 	}
-	if after := feedbackRows(t, root, ""); after != before {
+	if after := feedbackRows(t, root); after != before {
 		t.Errorf("eval changed the feedback rows: %d -> %d", before, after)
 	}
 	if again := searchID(t, "tmux logout"); again != "2" {
@@ -281,5 +282,33 @@ func TestEvalOpenFailures(t *testing.T) {
 				t.Errorf("exit %d stdout %q stderr %q; want %d, no report, %q", exit, stdout, stderr, tc.code, tc.want)
 			}
 		})
+	}
+}
+
+// TestEvalLoadsSynonyms: a store with synonyms.txt is evaluated with them, as search does: the
+// settings hash (and so a baseline) differs from the same run without the file.
+func TestEvalLoadsSynonyms(t *testing.T) {
+	root := useRoot(t, newExplainRepo(t))
+	searchID(t, "tmux logout")
+	hash := func() string {
+		t.Helper()
+		stdout, stderr, exit := runKB(t, []string{"eval", "--mode", "fts", "--json"})
+		if exit != 0 {
+			t.Fatalf("eval: exit %d %s", exit, stderr)
+		}
+		var rep eval.Report
+		if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+			t.Fatal(err)
+		}
+		return rep.SettingsHash
+	}
+	without := hash()
+	writeFile(t, filepath.Join(testWS(root).StoreDir, "synonyms.txt"), "logout, signout\n")
+	if with := hash(); with == without {
+		t.Errorf("settings hash %s ignores synonyms.txt", with)
+	}
+	writeFile(t, filepath.Join(testWS(root).StoreDir, "synonyms.txt"), strings.Repeat("#", 1<<20+1))
+	if _, stderr, exit := runKB(t, []string{"eval", "--mode", "fts"}); exit != ExitUsage || !strings.Contains(stderr, "synonyms.txt") {
+		t.Errorf("unreadable synonyms: exit %d stderr %q, want a usage error naming the file", exit, stderr)
 	}
 }

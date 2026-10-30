@@ -1,17 +1,12 @@
 package e2e
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-)
-
-var (
-	update = flag.Bool("update", false, "rewrite the expected output of the journeys in place")
-	kbFlag = flag.String("kb", "", "use this prebuilt kb binary (built with -tags fts5,harnessfake) instead of building one")
+	"time"
 )
 
 // builtDir is where the journeys test built kb; TestMain removes it.
@@ -41,6 +36,16 @@ func fakeKbMain(args []string) int {
 		fmt.Print("a\n\nb\n")
 	case "env":
 		fmt.Printf("HOME=%s NOW=%s PATH=%s EDITOR=%s PROXY=%s\n", os.Getenv("HOME"), os.Getenv("KB_HARNESS_NOW"), os.Getenv("PATH"), os.Getenv("EDITOR"), os.Getenv("HTTPS_PROXY"))
+	case "sleep":
+		time.Sleep(time.Minute)
+	case "countzz":
+		n := 0
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, "ZZ=") {
+				n++
+			}
+		}
+		fmt.Println(n)
 	case "version":
 		fmt.Println("kb v0.0.0-20261030193210-abc")
 	case "weights":

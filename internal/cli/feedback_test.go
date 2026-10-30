@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,23 +32,41 @@ func searchID(t *testing.T, args ...string) string {
 	return m[1]
 }
 
-// feedbackRows counts search_feedback rows, optionally for one (search, rank).
-func feedbackRows(t *testing.T, root, where string, args ...any) int {
+// feedbackRows counts the stored verdict rows (store.FeedbackLog) satisfying every match.
+func feedbackRows(t *testing.T, root string, match ...func(store.FeedbackRow) bool) int {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{})
+	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{ReadOnly: true})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer st.Close()
-	q := "SELECT count(*) FROM search_feedback"
-	if where != "" {
-		q += " WHERE " + where
+	rows, err := st.FeedbackRows(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	var n int
-	if err := st.DB().QueryRow(q, args...).Scan(&n); err != nil {
-		t.Fatalf("%s: %v", q, err)
+	n := 0
+rows:
+	for _, r := range rows {
+		for _, m := range match {
+			if !m(r) {
+				continue rows
+			}
+		}
+		n++
 	}
 	return n
+}
+
+// verdictOn matches the verdicts of one search at one rank, with the given usefulness.
+func verdictOn(search string, rank int, useful bool) func(store.FeedbackRow) bool {
+	return func(r store.FeedbackRow) bool {
+		return strconv.FormatInt(r.SearchID, 10) == search && r.Rank == rank && r.Useful == useful
+	}
+}
+
+// onSearch matches the verdicts of one search.
+func onSearch(search string) func(store.FeedbackRow) bool {
+	return func(r store.FeedbackRow) bool { return strconv.FormatInt(r.SearchID, 10) == search }
 }
 
 // TestFeedbackArgValidation: every malformed invocation is a usage error (exit 1) with a message
@@ -88,7 +107,7 @@ func TestFeedbackArgValidation(t *testing.T) {
 			}
 		})
 	}
-	if n := feedbackRows(t, root, ""); n != 0 {
+	if n := feedbackRows(t, root); n != 0 {
 		t.Errorf("feedback rows = %d after only rejected invocations, want 0", n)
 	}
 }
@@ -119,7 +138,7 @@ func TestFeedbackByID(t *testing.T) {
 	if want := "recorded: search " + zero + " none (nothing useful)\n"; stdout != want {
 		t.Errorf("stdout = %q, want %q", stdout, want)
 	}
-	if n := feedbackRows(t, root, "search_id = ? AND rank = 0 AND useful = 0 AND note = ?", zero, "no widget-free docs"); n != 1 {
+	if n := feedbackRows(t, root, verdictOn(zero, 0, false), func(r store.FeedbackRow) bool { return r.Note == "no widget-free docs" }); n != 1 {
 		t.Errorf("rank-0 rows for search %s = %d, want 1", zero, n)
 	}
 
@@ -153,10 +172,10 @@ func TestFeedbackLast(t *testing.T) {
 	if !strings.HasPrefix(stdout, wantPrefix) || !strings.HasSuffix(stdout, `: "widget configuring")`+"\n") {
 		t.Errorf("stdout = %q, want %q… ending in the query", stdout, wantPrefix)
 	}
-	if n := feedbackRows(t, root, "search_id = ? AND rank = 1 AND useful = 1", claudeNew); n != 1 {
+	if n := feedbackRows(t, root, verdictOn(claudeNew, 1, true)); n != 1 {
 		t.Errorf("rank-1 useful rows on search %s = %d, want 1", claudeNew, n)
 	}
-	if n := feedbackRows(t, root, "search_id = ?", claudeOld); n != 0 {
+	if n := feedbackRows(t, root, onSearch(claudeOld)); n != 0 {
 		t.Errorf("the older claude search %s got %d feedback rows, want 0", claudeOld, n)
 	}
 
@@ -263,7 +282,7 @@ func TestLogUsesInjectedClock(t *testing.T) {
 	id := searchID(t, "foo")
 	mustKB(t, "feedback", id, "1", "--useful")
 	mustKB(t, "show", "data/foo.md")
-	if n := feedbackRows(t, root, "ts = ?", "2025-01-02T03:04:05Z"); n != 1 {
+	if n := feedbackRows(t, root, func(r store.FeedbackRow) bool { return r.TS == "2025-01-02T03:04:05Z" }); n != 1 {
 		t.Errorf("%d verdicts stamped with the injected clock, want 1", n)
 	}
 	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{ReadOnly: true})

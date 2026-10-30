@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/nickstrad/kb/internal/assert"
 	"github.com/nickstrad/kb/internal/store"
 )
 
@@ -160,7 +161,7 @@ func Suggest(searches []store.JudgedSearch, docFreq map[string]int, o SuggestOpt
 			continue
 		}
 		from, to, ok := reword(QueryWords(prev.Query), words)
-		if !ok || slices.Contains(o.Synonyms.Lookup(from), to) {
+		if !ok || o.Synonyms.has(from, to) {
 			continue
 		}
 		out.Pairs++
@@ -209,6 +210,24 @@ func Suggest(searches []store.JudgedSearch, docFreq map[string]int, o SuggestOpt
 	})
 	if o.MaxGaps > 0 && len(out.Gaps) > o.MaxGaps {
 		out.Gaps = out.Gaps[:o.MaxGaps]
+	}
+	if assert.Enabled {
+		assert.Post(sort.SliceIsSorted(out.Suggestions, func(i, j int) bool {
+			a, b := out.Suggestions[i], out.Suggestions[j]
+			if a.Pairs != b.Pairs {
+				return a.Pairs > b.Pairs
+			}
+			if a.Callers != b.Callers {
+				return a.Callers > b.Callers
+			}
+			return a.Line < b.Line
+		}), "Suggest: suggestions not sorted by pairs, callers, line")
+		assert.Post(sort.SliceIsSorted(out.Gaps, func(i, j int) bool {
+			if out.Gaps[i].Searches != out.Gaps[j].Searches {
+				return out.Gaps[i].Searches > out.Gaps[j].Searches
+			}
+			return out.Gaps[i].Term < out.Gaps[j].Term
+		}), "Suggest: gaps not sorted by searches, term")
 	}
 	return out
 }

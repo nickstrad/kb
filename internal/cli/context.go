@@ -44,7 +44,7 @@ func newContextCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"path › heading, and its updated date, then the text of the section it sits in\n" +
 			"(--expand entry for the whole entry, none for the matching chunk). The output,\n" +
 			"heading and footer included, fits --budget tokens (default [output] context_budget,\n" +
-			"2000; 0 = unlimited); hits that do not fit are left out with a note.\n\n" +
+			"2000; 0 = unlimited, but only as --budget 0: the config needs 1 or more); hits that do not fit are left out with a note.\n\n" +
 			"The footer names the search (search N) and the kb show and kb feedback commands for\n" +
 			"it. --stores works as in kb search. --json prints the search id, the feedback commands\n" +
 			"and every hit with the level it was shown at (0 = left out by the budget).",
@@ -62,8 +62,8 @@ func newContextCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().IntVar(&budget, "budget", 0, "cap the whole output at about N tokens (ceil(chars/4)); 0 = unlimited (default [output] context_budget, 2000)")
-	cmd.Flags().StringVar(&stores, "stores", "", "also search these stores, comma-separated ('' = none, all = every store here; default [search] stores)")
+	cmd.Flags().IntVar(&budget, "budget", 0, "cap the whole output at about N tokens (ceil(chars/4)); 0 = unlimited, only as a flag (config [output] context_budget sets the default: 2000, at least 1)")
+	cmd.Flags().StringVar(&stores, "stores", "", "also search these stores, comma-separated ('' = none, all = every store here; config [search] stores sets the default)")
 	cmd.Flags().StringVar(&expand, "expand", render.ExpandSection, "show each hit's whole section or entry: none, section or entry")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
 	return cmd
@@ -103,69 +103,36 @@ func runContext(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts cont
 	}
 	ctx := cmd.Context()
 
-	ws, cfg, err := d.workspaceConfig(cmd)
+	ss, err := d.openStoresSearch(cmd, stderr, "cli.context", search.ModeHybrid, opts.fanOut, opts.stores)
 	if err != nil {
 		return err
 	}
-	embs := embedderSet{}
-	st, embedder, mode, err := d.openSearchWith(cmd, ws, cfg, search.ModeHybrid, "cli.context", false, embs)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-
-	settings, err := search.NewSettings(cfg)
-	if err != nil {
-		return err
-	}
-	syn, err := d.loadSynonyms(cmd, ws, cfg)
-	if err != nil {
-		return err
-	}
-	settings = settings.WithSynonyms(syn.Hash())
-	memo := &search.QueryMemo{}
-	searcher := &search.Searcher{Store: st, Log: st, Embedder: embedder, KBVersion: Version, Settings: settings, Now: d.clock, Queries: memo, Synonyms: syn}
-	refs := fanOutRefs(opts.fanOut, opts.stores, cfg.Search.Stores)
-	extras, err := d.openExtraStores(cmd, ws, refs, mode, settings, memo, embs)
-	defer extras.close()
-	if err != nil {
-		return err
-	}
-	if n := embs.models(); len(n) > 2 {
-		fmt.Fprintf(stderr, "warning: this search loads %d embedding models (%s); each one takes memory and time\n", len(n), strings.Join(n, ", "))
-	}
+	defer ss.close()
+	cfg := ss.cfg
 	req := search.Request{
 		Query:  opts.task,
-		Mode:   mode,
+		Mode:   ss.mode,
 		K:      search.ClampK(contextK),
 		Caller: callerFor("", cfg),
 	}
-
-	parts := append([]search.Part{{Root: ws.Root, Searcher: searcher}}, extras.parts...)
-	mo, err := search.SearchStores(ctx, parts, req)
+	res, err := ss.run(cmd, d, stderr, req)
 	if err != nil {
 		return err
 	}
-	d.warnSkipped(cmd, mo.Skipped)
-	for _, s := range mo.Degraded {
-		fmt.Fprintf(stderr, "warning: store %s searched with FTS only: %s\n", s.Part.Label, s.Err)
-	}
-	out := mo.Outcome
-	_, logErr := searcher.Record(ctx, req, out)
+	out, logErr, lookups := res.out, res.logErr, res.lookups
 	logged := logErr == nil
 
 	budget := opts.budget
 	if !cmd.Flags().Changed("budget") {
 		budget = cfg.Output.ContextBudget
 	}
-	lookups := extras.lookups()
-	lookups[""] = st
 	if err := printContext(ctx, stdout, lookups, out.Result, opts.asJSON, logged, budget, opts.expand); err != nil {
 		return err
 	}
 	if !logged {
 		fmt.Fprintf(stderr, "warning: search not logged: %s\n", logErr)
 	}
+	noteSpell(stderr, out.Spell)
 
 	if out.Mode == search.ModeFTSFallback {
 		fmt.Fprintf(stderr, "warning: embedder unavailable (%s); falling back to --mode fts\n", out.FallbackErr)
@@ -347,6 +314,13 @@ func contextBlock(h render.Hit, level int) string {
 	s := fmt.Sprintf("### [%d] %s", h.Rank, src)
 	if h.Updated != "" {
 		s += " · updated " + h.Updated
+	}
+	if len(h.Also) > 0 {
+		ranks := make([]string, len(h.Also))
+		for i, r := range h.Also {
+			ranks[i] = fmt.Sprintf("[%d]", r)
+		}
+		s += " · also " + strings.Join(ranks, " ")
 	}
 	if level >= levelSummary && h.Summary != "" {
 		s += "\n\n" + render.Trim(h.Summary, render.SummaryLimit)
