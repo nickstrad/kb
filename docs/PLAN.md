@@ -443,6 +443,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **1.4 `kb init` and `kb model pull`**
+- Carried from the W4 pass decision (DEFAULTS #121): `kb init` and `--root` store creation refuse `$HOME` and `/` unless `--force`, so a stray ancestor store can't capture discovery (H28). Add a harness row for it.
 - Carried from W4 pass: (a) `workspace.Workspace.ModelsDir` (`os.UserCacheDir()/kb/models`) is computed but unused; `local.DefaultCacheDir` derives the same path on its own. `kb model pull|path` should take it from the workspace so there is one rule. (b) `--root DIR add` creates a legacy `.kb/kb.sqlite` store anywhere, which then captures discovery for every directory below it (a stray `~/.kb`, H28); once `kb init` exists, decide whether `add`/`reindex` on a `--root` with no `.kb` should still create one or refuse with "run kb init". (c) `kb init` should be the only command that writes `.kb/config.toml`; the harness `workspace-discovery` scenario then gains an init row.
 - Carried from W2 pass: `reindex.All` reads a missing `data/` as an empty corpus via a local `discover` wrapper (Q23). Step 5 (Discover tolerates a missing source dir) should absorb it: move the rule into `entry.Discover` and delete the wrapper. Keep the doctor warning.
 - Model: Sonnet (commands from spec); review: Opus via testing-standards-pass (legacy adoption keeps log)
