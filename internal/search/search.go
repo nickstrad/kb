@@ -109,6 +109,9 @@ type Request struct {
 	// before it count. Zero means the searcher's clock; an eval replay sets the original search
 	// time so a replay never sees later feedback (PLAN 6.4).
 	AsOf time.Time
+	// ExcludeEvidence are searches whose verdicts and opens the prior and the query memory leave
+	// out: an eval replay names the replayed query's own searches, whose verdicts are its gold.
+	ExcludeEvidence []int64
 }
 
 // Logger writes one search to the log (store.SearchLog has it).
@@ -171,8 +174,11 @@ type Candidate struct {
 	// nil when it was not there.
 	MemoryRank  *int
 	MemoryScore *float64
-	RRFScore    float64
-	CapDropped  bool
+	// FTSTier is the tier of the main FTS list that placed the chunk (store.TierPhrase, TierNear,
+	// TierAnd, TierOr); "" when the list ran untiered or the chunk was not in it (PLAN 4.6).
+	FTSTier    string
+	RRFScore   float64
+	CapDropped bool
 	// Superseded is true when the chunk's entry is the target of a `supersedes` edge from another
 	// entry and RRFScore was multiplied by Params.SupersedePenalty (PLAN 5.3).
 	Superseded bool
@@ -220,6 +226,7 @@ type Outcome struct {
 	FTSAlts           map[string][]string // the alternatives FTSMatch was built with: FTSSynonyms plus Spell's corrections
 	Spell             []SpellFix          // the words spell correction added an alternative to (PLAN 5.6); nil when it did not run or found none
 	FTSFallbackToOr   bool
+	FTSTiers          []TierRun // the queries of the tiered main list, best tier first (PLAN 4.6); nil when it ran untiered
 	ExactTerms        []string
 	ExactMatch        string
 	ExactFallbackToOr bool
@@ -266,6 +273,7 @@ func fuse(fts []FTSRow, vec []VecRow, exact []FTSRow, mem []MemoryRow, p Params)
 		score := r.Score
 		c.FTSRank = &rank
 		c.FTSScore = &score
+		c.FTSTier = r.Tier
 		c.RRFScore += p.FTSWeight / float64(p.RRFK+rank)
 	}
 	for i, r := range vec {
@@ -526,14 +534,15 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 		ftsStart := time.Now()
 		fields := strings.Fields(req.Query)
 		syn := s.Synonyms.Expand(fields)
-		res, retried, err := s.lexicalList(ctx, fields, syn, req.Tag, p, false)
+		ml, err := s.mainList(ctx, fields, syn, req.Tag, p)
 		if err != nil {
 			return nil, err
 		}
-		res, retried, alts, err := s.spell(ctx, out, fields, syn, req.Tag, p, res, retried)
+		ml, alts, err := s.spell(ctx, out, fields, syn, req.Tag, p, ml)
 		if err != nil {
 			return nil, err
 		}
+		res := ml.res
 		out.FTSMs = time.Since(ftsStart).Milliseconds() // the exact list's time is added below (no clock seam: untestable, Q89)
 		fts = res.Rows
 		out.FTSMatch = res.Match
@@ -541,7 +550,8 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 			out.FTSSynonyms = renderedSynonyms(syn)
 			out.FTSAlts = alts
 		}
-		out.FTSFallbackToOr = retried
+		out.FTSFallbackToOr = ml.retried
+		out.FTSTiers = ml.runs
 	}
 	var exact []FTSRow
 	if out.Mode != ModeVec && p.ExactList {
@@ -699,31 +709,39 @@ func (s *Searcher) lexicalList(ctx context.Context, terms []string, alts map[str
 // the corrections and, if there are any, runs the list once more with them as alternatives, with
 // the operator the first run ended with (an OR retry stays OR, so no row it found is lost to an
 // AND that the corrections now satisfy), and keeps the first run's rows (keepOriginal). It records
-// the fixes in out.Spell and returns the list, OR flag and alternatives to use; with nothing to
-// correct they are the first run's, unchanged.
+// the fixes in out.Spell and returns the list and the alternatives to use; with nothing to
+// correct they are the first run's, unchanged. The rerun is tiered like the first run (the phrase
+// and NEAR queries use the literal words, so they return what they did), and a first-run row
+// that the rerun pushed out keeps its tier.
 func (s *Searcher) spell(ctx context.Context, out *Outcome, fields []string, alts map[string][]string, tag string, p Params,
-	first store.FTSResult, retried bool) (store.FTSResult, bool, map[string][]string, error) {
+	first mainList) (mainList, map[string][]string, error) {
 	v, hasVocab := s.Store.(store.Vocab)
-	if !spellWanted(p.Spell, hasVocab, first.Match, len(first.Rows)) {
-		return first, retried, alts, nil
+	if !spellWanted(p.Spell, hasVocab, first.res.Match, len(first.res.Rows)) {
+		return first, alts, nil
 	}
 	plan, err := s.planSpell(ctx, v, fields, alts)
 	if err != nil || len(plan.fixes) == 0 {
-		return first, retried, alts, err
+		return first, alts, err
 	}
-	var res store.FTSResult
-	if retried {
+	var ml mainList
+	if first.retried {
 		weights := p.BM25
+		var res store.FTSResult
 		res, err = s.Store.FTS(ctx, store.FTSQuery{Terms: fields, Op: store.OpOr, Tag: tag, Limit: p.ListLimit, Weights: &weights, Alts: plan.alts})
+		ml = mainList{res: res, retried: true}
+		if first.runs != nil {
+			tagRows(ml.res.Rows, store.TierOr)
+			ml.runs = []TierRun{{Tier: store.TierOr, Match: res.Match, Rows: len(res.Rows)}}
+		}
 	} else {
-		res, retried, err = s.lexicalList(ctx, fields, plan.alts, tag, p, false)
+		ml, err = s.mainList(ctx, fields, plan.alts, tag, p)
 	}
 	if err != nil {
-		return store.FTSResult{}, false, nil, err
+		return mainList{}, nil, err
 	}
-	res.Rows = keepOriginal(first.Rows, res.Rows, p.ListLimit)
+	ml.res.Rows = keepOriginal(first.res.Rows, ml.res.Rows, p.ListLimit)
 	out.Spell = plan.fixes
-	return res, retried, plan.alts, nil
+	return ml, plan.alts, nil
 }
 
 // embedQuery embeds the query with the embedder's query prefix, timing it on its own because it

@@ -100,6 +100,7 @@ type Model struct {
 	boost  float64
 	u, n   map[key]float64
 	open   map[string]float64
+	view   *view // set by Index.Model instead of the maps: the sums are computed per key on demand
 }
 
 // Build computes the Model from events as of asOf. The result does not depend on the order of
@@ -184,7 +185,18 @@ func (m Model) Useful(entryPath, heading string) float64 {
 	if !m.active {
 		return 0
 	}
-	return m.u[key{entryPath, heading}] + m.open[entryPath]
+	u, _ := m.sums(entryPath, heading)
+	return u
+}
+
+// sums is (u, n) of a key, u including the opens of its entry.
+func (m Model) sums(entryPath, heading string) (u, n float64) {
+	if m.view != nil {
+		u, n = m.view.sums(entryPath, heading)
+		return u + m.view.opened(entryPath), n
+	}
+	k := key{entryPath, heading}
+	return m.u[k] + m.open[entryPath], m.n[k]
 }
 
 // Opened returns the decayed, position-weighted mass of opens of the entry (an open counts
@@ -193,6 +205,9 @@ func (m Model) Useful(entryPath, heading string) float64 {
 func (m Model) Opened(entryPath string) float64 {
 	if !m.active {
 		return 0
+	}
+	if m.view != nil {
+		return m.view.opened(entryPath)
 	}
 	return m.open[entryPath]
 }
@@ -203,9 +218,7 @@ func (m Model) Mult(entryPath, heading string) float64 {
 	if !m.active {
 		return 1
 	}
-	k := key{entryPath, heading}
-	u := m.u[k] + m.open[entryPath]
-	n := m.n[k]
+	u, n := m.sums(entryPath, heading)
 	p := (u + smoothA) / (u + n + smoothA + smoothB)
 	mult := clamp(1+m.boost*(2*p-1), 1-m.boost, 1+m.boost)
 	assert.Post(mult >= 1-m.boost && mult <= 1+m.boost, "prior.Mult: %v outside [1-%v, 1+%v]", mult, m.boost, m.boost)

@@ -27,6 +27,7 @@ type Params struct {
 	MemoryWeight   float64           `json:"memory_weight"`   // multiplier of the query-memory list's RRF term (PLAN 6.3)
 	ExactList      bool              `json:"exact_list"`      // run the exact-identifier list for a query with an identifier
 	Spell          bool              `json:"spell"`           // correct unknown words when the FTS list is short (PLAN 5.6)
+	PhraseBoost    bool              `json:"phrase_boost"`    // phrase and NEAR tiers ahead of AND for a query of two or more groups (PLAN 4.6)
 	// SupersedePenalty multiplies the RRF score of a chunk whose entry another entry supersedes
 	// (PLAN 5.3); 1 leaves the order alone.
 	SupersedePenalty float64 `json:"supersede_penalty"`
@@ -50,6 +51,7 @@ func ParamsFrom(s config.Search) Params {
 		MemoryWeight:   s.ListWeights.Memory,
 		ExactList:      s.ExactList,
 		Spell:          s.Spell,
+		PhraseBoost:    s.PhraseBoost,
 
 		SupersedePenalty: s.SupersedePenalty,
 	}

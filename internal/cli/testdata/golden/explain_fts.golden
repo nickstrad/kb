@@ -1,14 +1,15 @@
 explain "tmux logout" · mode fts · k 8 · settings 43a17833f9e4
 settings: rrf_k=60 fts_weight=1 vec_weight=1 bm25 text=1 heading=2 title=3 list_limit=20 candidate_limit=40 per_entry_cap=3 exact=1
 fts: match "tmux" AND "logout" · AND
+tiers: phrase "tmux logout" (0 rows) · near NEAR("tmux" "logout", 8) (1 row) · and "tmux" AND "logout" (2 rows)
 lists: fts 2 rows · vec 0 rows · 2 candidates
 
 #1  rrf 0.016393  tmux.md  [returned as hit #1]
-    fts  rank 1  bm25 -2.0361  columns text -1.3671 · heading 0.0000 · title -1.4787
+    fts  rank 1  tier near  bm25 -2.0361  columns text -1.3671 · heading 0.0000 · title -1.4787
     vec  -
     rrf  fts 1/(60+1)=0.016393
 
 #2  rrf 0.016129  tmux.md › Detach  [returned as hit #2]
-    fts  rank 2  bm25 -1.7706  columns text -0.3881 · heading 0.0000 · title -1.3824
+    fts  rank 2  tier and  bm25 -1.7706  columns text -0.3881 · heading 0.0000 · title -1.3824
     vec  -
     rrf  fts 1/(60+2)=0.016129

@@ -72,8 +72,9 @@ func insertResults(ctx context.Context, tx *sql.Tx, searchID int64, results []st
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO search_results
 			(search_id, rank, store, chunk_id, entry_path, heading,
-			 fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, prior)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			 fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, prior,
+			 memory_rank, memory_score, fts_tier)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare search_results: %w", err)
 	}
@@ -81,7 +82,8 @@ func insertResults(ctx context.Context, tx *sql.Tx, searchID int64, results []st
 	for i, c := range results {
 		if _, err := stmt.ExecContext(ctx, searchID, i+1, nullString(c.Store), c.ChunkID, c.EntryPath, c.Heading,
 			nullInt(c.FTSRank), nullFloat(c.FTSScore), nullInt(c.VecRank), nullFloat(c.VecDistance),
-			nullInt(c.ExactRank), nullFloat(c.ExactScore), c.RRFScore, nullFloat(c.Prior)); err != nil {
+			nullInt(c.ExactRank), nullFloat(c.ExactScore), c.RRFScore, nullFloat(c.Prior),
+			nullInt(c.MemoryRank), nullFloat(c.MemoryScore), nullString(c.FTSTier)); err != nil {
 			return fmt.Errorf("insert search_results rank %d: %w", i+1, err)
 		}
 	}
@@ -107,8 +109,9 @@ func insertCandidates(ctx context.Context, tx *sql.Tx, searchID int64, candidate
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO search_candidates
 			(search_id, fused_rank, store, chunk_id, entry_path, heading,
-			 fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, prior, returned)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			 fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, prior,
+			 memory_rank, memory_score, fts_tier, returned)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare search_candidates: %w", err)
 	}
@@ -120,7 +123,8 @@ func insertCandidates(ctx context.Context, tx *sql.Tx, searchID int64, candidate
 		}
 		if _, err := stmt.ExecContext(ctx, searchID, i+1, nullString(c.Store), c.ChunkID, c.EntryPath, c.Heading,
 			nullInt(c.FTSRank), nullFloat(c.FTSScore), nullInt(c.VecRank), nullFloat(c.VecDistance),
-			nullInt(c.ExactRank), nullFloat(c.ExactScore), c.RRFScore, nullFloat(c.Prior), flag); err != nil {
+			nullInt(c.ExactRank), nullFloat(c.ExactScore), c.RRFScore, nullFloat(c.Prior),
+			nullInt(c.MemoryRank), nullFloat(c.MemoryScore), nullString(c.FTSTier), flag); err != nil {
 			return fmt.Errorf("insert search_candidates rank %d: %w", i+1, err)
 		}
 	}

@@ -118,8 +118,9 @@ func interruptedErr(err error, sum reindex.Summary) error {
 
 // ensureEmbedMetaForReindex checks the stored embed_meta against embedder. On a fresh database it
 // records it and returns force=false. On a mismatch with all=true it prints the mismatch to
-// stderr, Pings the embedder (if it is a pinger), wipes the derived index with ResetIndex, records
-// the new embed_meta and returns force=true, so every entry is re-embedded. The Ping comes first
+// Pings the embedder (if it is a pinger), prints to stderr that it is rebuilding, wipes the
+// derived index with ResetIndex, records the new embed_meta and returns force=true, so every entry
+// is re-embedded. The Ping comes first
 // because ResetIndex is destructive: an unusable embedder must fail (exit 2) while the old index
 // is intact. With all=false a mismatch is returned as is (a Conflict): reindexing one entry would
 // leave the rest under the old model.
@@ -133,8 +134,6 @@ func ensureEmbedMetaForReindex(ctx context.Context, st store.Index, embedder emb
 	if !errors.As(err, &mismatch) || !all {
 		return false, err
 	}
-	fmt.Fprintln(stderr, mismatch.Error())
-
 	if p, ok := embedder.(pinger); ok {
 		if pingErr := p.Ping(ctx); pingErr != nil {
 			// A Ctrl-C during the ping is not an embedder failure: return the cancel as is, so it
@@ -145,6 +144,9 @@ func ensureEmbedMetaForReindex(ctx context.Context, st store.Index, embedder emb
 			return false, embedderErr("refusing to reset the index, the embedder is not usable: %v", pingErr)
 		}
 	}
+	// The notice follows the ping: a run that refuses to reset says so, not that it is rebuilding.
+	fmt.Fprintf(stderr, "%s: this database was indexed with %s (%d dims) but this run uses %s (%d dims); rebuilding the index\n",
+		store.ErrEmbedMetaMismatch, mismatch.StoredModel, mismatch.StoredDim, mismatch.WantModel, mismatch.WantDim)
 	if err := st.ResetIndex(ctx); err != nil {
 		return false, err
 	}

@@ -727,6 +727,35 @@ func searchLogRoundTrip(t *testing.T, st store.Store) {
 	}
 	exactRoundTrip(t, st, at)
 	priorRoundTrip(t, st, at)
+	tierMemoryRoundTrip(t, st, at)
+}
+
+// tierMemoryRoundTrip: a hit's tier in the main FTS list (PLAN 4.6) and its place in the
+// query-memory list (Q135) are logged on the result and candidate rows, NULL when absent.
+func tierMemoryRoundTrip(t *testing.T, st store.Store, at time.Time) {
+	rank, u := 2, 0.625
+	full := store.LoggedHit{ChunkID: 3, EntryPath: "x.md", RRFScore: 0.02, FTSTier: store.TierNear, MemoryRank: &rank, MemoryScore: &u}
+	bare := store.LoggedHit{ChunkID: 4, EntryPath: "y.md", RRFScore: 0.01}
+	id, err := st.LogSearch(ctx, store.SearchRecord{TS: at, Query: "tier memory", Mode: "fts", K: 5, Caller: "c",
+		Results: []store.LoggedHit{full}, Candidates: []store.LoggedHit{full, bare}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []struct {
+		sql  string
+		want [][]any
+	}{
+		{"SELECT fts_tier, memory_rank, memory_score FROM search_results WHERE search_id = ? ORDER BY rank", [][]any{{"near", int64(2), 0.625}}},
+		{"SELECT fts_tier, memory_rank, memory_score FROM search_candidates WHERE search_id = ? ORDER BY fused_rank", [][]any{{"near", int64(2), 0.625}, {nil, nil, nil}}},
+	} {
+		tab, err := st.QueryLog(ctx, q.sql, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := fmt.Sprint(tab.Rows), fmt.Sprint(q.want); got != want {
+			t.Errorf("%s = %s, want %s", q.sql, got, want)
+		}
+	}
 }
 
 // exactRoundTrip: a hit's place in the exact list is logged with it, NULL when it was not there.

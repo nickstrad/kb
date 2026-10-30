@@ -18,6 +18,7 @@ import (
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/search"
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // MaxGrid is the most settings one sweep replays: each is a full replay of the judged log.
@@ -32,8 +33,9 @@ type Axis struct {
 	Values []string `json:"values"`
 }
 
-// ParseAxis parses "search.key=v1,v2,…". Only [search] keys sweep, and not search.k (metrics at
-// different k do not compare) or search.stores (kb eval replays this store only). Values are
+// ParseAxis parses "search.key=v1,v2,…". Only [search] and [prior] keys sweep, and not search.k
+// (metrics at different k do not compare) or search.stores (kb eval replays this store only); a
+// [prior] axis has its own, stricter gate (PriorGate). Values are
 // comma-separated, trimmed, non-empty and distinct; whether they suit the key is checked by
 // ExpandGrid. Every failure is a Usage error.
 func ParseAxis(spec string) (Axis, error) {
@@ -50,8 +52,8 @@ func ParseAxis(spec string) (Axis, error) {
 		return fail("cannot sweep search.k: metrics at different k do not compare; run kb eval -k N per k")
 	case key == "search.stores":
 		return fail("cannot sweep search.stores: kb eval replays this store only")
-	case !strings.HasPrefix(key, "search."):
-		return fail("only [search] keys sweep, such as search.rrf_k or search.bm25.title")
+	case !strings.HasPrefix(key, "search.") && !strings.HasPrefix(key, "prior."):
+		return fail("only [search] and [prior] keys sweep, such as search.rrf_k or prior.max_boost")
 	}
 	a := Axis{Key: key}
 	for _, v := range strings.Split(list, ",") {
@@ -133,6 +135,29 @@ func Gate(judged, minJudged int, force bool) error {
 	return nil
 }
 
+// PriorGate checks the [prior] axes of a sweep (PLAN 6.4). It refuses them on fewer than
+// minJudged judged queries, even when forced: the prior learns from the same verdicts the sweep
+// scores, so tuning it on a small log fits the feedback to itself. It also refuses a [prior] axis
+// that no setting of the grid turns on (prior.enabled false throughout), which would replay the
+// same ranking for every value. Axes without a [prior] key pass.
+func PriorGate(axes []Axis, grid []Combo, judged, minJudged int) error {
+	const op = "eval.PriorGate"
+	for _, a := range axes {
+		if !strings.HasPrefix(a.Key, "prior.") {
+			continue
+		}
+		if judged < minJudged {
+			return errs.New(errs.Usage, op,
+				"--sweep %s needs ≥%d judged queries (have %d); --force does not apply to [prior] keys: the prior learns from the verdicts the sweep scores",
+				a.Key, minJudged, judged)
+		}
+		if !slices.ContainsFunc(grid, func(c Combo) bool { return c.Config.Prior.Enabled }) {
+			return errs.New(errs.Usage, op, "--sweep %s changes nothing while prior.enabled is false; add --set prior.enabled=true", a.Key)
+		}
+	}
+	return nil
+}
+
 // Split divides the judged query keys into the keys that choose a setting (train) and the keys
 // held out to report it (test), both sorted. The order is by SHA-256 of (seed, key), so the same
 // keys and seed always split the same way, and a key's side does not depend on the order the
@@ -188,6 +213,7 @@ type SweepOptions struct {
 	Resamples int
 	Seed      uint64
 	Top       int
+	Evidence  []store.JudgedSearch // as Options.Evidence
 }
 
 // SweepReport is one sweep; its JSON tags are the kb eval --sweep --json contract.
@@ -302,7 +328,7 @@ func sweep(ctx context.Context, p *Prepared, base config.Config, axes []Axis, gr
 		Train: train, Test: test, Top: []SweepRow{}, Grid: make([]GridPoint, 0, len(grid)), Warnings: []string{},
 	}
 	inTrain, inTest := keySet(train), keySet(test)
-	evalOpt := Options{Mode: opt.Mode, K: opt.K, MinJudged: opt.MinJudged, Resamples: opt.Resamples, Seed: opt.Seed}
+	evalOpt := Options{Mode: opt.Mode, K: opt.K, MinJudged: opt.MinJudged, Resamples: opt.Resamples, Seed: opt.Seed, Evidence: opt.Evidence}
 
 	replays := map[string]*Report{} // by settings hash
 	replay := func(cfg config.Config) (*Report, string, error) {

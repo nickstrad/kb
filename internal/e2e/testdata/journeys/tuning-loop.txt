@@ -100,28 +100,28 @@ Judge a few searches. Each query has a gold chunk marked useful.
 
   $ kb search "cache invalidation" --mode fts --caller claude
   search 6 · 2 hits
-  [1] data/cache.md · updated 2026-02-05
-  Cache rules: When the cache is invalidated.
-
-  [2] data/cache.md › (intro) · updated 2026-02-05
+  [1] data/cache.md › (intro) · updated 2026-02-05
   Cache rules › (intro)
   # Cache rules
 
   Cache invalidation happens on every write.
+
+  [2] data/cache.md · updated 2026-02-05
+  Cache rules: When the cache is invalidated.
   search_id=6
   $ kb feedback --last 1 --useful --caller claude
   recorded: search 6 rank 1 useful=1 (newest search for claude, (time): "cache invalidation")
 
   $ kb search "embedding model flag" --mode fts --caller claude
   search 7 · 2 hits
-  [1] data/flags.md · updated 2026-02-06
-  Embedding flags: Flags that choose the embedding model.
-
-  [2] data/flags.md › (intro) · updated 2026-02-06
+  [1] data/flags.md › (intro) · updated 2026-02-06
   Embedding flags › (intro)
   # Embedding flags
 
   Pass the embedding model flag to choose the model for one run.
+
+  [2] data/flags.md · updated 2026-02-06
+  Embedding flags: Flags that choose the embedding model.
   search_id=7
   $ kb feedback --last 1 --useful --caller claude
   recorded: search 7 rank 1 useful=1 (newest search for claude, (time): "embedding model flag")
@@ -155,12 +155,21 @@ explain shows every candidate and where its score comes from. It does not write 
   ~ explain "restart the service" · mode fts · k 8 · settings [0-9a-f]{12}
   settings: rrf_k=60 fts_weight=1 vec_weight=1 bm25 text=1 heading=2 title=3 list_limit=20 candidate_limit=40 per_entry_cap=3 exact=1
   fts: match "restart" AND "the" AND "service" · AND
+  tiers: phrase "restart the service" (2 rows) · near NEAR("restart" "the" "service", 8) (2 rows) · and "restart" AND "the" AND "service" (2 rows)
   lists: fts 2 rows · vec 0 rows · 2 candidates
   ...
+
   ~ #1  rrf [0-9.]+  data/deploy/README.md  \[returned as hit #1\]
   ...
+      fts  rank 1  tier phrase  bm25 -4.1671  columns text -3.6318 · heading 0.0000 · title -2.3473
+      vec  -
+      rrf  fts 1/(60+1)=0.016393
+
   ~ #2  rrf [0-9.]+  data/deploy/README.md › \(intro\)  \[returned as hit #2\]
   ...
+      fts  rank 2  tier phrase  bm25 -3.7992  columns text -3.3799 · heading 0.0000 · title -2.1107
+      vec  -
+      rrf  fts 1/(60+2)=0.016129
 
   $ kb explain "restart the service" --mode fts --json
   {

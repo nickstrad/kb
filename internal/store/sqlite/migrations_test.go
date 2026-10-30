@@ -52,6 +52,7 @@ func TestIndexSteps(t *testing.T) {
 		{"index/0006-exact-list", migrate.EffectNone},
 		{"index/0007-edges-tags-aliases", migrate.EffectReindex},
 		{"index/0008-prior", migrate.EffectNone},
+		{"index/0009-tier-memory", migrate.EffectNone},
 	}
 	if len(indexSteps) != len(want) {
 		t.Fatalf("%d steps, the effect table lists %d: add the new step's (ID, Effect) row", len(indexSteps), len(want))
@@ -298,6 +299,33 @@ func TestStepEffects(t *testing.T) {
 				t.Errorf("%d entries lost their body_hash: the step must not ask for a reindex (Effect none)", n)
 			}
 		},
+		"index/0009-tier-memory": func(t *testing.T, db *sql.DB) {
+			// Effect none: three nullable columns on each log table, NULL on every old row
+			// (those searches had no tiers and logged no memory rank), a CHECK on the tier, and
+			// nothing else cleared.
+			for _, table := range []string{"search_results", "search_candidates"} {
+				for _, col := range []struct{ name, typ string }{{"fts_tier", "TEXT"}, {"memory_rank", "INTEGER"}, {"memory_score", "REAL"}} {
+					if n := count(t, db, "SELECT count(*) FROM pragma_table_info('"+table+"') WHERE name = '"+col.name+"' AND type = '"+col.typ+"' AND \"notnull\" = 0"); n != 1 {
+						t.Errorf("%s.%s: want one nullable %s column, found %d", table, col.name, col.typ, n)
+					}
+					if n := count(t, db, "SELECT count(*) FROM "+table+" WHERE "+col.name+" IS NOT NULL"); n != 0 {
+						t.Errorf("%d old %s rows have %s set; want NULL", n, table, col.name)
+					}
+				}
+				if n := count(t, db, "SELECT count(*) FROM "+table); n == 0 {
+					t.Errorf("the fixture has no %s rows: the checks would be vacuous", table)
+				}
+			}
+			if _, err := db.Exec(`UPDATE search_results SET fts_tier = 'fuzzy'`); err == nil {
+				t.Error("fts_tier accepted a value outside phrase, near, and, or")
+			}
+			if _, err := db.Exec(`UPDATE search_results SET fts_tier = 'near', memory_rank = 1, memory_score = 0.5`); err != nil {
+				t.Errorf("the new columns take their values: %v", err)
+			}
+			if n := count(t, db, "SELECT count(*) FROM entries WHERE body_hash = ''"); n != 0 {
+				t.Errorf("%d entries lost their body_hash: the step must not ask for a reindex (Effect none)", n)
+			}
+		},
 		"index/0005-hit-store": func(t *testing.T, db *sql.DB) {
 			for _, table := range []string{"search_results", "search_candidates"} {
 				if n := count(t, db, "SELECT count(*) FROM pragma_table_info('"+table+"') WHERE name = 'store' AND type = 'TEXT' AND \"notnull\" = 0"); n != 1 {
@@ -382,6 +410,7 @@ var fixtureSeeds = map[int]func(t *testing.T, s *Store){
 	6: seedV6,
 	7: seedV7,
 	8: seedV8,
+	9: seedV9,
 }
 
 func seedV1(t *testing.T, s *Store) {
@@ -574,6 +603,23 @@ func seedV8(t *testing.T, s *Store) {
 		INSERT INTO search_candidates (search_id, fused_rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, returned, store, prior)
 		VALUES (7, 1, 5, 'gamma.md', '', 1, -1.75, 1, 0.125, NULL, NULL, 0.0361, 1, NULL, 1.1);
 		INSERT INTO search_feedback (search_id, rank, useful, note, ts) VALUES (7, 1, 1, 'prior helped', '2026-10-07T09:01:00Z');`)
+}
+
+// seedV9 is a v9 store: the v8 data, plus a search whose main list ran tiered (a phrase hit and
+// an AND hit) and whose hit also came from the query-memory list.
+func seedV9(t *testing.T, s *Store) {
+	t.Helper()
+	seedV8(t, s)
+	execAll(t, s.DB(), `
+		INSERT INTO searches (id, ts, query, mode, k, n_returned, caller, corpus_rev, kb_version, settings, settings_hash, fts_query)
+		VALUES (8, '2026-10-08T09:00:00Z', 'kubernetes cluster', 'fts', 8, 1, 'claude', NULL, 'v0.9.0',
+		        '{"embed":{"batch":16,"dim":0,"int8":false,"model":"BAAI/bge-small-en-v1.5","workers":0},"prior":{"enabled":false,"half_life_days":90,"max_boost":0.2,"min_judged":50,"query_memory":true},"search":{"exact_list":true,"k":8,"phrase_boost":true,"rrf_k":60}}',
+		        '5d3b1f9e7c5a3b1d9f7e5c3a1b9d7f5e3c1a9b7d5f3e1c9a7b5d3f1e9c7a5b3d', '"kubernetes" AND "cluster"');
+		INSERT INTO search_results (search_id, rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, store, prior, memory_rank, memory_score, fts_tier)
+		VALUES (8, 1, 5, 'gamma.md', '', 1, -2.5, NULL, NULL, NULL, NULL, 0.0328, NULL, NULL, 1, 0.75, 'phrase');
+		INSERT INTO search_candidates (search_id, fused_rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, returned, store, prior, memory_rank, memory_score, fts_tier)
+		VALUES (8, 1, 5, 'gamma.md', '', 1, -2.5, NULL, NULL, NULL, NULL, 0.0328, 1, NULL, NULL, 1, 0.75, 'phrase'),
+		       (8, 2, 2, 'alpha.md', '', 2, -1.5, NULL, NULL, NULL, NULL, 0.0161, 0, NULL, NULL, NULL, NULL, 'and');`)
 }
 
 // TestStep7BackfillsTags: the v7 step backfills entry_tags from entries.tags lowercased and

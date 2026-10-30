@@ -259,6 +259,7 @@ Each migration below is appended in `internal/store/sqlite/migrations.go` and ne
 | 5→6 | 4.5 | `CREATE VIRTUAL TABLE chunks_exact USING fts5(text, heading, content='', contentless_delete=1, tokenize="unicode61 remove_diacritics 0 tokenchars '_-.:/'");` backfilled with `INSERT INTO chunks_exact(rowid,text,heading) SELECT id,text,heading FROM chunks;`. Add `exact_rank INTEGER, exact_score REAL` to `search_results` and `search_candidates`. | no (backfill from `chunks`) |
 | 6→7 | 5.2 | `CREATE TABLE edges(src_entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE, dst_path TEXT NOT NULL, dst_entry_id INTEGER REFERENCES entries(id) ON DELETE SET NULL, rel TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('path','wikilink')), PRIMARY KEY(src_entry_id,dst_path,rel,kind));` `CREATE INDEX edges_dst ON edges(dst_entry_id);` `CREATE TABLE entry_tags(entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE, tag TEXT NOT NULL, PRIMARY KEY(entry_id,tag));` backfilled via `json_each(entries.tags)` lowercased. `ALTER TABLE entries ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]'; UPDATE entries SET body_hash='';` | **yes**: plain `kb reindex` (edges/aliases); embeddings are reused by text_hash, so it is cheap |
 | 7→8 | 6.2 | `ALTER TABLE search_results ADD COLUMN prior REAL; ALTER TABLE search_candidates ADD COLUMN prior REAL;` | no |
+| 8→9 | 4.6 + Q135 | On both `search_results` and `search_candidates`: `ADD COLUMN fts_tier TEXT CHECK (fts_tier IN ('phrase','near','and','or'))`, `ADD COLUMN memory_rank INTEGER`, `ADD COLUMN memory_score REAL`. NULL = untiered main list / not in the memory list (every older row). | no |
 
 Contentless FTS tables can be repopulated from `chunks` + `entries.title`, so tokenizer changes never need re-embedding.
 
@@ -882,7 +883,8 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **4.6 Phrase/NEAR tier**
 - Carried from W9 pass: plug the phrase and NEAR tiers into `Searcher.lexicalList` (search.go), which already runs the main and the exact list with the AND→OR retry; `store.FTSQuery` has `Exact` for the identifier index (no title column, `Weights.Title` ignored there). Each tier is another RRF list: add its rank/score to `Candidate`, `fusedBefore` (after exact rank, before chunk id), `assertFused`, `loggedHits` (a v8+ log column, so it waits for a migration slot) and explain, as 4.5 did for exact. `search.phrase_boost` is still reserved.
 - Model: Sonnet (FTS tier assembly from precise spec); review: Opus via testing-standards-pass (ranking)
-- Files: `search/search.go` (FTS list assembly).
+- Status: done (W13). Mig v9 `index/0009-tier-memory` (Effect none): `fts_tier` (CHECK phrase/near/and/or), `memory_rank`, `memory_score` on both log tables. The tiers are not extra RRF lists: one FTS list (phrase, NEAR window 8, AND; OR only when AND is empty), deduplicated in tier order, cut to `list_limit`, every row rescored by the AND query so `fts_score` keeps one meaning. Phrase and NEAR use the literal words (no synonym or spell alternatives). Explain shows a `tiers:` line and `tier` per candidate. The default `phrase_boost = true` stays on pending the eval on the owner's corpus (the mechanism is checked on a fixture; the real delta is the owner's call).
+- Files: `search/search.go` (FTS list assembly), `search/tiers.go`, `sqlite/retrieve.go` (OpPhrase, OpNear), migration 8→9.
 - Steps:
   1. With ≥2 groups and `phrase_boost`, run `OpPhrase` (`"a b c"`), then `OpNear` (`NEAR("a" "b", 8)`), then AND, then the OR fallback.
   2. Concatenate them deduplicated in tier order, truncated to `list_limit`. The FTS rank therefore prefers exact phrasing.
@@ -1010,6 +1012,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **6.4 Validate with eval**
 - Carried from W12 pass: (Q133) `Judged` + `prior.Build` cost about 40 ms per search at 10k judged searches, linear in the log; a replay must build the evidence once per run and slice it by `AsOf` (and filter the read to judged searches), not call `loadEvidence` per query (O(N²)). (Q140) eval searchers have no `Prior`, so `--set prior.enabled=true` replays without the prior while the hash differs: wire `Searcher.Prior` (primary JudgedLog) and a `ChunkLocator` store in replay. Event times are `Verdict.At`/`OpenedAt` (DEFAULTS #267); memory is not logged, so read it from `Outcome`.
 - Model: Opus (leakage-free replay methodology); review: Sonnet via testing-standards-pass
+- Status: done (W13). Defaults stay off pending the owner's eval on real data (DEFAULTS #279). Q146: the live path still reads the whole log per search.
 - Files: `internal/eval/replay.go`.
 - Steps: replay passes `asOf = original search ts` to prior/memory, so there is no leakage. Add `--set prior.enabled=true` comparisons, and refuse a sweep of prior params under `eval.min_judged`.
 - Accept: `kb eval --set prior.enabled=true --compare` prints deltas. Only turn the defaults on if the holdout MRR improves beyond the CI.
@@ -1328,6 +1331,7 @@ A wave starts when every item of the previous wave is merged and its review pass
 | v6 | 4.5 (+ `chunks_exact_vocab`, moved from v7; see 6.5) | W9 | v5 |
 | v7 | 5.2 | W10 | v6 |
 | v8 | 6.2 | W12 | v7 |
+| v9 | 4.6 (+ Q135 memory rank/score) | W13 | v8 |
 
 - The migrations list is positional, so items merge in version order even when they are built in parallel.
 - If a lower-numbered item stalls, the orchestrator decides whether to swap numbers. Any swap updates §2.5 and this table in the same change.

@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"slices"
+	"time"
 
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/search"
@@ -30,6 +31,11 @@ type Options struct {
 	Resamples    int
 	Seed         uint64
 	SettingsHash string
+	// Evidence is the judged log the replays' feedback prior and query memory read, when it is
+	// wider than the searches evaluated (kb eval --since, --caller). A replay leaves out every
+	// search of its query in it, not only the window's: a same-query search outside the window
+	// carries the same gold (PLAN 6.4). nil when the prior reads the evaluated searches or nothing.
+	Evidence []store.JudgedSearch
 }
 
 // Report is one evaluation; its JSON tags are the kb eval --json contract.
@@ -55,7 +61,19 @@ type Report struct {
 	Confidence      float64        `json:"confidence"`
 	FallbackQueries int            `json:"fts_fallback_queries"`
 	FallbackReason  string         `json:"fts_fallback_reason,omitempty"`
-	PerQuery        []Result       `json:"per_query"`
+	// Prior is what the feedback prior and the query memory did in the replays.
+	Prior    PriorUse `json:"prior"`
+	PerQuery []Result `json:"per_query"`
+}
+
+// PriorUse counts the replays the feedback prior (PLAN 6.2) and the query memory (6.3) took part
+// in. Each replay sees the evidence as of its original search's time, less its own query's
+// searches (Request.ExcludeEvidence), so the gate can be open for late queries and closed for
+// early ones.
+type PriorUse struct {
+	Enabled int `json:"enabled"` // replays with [prior] enabled
+	Active  int `json:"active"`  // ... whose gate was open: prior.min_judged judged searches before them
+	Memory  int `json:"memory"`  // ... where the query memory placed at least one hit
 }
 
 // OtherStoreGold counts the gold a cross-store search recorded on other stores' hits. kb eval
@@ -130,6 +148,7 @@ func evaluate(ctx context.Context, searches []store.JudgedSearch, corpus Corpus,
 type Prepared struct {
 	queries []Query
 	golds   []gold
+	asOf    []time.Time // per query: its newest search's time, the replay's asOf (zero when not replayed)
 	counts  SearchCounts
 }
 
@@ -145,7 +164,7 @@ func Prepare(ctx context.Context, searches []store.JudgedSearch, corpus Corpus) 
 
 func prepare(ctx context.Context, searches []store.JudgedSearch, corpus Corpus) (*Prepared, error) {
 	queries, counts := Extract(searches)
-	p := &Prepared{queries: queries, golds: make([]gold, len(queries)), counts: counts}
+	p := &Prepared{queries: queries, golds: make([]gold, len(queries)), asOf: make([]time.Time, len(queries)), counts: counts}
 	pres := newPresence(corpus)
 	for i, q := range queries {
 		g, err := resolveGold(ctx, pres, q)
@@ -153,8 +172,26 @@ func prepare(ctx context.Context, searches []store.JudgedSearch, corpus Corpus) 
 			return nil, err
 		}
 		p.golds[i] = g
+		if g.replayed() {
+			if p.asOf[i], err = replayTime(q); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return p, nil
+}
+
+// replayTime is the instant a query is replayed as of: its newest search's logged time, the
+// search whose text the replay runs. The log always holds RFC 3339 times (sqlite stamps them), so
+// one that does not parse is a damaged log, not a kb bug.
+func replayTime(q Query) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339, q.TS)
+	if err != nil {
+		id := q.SearchIDs[len(q.SearchIDs)-1]
+		return time.Time{}, errs.Wrap(err, errs.Conflict, "eval.replay",
+			"the search log is damaged: search %d has timestamp %q; correct or delete that row", id, q.TS).With("search", id)
+	}
+	return t, nil
 }
 
 // Judged is the keys of the queries with chunk-level gold in the index: the queries the headline
@@ -184,6 +221,7 @@ func (p *Prepared) run(ctx context.Context, s Searcher, opt Options, intervals b
 		PerQuery: []Result{},
 	}
 	var chunkS, entryS, openS []Score
+	own := searchesByKey(opt.Evidence)
 	for i, q := range p.queries {
 		g := p.golds[i]
 		g.count(rep)
@@ -194,11 +232,15 @@ func (p *Prepared) run(ctx context.Context, s Searcher, opt Options, intervals b
 		}
 		res := Result{Query: q.Key, Text: q.Text, SearchIDs: q.SearchIDs, Gold: g.items, Opened: g.opened,
 			OtherStoreGold: q.OtherUseful + q.OtherOpens}
-		if len(g.chunks)+len(g.paths)+len(g.opens) > 0 {
-			out, err := s.Search(ctx, search.Request{Query: q.Text, Mode: opt.Mode, K: opt.K})
+		if g.replayed() {
+			// As of the original search, without the query's own searches: no feedback given after
+			// it, and none of the verdicts that are its gold, reach the prior or the query memory.
+			out, err := s.Search(ctx, search.Request{Query: q.Text, Mode: opt.Mode, K: opt.K,
+				AsOf: p.asOf[i], ExcludeEvidence: leaveOut(q.SearchIDs, own[q.Key])})
 			if err != nil {
 				return nil, errs.Wrap(err, errs.KindOf(err), "eval.replay", "replay %q: %v", q.Text, err).With("query", q.Text)
 			}
+			rep.Prior.count(out)
 			res.Mode = out.Mode
 			if out.Mode == search.ModeFTSFallback {
 				rep.FallbackQueries++
@@ -281,6 +323,46 @@ func resolveGold(ctx context.Context, pres *presence, q Query) (gold, error) {
 		}
 	}
 	return g, nil
+}
+
+// searchesByKey is the ids of log's searches by Normalize(query): the query a search belongs to,
+// as Extract groups them.
+func searchesByKey(log []store.JudgedSearch) map[string][]int64 {
+	by := map[string][]int64{}
+	for _, j := range log {
+		if k := Normalize(j.Query); k != "" {
+			by[k] = append(by[k], j.ID)
+		}
+	}
+	return by
+}
+
+// leaveOut is the searches a replay leaves out of the prior's evidence: the query's own searches
+// in the evaluated window plus its searches in the evidence log (more when the window is
+// filtered), sorted and unique. With nothing beyond the window it is ids itself.
+func leaveOut(ids, more []int64) []int64 {
+	if len(more) == 0 {
+		return ids
+	}
+	out := slices.Concat(ids, more)
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// replayed reports whether the query has gold in the index, so it is replayed and scored.
+func (g gold) replayed() bool { return len(g.chunks)+len(g.paths)+len(g.opens) > 0 }
+
+// count adds one replay's prior and memory state.
+func (u *PriorUse) count(out *search.Outcome) {
+	if out.Prior.Enabled {
+		u.Enabled++
+	}
+	if out.Prior.Active {
+		u.Active++
+	}
+	if out.Memory.Items > 0 {
+		u.Memory++
+	}
 }
 
 // count adds the query's missing gold and drops to the report.

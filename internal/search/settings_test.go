@@ -32,7 +32,7 @@ func TestDefaultParamsMatchConstants(t *testing.T) {
 	want := Params{
 		ListLimit: ListLimit, CandidateLimit: CandidateLimit, PerEntryCap: PerEntryCap, RRFK: RRFConstant,
 		VecOverFetch: vecOverFetch, BM25: store.DefaultBM25(), FTSWeight: 1, VecWeight: 1,
-		ExactWeight: 1, MemoryWeight: 1, ExactList: true, Spell: true, SupersedePenalty: 0.5,
+		ExactWeight: 1, MemoryWeight: 1, ExactList: true, Spell: true, PhraseBoost: true, SupersedePenalty: 0.5,
 		Prior: prior.Params{MinJudged: 50, HalfLifeDays: 90, MaxBoost: 0.2},
 	}
 	if got := DefaultParams(); got != want {
@@ -49,11 +49,11 @@ func TestParamsFromMapsEveryKey(t *testing.T) {
 		ListLimit: 11, CandidateLimit: 12, PerEntryCap: 13, RRFK: 14, VecOverfetch: 15,
 		BM25:        config.BM25{Text: 1.5, Heading: 2.5, Title: 3.5},
 		ListWeights: config.ListWeights{FTS: 0.25, Vec: 0.75, Exact: 0.5, Memory: 9},
-		ExactList:   true, SupersedePenalty: 0.25,
+		ExactList:   true, PhraseBoost: true, SupersedePenalty: 0.25,
 	}
 	want := Params{ListLimit: 11, CandidateLimit: 12, PerEntryCap: 13, RRFK: 14, VecOverFetch: 15,
 		BM25: store.BM25Weights{Text: 1.5, Heading: 2.5, Title: 3.5}, FTSWeight: 0.25, VecWeight: 0.75,
-		ExactWeight: 0.5, MemoryWeight: 9, ExactList: true, SupersedePenalty: 0.25}
+		ExactWeight: 0.5, MemoryWeight: 9, ExactList: true, PhraseBoost: true, SupersedePenalty: 0.25}
 	if got := ParamsFrom(s); got != want {
 		t.Errorf("ParamsFrom = %+v, want %+v", got, want)
 	}

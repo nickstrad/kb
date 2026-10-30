@@ -17,6 +17,7 @@ import (
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/search"
 	"github.com/nickstrad/kb/internal/store"
 	"github.com/nickstrad/kb/internal/store/sqlite"
 )
@@ -166,7 +167,7 @@ func TestExplainJSONShape(t *testing.T) {
 	var settings map[string]json.RawMessage
 	_ = json.Unmarshal(top["settings"], &settings)
 	wantKeys(t, "settings", settings, "bm25_heading", "bm25_text", "bm25_title", "candidate_limit", "exact_list",
-		"exact_weight", "fts_weight", "list_limit", "per_entry_cap", "rrf_k", "supersede_penalty", "vec_weight")
+		"exact_weight", "fts_weight", "list_limit", "per_entry_cap", "phrase_boost", "rrf_k", "supersede_penalty", "vec_weight")
 	var fts map[string]json.RawMessage
 	_ = json.Unmarshal(top["fts"], &fts)
 	wantKeys(t, "fts", fts, "match", "op", "or_fallback")
@@ -368,5 +369,54 @@ func TestExplainExactList(t *testing.T) {
 		if len(ex.Candidates) == 0 || ex.Candidates[0].Path != tc.want || ex.Candidates[0].Exact == nil || ex.Candidates[0].Exact.Rank != 1 {
 			t.Errorf("%v: top candidate %+v, want %s at exact rank 1", tc.args, ex.Candidates, tc.want)
 		}
+	}
+}
+
+// TestExplainPhraseTier is the PLAN 4.6 accept case in the CLI: a multi-word query shows the
+// tiers line with each tier's expression and row count, and each candidate the tier that placed
+// it (the chunk holding the words adjacent is the phrase tier, ahead of the NEAR and AND ones);
+// phrase_boost=false removes the tiers; a bad value is a usage error.
+func TestExplainPhraseTier(t *testing.T) {
+	useRoot(t, newExplainRepo(t))
+	stdout, stderr, exit := runKB(t, []string{"explain", "alive after logout", "--mode", "fts"})
+	if exit != 0 || stderr != "" {
+		t.Fatalf("exit %d stderr %q", exit, stderr)
+	}
+	checkExplainGolden(t, "explain_phrase.golden", stdout)
+	for _, want := range []string{
+		`tiers: phrase "alive after logout" (1 row) · near NEAR("alive" "after" "logout", 8) (1 row) · and "alive" AND "after" AND "logout" (1 row)`,
+		"    fts  rank 1  tier phrase  bm25 ",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("no %q in:\n%s", want, stdout)
+		}
+	}
+
+	stdout, _, exit = runKB(t, []string{"explain", "alive after logout", "--mode", "fts", "--set", "search.phrase_boost=false"})
+	if exit != 0 || !strings.Contains(stdout, "tiers: off (search.phrase_boost = false)\n") || strings.Contains(stdout, "tier phrase") {
+		t.Errorf("phrase_boost=false: exit %d, want the tiers: off line and no tier on a candidate:\n%s", exit, stdout)
+	}
+
+	stdout, _, exit = runKB(t, []string{"explain", "alive after logout", "--mode", "fts", "--json"})
+	if exit != 0 {
+		t.Fatalf("exit %d", exit)
+	}
+	var ex search.Explanation
+	if err := json.Unmarshal([]byte(stdout), &ex); err != nil {
+		t.Fatal(err)
+	}
+	if ex.FTS == nil || len(ex.FTS.Tiers) != 3 || ex.FTS.Tiers[0].Tier != "phrase" || ex.Candidates[0].FTS.Tier != "phrase" {
+		t.Errorf("JSON tiers = %+v, first candidate %+v", ex.FTS, ex.Candidates[0].FTS)
+	}
+
+	// An AND that matches nothing falls back to OR, which is the only tier that ran.
+	stdout, _, exit = runKB(t, []string{"explain", "alive zzzunknown", "--mode", "fts"})
+	if exit != 0 || !strings.Contains(stdout, `tiers: or "alive" OR "zzzunknown" (1 row)`+"\n") || !strings.Contains(stdout, "    fts  rank 1  tier or  bm25 ") {
+		t.Errorf("OR fallback: exit %d, want a one-tier tiers line and tier or:\n%s", exit, stdout)
+	}
+
+	_, stderr, exit = runKB(t, []string{"explain", "x y", "--mode", "fts", "--set", "search.phrase_boost=maybe"})
+	if exit != 1 || !strings.Contains(stderr, "phrase_boost") {
+		t.Errorf("bad phrase_boost: exit %d stderr %q, want a usage error naming the key", exit, stderr)
 	}
 }

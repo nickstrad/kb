@@ -24,7 +24,9 @@ gold apart (`Query.OtherUseful/OtherOpens`, never a negative either) and `Report
 it; it is never checked against this index, where a same-named path is another entry.
 `eval.Replayable` decides whether the embedder must load.
 
-**Evidence times (6.2, W12).** `Verdict.At` (`search_feedback.ts`) and `JudgedSearch.OpenedAt[path]` (`search_opens.ts`) come back with the log; eval ignores them, the feedback prior (`search/prior.go`) uses them as event times. A damaged ts fails `Judged`.
+**Evidence times (6.2, W12).** `Verdict.At` (`search_feedback.ts`) and `JudgedSearch.OpenedAt[path]` (`search_opens.ts`) come back with the log; eval's gold ignores them, the feedback prior (`search/prior.go`) uses them as event times. A damaged ts fails `Judged`.
+
+**Replay with the prior (6.4, W13).** Every replay is `Request{AsOf: newest search's ts (Query.TS), ExcludeEvidence: Query.SearchIDs}`, prior on or off; see `eval-replay-leakage.md`. `prepare` parses the ts of replayed queries only; an unparsable one is a Conflict naming the search (test fixtures go through `stamped`). The CLI hands every searcher `Prior: search.NewEvidence(log)` when any setting of the run enables the prior (one read, or a second unfiltered read under `--since`/`--caller`: the prior learns from every caller). `Report.Prior` (`PriorUse`: enabled/active/memory replay counts) is printed as the `prior: active in a/b replays` line. `--sweep` takes `[prior]` keys; `PriorGate` refuses them below `eval.min_judged` even with `--force`, and refuses a prior axis no grid point enables.
 
 **Baselines (2.4, W9).** `eval.Baseline` (baseline.go) = version 1 + name, kb version, date, embed
 model, entry count, settings JSON+hash and the whole `Report` (per_query first_gold_rank, other_store).

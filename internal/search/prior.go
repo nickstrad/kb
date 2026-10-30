@@ -3,7 +3,9 @@ package search
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/nickstrad/kb/internal/assert"
@@ -47,18 +49,77 @@ func (p PriorState) Reason() string {
 }
 
 // evidence is the judged log of one search, read once (Q130) and shared by the feedback prior and
-// the query-memory list: the log as read, the prior model built from it and the gate's state.
+// the query-memory list: the gate's state, the prior model as of the search and the earlier
+// searches with the query's memory key.
 type evidence struct {
 	state  PriorState
-	judged []store.JudgedSearch // nil when the log was not read
+	judged []store.JudgedSearch // the searches with the query's MemoryKey, less any excluded; nil when the log was not read
 	model  prior.Model
 	asOf   time.Time
 }
 
+// Evidence is a judged log read once and prepared for any number of searches at different
+// instants (PLAN 6.4, Q133): kb eval reads the log once per run and every replay slices it as of
+// its original search time, instead of reading and rebuilding the whole log per replayed query.
+// It is pure data, read-only once built, and safe to share between searchers and goroutines.
+// As a Searcher's Prior it replaces the read: Search takes the prior and the query memory from it.
+type Evidence struct {
+	log   []store.JudgedSearch
+	index *prior.Index
+
+	once  sync.Once
+	byKey map[string][]store.JudgedSearch // MemoryKey -> searches, built on first use
+}
+
+// NewEvidence prepares a judged log (store.JudgedLog.Judged with no filter, oldest first): one
+// sort of its events, O(E log E). judged is kept, not copied; the caller must not change it.
+func NewEvidence(judged []store.JudgedSearch) *Evidence {
+	return &Evidence{log: judged, index: prior.NewIndex(priorEvents(judged))}
+}
+
+// Judged returns the prepared searches matching f (store.JudgedLog), so an *Evidence can be a
+// Searcher's Prior. Since compares the logged time; a search whose time does not parse is
+// returned only when f has no Since.
+func (e *Evidence) Judged(_ context.Context, f store.JudgedFilter) ([]store.JudgedSearch, error) {
+	var out []store.JudgedSearch
+	for _, j := range e.log {
+		if f.Caller != "" && j.Caller != f.Caller {
+			continue
+		}
+		if !f.Since.IsZero() {
+			if ts, err := time.Parse(time.RFC3339, j.TS); err != nil || ts.Before(f.Since) {
+				continue
+			}
+		}
+		out = append(out, j)
+	}
+	return out, nil
+}
+
+// sameKey is the searches whose query has the memory key, less the excluded ones: the only part
+// of the log the query-memory list reads (rememberedGold).
+func (e *Evidence) sameKey(memKey string, exclude []int64) []store.JudgedSearch {
+	e.once.Do(func() {
+		e.byKey = map[string][]store.JudgedSearch{}
+		for _, j := range e.log {
+			k := MemoryKey(j.Query)
+			e.byKey[k] = append(e.byKey[k], j)
+		}
+	})
+	var out []store.JudgedSearch
+	for _, j := range e.byKey[memKey] {
+		if !slices.Contains(exclude, j.ID) {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
 // loadEvidence is the gate and the single read of a search: when prior.enabled and the request
-// allows it and the searcher has a judged log, it reads the log as of req.AsOf (zero = the
-// searcher's clock; only verdicts and opens recorded strictly before it count) and builds the
-// model. A closed gate reads nothing.
+// allows it and the searcher has a judged log, it takes the evidence as of req.AsOf (zero = the
+// searcher's clock; only verdicts and opens recorded strictly before it count), less the searches
+// in req.ExcludeEvidence. A Prior that is an *Evidence is used as is (no read); any other is read
+// once, with no filter, and prepared. A closed gate reads nothing.
 func (s *Searcher) loadEvidence(ctx context.Context, req Request, p Params) (*evidence, error) {
 	const op = "search.Search"
 	ev := &evidence{state: PriorState{Enabled: p.Prior.Enabled, NoPrior: req.NoPrior, MinJudged: p.Prior.MinJudged}}
@@ -73,17 +134,24 @@ func (s *Searcher) loadEvidence(ctx context.Context, req Request, p Params) (*ev
 	if ev.asOf.IsZero() {
 		ev.asOf = s.now()
 	}
-	judged, err := s.Prior.Judged(ctx, store.JudgedFilter{})
-	if err != nil {
-		return nil, err
+	pre, ok := s.Prior.(*Evidence)
+	if !ok {
+		judged, err := s.Prior.Judged(ctx, store.JudgedFilter{})
+		if err != nil {
+			return nil, err
+		}
+		pre = NewEvidence(judged)
 	}
-	m, err := prior.Build(priorEvents(judged), p.Prior, ev.asOf)
+	m, err := pre.index.Model(p.Prior, ev.asOf, req.ExcludeEvidence)
 	if err != nil {
 		// config.Validate guarantees Build's params (prior.Validate accepts every validated [prior]).
 		return nil, errs.Wrap(err, errs.Internal, op, "build the feedback prior: %v", err)
 	}
-	ev.judged, ev.model = judged, m
+	ev.model = m
 	ev.state.Judged, ev.state.Active = m.Judged(), m.Active()
+	if m.Active() && p.Prior.QueryMemory {
+		ev.judged = pre.sameKey(MemoryKey(req.Query), req.ExcludeEvidence)
+	}
 	return ev, nil
 }
 

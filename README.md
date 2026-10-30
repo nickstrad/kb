@@ -108,6 +108,7 @@ and `kb eval` take the same `--set` to try a setting for one run. Commonly chang
 | `search.k` | 8 | hits returned (1–20) |
 | `search.rrf_k`, `search.list_weights.*`, `search.bm25.*` | 60, 1, 1/2/3 | ranking (see `kb explain`) |
 | `search.exact_list` | true | the exact-identifier list (below) |
+| `search.phrase_boost` | true | rank chunks holding a multi-word query as a phrase, then near each other, ahead of the rest (below) |
 | `search.synonyms` | `""` | the synonyms file (default: the store's `synonyms.txt`, below) |
 | `search.spell` | true | correct a query word when the full-text list is short (below) |
 | `search.stores` | `[]` | stores every search also reaches |
@@ -174,12 +175,21 @@ the exact list), `path`, `heading` and `text`, plus the exact `kb feedback` comm
   a remembered hit rises even when the words alone would not find it. It follows the prior's gate
   (`--no-prior` skips it too), skips hits no longer in the index, and shows in `kb explain` as
   `memory: key "..."` plus a `memory rank` per candidate (`memory_rank` in `--json`).
+  Whether to turn either on is your call, on your own log: run `kb eval --save-baseline`, then
+  `kb eval --set prior.enabled=true --set prior.query_memory=true --compare`, and enable them only
+  if the chunk MRR delta's 95% interval lies above 0. The replays see only the feedback recorded
+  before each original search, and never the feedback on that query's own searches (its gold).
 - **Identifier queries.** A query field that looks like an identifier (`foo_bar`, `pkg.Func`,
   `--flag`, `path/to`, `a:b`, `camelCase`, `v1beta`) also runs an exact-identifier list that
   matches it only as a whole token, so `kb search reindex_test` ranks the chunk that says
   `reindex_test` above one that says "reindex test". `exact_list = false` in `[search]` turns it
   off (`kb eval --set search.exact_list=false --compare` shows what that costs). A query that
   starts with `-` goes after the flags and `--`: `kb search --json -- --embed-model`.
+- **Phrases.** A query of two or more words puts the chunks that hold the words as a phrase first,
+  then those that hold them within 8 words of each other, then the chunks that hold all of them
+  (`kb explain` shows a `tiers:` line and the tier of each candidate). Synonyms and spell
+  corrections do not apply inside the phrase and NEAR tiers. `phrase_boost = false` in `[search]`
+  turns it off (`kb eval --set search.phrase_boost=false --compare` shows what that costs).
 
 **Synonyms.** The file `synonyms.txt` in the store's directory (`.kb/stores/<name>/`) lists words
 that mean the same thing. Each line is one comma-separated group; a line that starts with `#` is a
@@ -241,12 +251,15 @@ when nothing helped; `--last` targets your newest search, `--note` adds a reason
   kb eval --save-baseline                                # .kb/stores/<store>/eval/default.json
   kb eval --set search.rrf_k=20 --compare                # deltas, CIs, wins/losses/ties, sign test
   kb eval --set search.exact_list=false --compare        # what the exact list is worth
+  kb eval --set prior.enabled=true --compare             # what the feedback prior is worth
   kb eval --save-baseline tuned && kb eval --compare tuned --json
   ```
 
   `--compare` warns (on stderr) when the model, the entry count or the other-store gold changed
   since the baseline, and refuses a baseline taken at another `-k`. Below `eval.min_judged`
-  (30) paired queries it says the sample is small.
+  (30) paired queries it says the sample is small. `--sweep key=v1,v2,...` tries a grid of
+  `[search]` and `[prior]` values on part of the queries and reports the best on the rest; a
+  `[prior]` sweep needs `eval.min_judged` judged queries even with `--force`.
 
 ## Embedding models
 

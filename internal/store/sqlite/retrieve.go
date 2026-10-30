@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -31,7 +32,8 @@ func (s *Store) FTS(ctx context.Context, q store.FTSQuery) (store.FTSResult, err
 		w = *q.Weights
 	}
 	assert.Pre(validWeight(w.Text) && validWeight(w.Heading) && validWeight(w.Title), "FTS: bm25 weights %+v must be finite and 0 or more", w)
-	match := MatchExprAlts(q.Terms, q.Op, q.Alts)
+	assert.Pre(q.Near >= 0, "FTS: near=%d must not be negative", q.Near)
+	match := matchFor(q)
 	if match == "" || (q.ChunkIDs != nil && len(q.ChunkIDs) == 0) {
 		return store.FTSResult{Match: match}, nil
 	}
@@ -73,7 +75,11 @@ func ftsSQL(match string, w store.BM25Weights, q store.FTSQuery) (string, []any)
 	b.WriteString(` WHERE ` + table + ` MATCH ?`)
 	args = append(args, match)
 	if q.ChunkIDs != nil {
-		b.WriteString(` AND f.rowid IN (` + placeholders(len(q.ChunkIDs)) + `)`)
+		// The unary + keeps the IN list away from FTS5's xBestIndex: without it SQLite runs the
+		// MATCH once per id (a fresh cursor, bm25 statistics and all, each time), 10x slower for
+		// the 20 ids of a tier rescoring (W13 pass, BenchmarkTiers). With it the MATCH runs once
+		// and the ids filter its rows.
+		b.WriteString(` AND +f.rowid IN (` + placeholders(len(q.ChunkIDs)) + `)`)
 		for _, id := range q.ChunkIDs {
 			args = append(args, id)
 		}
@@ -267,6 +273,63 @@ func quoteTerm(field string) string {
 		return ""
 	}
 	return `"` + cleaned + `"`
+}
+
+// matchFor is the MATCH expression of q: the phrase or NEAR form for OpPhrase and OpNear (which
+// ignore q.Alts: a tier of the literal words), else the AND/OR form.
+func matchFor(q store.FTSQuery) string {
+	switch q.Op {
+	case store.OpPhrase:
+		return MatchPhrase(q.Terms)
+	case store.OpNear:
+		return MatchNear(q.Terms, orDefault(q.Near, store.NearDistance))
+	}
+	return MatchExprAlts(q.Terms, q.Op, q.Alts)
+}
+
+// orDefault is v, or def when v is 0.
+func orDefault(v, def int) int {
+	if v == 0 {
+		return def
+	}
+	return v
+}
+
+// MatchPhrase is the MATCH expression that finds the terms as one phrase, in order and adjacent:
+// every surviving field's words inside a single pair of quotes, `"a b c"`. "" unless two or more
+// fields survive sanitising (one field is the AND query's own phrase, so there is no tier to
+// add). A field such as `draw-visual` contributes its words as it does in the AND query.
+func MatchPhrase(terms []string) string {
+	inner := survivingPhrases(terms)
+	if len(inner) < 2 {
+		return ""
+	}
+	return `"` + strings.Join(inner, " ") + `"`
+}
+
+// MatchNear is the MATCH expression that finds the terms within distance tokens of each other, in
+// any order: `NEAR("a" "b", 8)`, each surviving field one phrase. "" unless two or more fields
+// survive sanitising or distance is below 1.
+func MatchNear(terms []string, distance int) string {
+	inner := survivingPhrases(terms)
+	if len(inner) < 2 || distance < 1 {
+		return ""
+	}
+	return "NEAR(" + `"` + strings.Join(inner, `" "`) + `"` + ", " + strconv.Itoa(distance) + ")"
+}
+
+// survivingPhrases is the sanitised text (without quotes) of every field of terms that survives
+// quoteTerm, in order.
+func survivingPhrases(terms []string) []string {
+	var out []string
+	for _, t := range terms {
+		for _, field := range strings.Fields(t) {
+			if q := quoteTerm(field); q != "" {
+				out = append(out, q[1:len(q)-1])
+			}
+		}
+	}
+	return out
 }
 
 // MatchExpr is the FTS5 MATCH expression for terms joined by op: every surviving term quoted as one

@@ -20,7 +20,7 @@ import (
 	"github.com/nickstrad/kb/internal/store"
 )
 
-// TestParseAxis is the --sweep syntax table: [search] keys only, minus k and stores; values are
+// TestParseAxis is the --sweep syntax table: [search] and [prior] keys, minus k and stores; values are
 // trimmed, non-empty and distinct.
 func TestParseAxis(t *testing.T) {
 	for _, tc := range []struct {
@@ -35,9 +35,12 @@ func TestParseAxis(t *testing.T) {
 		{spec: "=1,2", err: "want key=v1,v2"},
 		{spec: "search.k=4,8", err: "cannot sweep search.k"},
 		{spec: "search.stores=a,b", err: "cannot sweep search.stores"},
-		{spec: "embed.model=none", err: "only [search] keys sweep"},
-		{spec: "eval.holdout=0.1", err: "only [search] keys sweep"},
-		{spec: "searchy.rrf_k=1", err: "only [search] keys sweep"},
+		{spec: "prior.max_boost=0.1,0.3", want: Axis{Key: "prior.max_boost", Values: []string{"0.1", "0.3"}}},
+		{spec: "prior.enabled=false,true", want: Axis{Key: "prior.enabled", Values: []string{"false", "true"}}},
+		{spec: "embed.model=none", err: "only [search] and [prior] keys sweep"},
+		{spec: "eval.holdout=0.1", err: "only [search] and [prior] keys sweep"},
+		{spec: "searchy.rrf_k=1", err: "only [search] and [prior] keys sweep"},
+		{spec: "priory.max_boost=1", err: "only [search] and [prior] keys sweep"},
 		{spec: "search.rrf_k=", err: "empty value"},
 		{spec: "search.rrf_k=1,,2", err: "empty value"},
 		{spec: "search.rrf_k=1, 1", err: `value "1" twice`},
@@ -151,6 +154,51 @@ func TestExpandGrid(t *testing.T) {
 
 // TestGate: the min_judged boundary (29, 30, 31 against 30), --force, a threshold of 0, and an
 // empty log that even --force cannot sweep.
+// TestPriorGate is the [prior]-axis gate table (PLAN 6.4): judged queries around eval.min_judged
+// (no --force escape), a grid that never enables the prior, and axes it does not concern.
+func TestPriorGate(t *testing.T) {
+	on := config.Default()
+	on.Prior.Enabled = true
+	off := config.Default()
+	for _, tc := range []struct {
+		name             string
+		keys             []string
+		grid             []config.Config
+		judged, minJudge int
+		err              string
+	}{
+		{"prior axis one below", []string{"prior.max_boost"}, []config.Config{on}, 29, 30, "--sweep prior.max_boost needs ≥30 judged queries (have 29); --force does not apply"},
+		{"prior axis at the threshold", []string{"prior.max_boost"}, []config.Config{on}, 30, 30, ""},
+		{"prior axis, none judged, threshold 0", []string{"prior.max_boost"}, []config.Config{on}, 0, 0, ""},
+		{"second axis is prior", []string{"search.rrf_k", "prior.half_life_days"}, []config.Config{on}, 3, 30, "--sweep prior.half_life_days needs"},
+		{"search axis below the threshold: Gate's call", []string{"search.rrf_k"}, []config.Config{off}, 3, 30, ""},
+		{"prior never enabled", []string{"prior.max_boost"}, []config.Config{off, off}, 30, 30, "changes nothing while prior.enabled is false"},
+		{"enabled in one grid point", []string{"prior.enabled"}, []config.Config{off, on}, 30, 30, ""},
+		{"search axis, prior off", []string{"search.rrf_k"}, []config.Config{off}, 30, 30, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			axes := make([]Axis, len(tc.keys))
+			for i, k := range tc.keys {
+				axes[i] = Axis{Key: k, Values: []string{"1"}}
+			}
+			grid := make([]Combo, len(tc.grid))
+			for i, c := range tc.grid {
+				grid[i] = Combo{Config: c}
+			}
+			err := PriorGate(axes, grid, tc.judged, tc.minJudge)
+			if tc.err == "" {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if errs.KindOf(err) != errs.Usage || !strings.Contains(err.Error(), tc.err) {
+				t.Fatalf("err %v, want a Usage error with %q", err, tc.err)
+			}
+		})
+	}
+}
+
 func TestGate(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
@@ -311,7 +359,7 @@ func (w *sweepWorld) prepared(t *testing.T) *Prepared {
 	}
 	// One more query whose only gold is an open: replayed, never judged.
 	log = append(log, store.JudgedSearch{ID: int64(w.n + 1), Query: "opened", Opens: []string{"ccc.md"}})
-	p, err := Prepare(context.Background(), log, corpus())
+	p, err := Prepare(context.Background(), stamped(log), corpus())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +726,7 @@ func TestSweepJSONContract(t *testing.T) {
 func TestPrepareAndMetricEdges(t *testing.T) {
 	c := corpus()
 	c.errPath = "a.md"
-	_, err := Prepare(context.Background(), []store.JudgedSearch{{ID: 1, Query: "q", Verdicts: []store.Verdict{useful(1, "a.md", "H1")}}}, c)
+	_, err := Prepare(context.Background(), stamped([]store.JudgedSearch{{ID: 1, Query: "q", Verdicts: []store.Verdict{useful(1, "a.md", "H1")}}}), c)
 	if errs.KindOf(err) != errs.Conflict || !strings.Contains(err.Error(), "locked") {
 		t.Errorf("Prepare on a failing index: %v", err)
 	}

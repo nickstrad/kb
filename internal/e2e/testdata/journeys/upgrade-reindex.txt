@@ -16,26 +16,28 @@ upgrade with the dry run, the backup and the log checks.)
   $ mkfixture index-v6 .kb/stores/default/kb.sqlite
 
   $ kb search checkpoint --mode fts
-  [stderr] kb search: store database $WORK/proj/.kb/stores/default/kb.sqlite is at schema v6; this kb needs v8. Run: kb migrate up (with the same --store, if any)
+  [stderr] kb search: store database $WORK/proj/.kb/stores/default/kb.sqlite is at schema v6; this kb needs v9. Run: kb migrate up (with the same --store, if any)
   [exit 1]
 
   $ kb migrate status
   SCOPE          FILE         VERSION   STATE                         PATH
   location       location     v1        current                       $WORK/proj/.kb/kb.toml
   store default  config       v1        current                       $WORK/proj/.kb/stores/default/config.toml
-  store default  index        v6 -> v8  2 pending: run kb migrate up  $WORK/proj/.kb/stores/default/kb.sqlite
+  store default  index        v6 -> v9  3 pending: run kb migrate up  $WORK/proj/.kb/stores/default/kb.sqlite
   cache          embed-cache  -         not created yet               $WORK/home/Library/Caches/kb/embed-cache.sqlite
 
   store default index:
     index/0007-edges-tags-aliases  add edges, entry_tags (backfilled) and entries.aliases; edges and aliases fill on the next reindex  [needs kb reindex; effect reindex]
     index/0008-prior  add search_results.prior and search_candidates.prior
+    index/0009-tier-memory  add fts_tier, memory_rank and memory_score to search_results and search_candidates
   [exit 1]
 
   $ kb migrate up
-  migrated store default index: v6 -> v8 ($WORK/proj/.kb/stores/default/kb.sqlite)
+  migrated store default index: v6 -> v9 ($WORK/proj/.kb/stores/default/kb.sqlite)
     backup: $WORK/proj/.kb/stores/default/kb.sqlite.bak-v6-(time)
     applied index/0007-edges-tags-aliases: add edges, entry_tags (backfilled) and entries.aliases; edges and aliases fill on the next reindex
     applied index/0008-prior: add search_results.prior and search_candidates.prior
+    applied index/0009-tier-memory: add fts_tier, memory_rank and memory_score to search_results and search_candidates
   needs: kb reindex (store default: index/0007-edges-tags-aliases)
 
 The store is current, but its link table is still empty.
@@ -51,7 +53,7 @@ whole index; the rebuild also stores the links.
   reindexed alpha.md (3 chunks, 0 embedded)
   reindexed beta.md (3 chunks, 0 embedded)
   entries: 2 scanned, 2 reindexed, 0 skipped; chunks: 6; embed calls: 0
-  [stderr] embedding model mismatch: this database was indexed with BAAI/bge-small-en-v1.5 (4 dims) but this run uses none (0 dims); rebuild it with `kb reindex --all`
+  [stderr] embedding model mismatch: this database was indexed with BAAI/bge-small-en-v1.5 (4 dims) but this run uses none (0 dims); rebuilding the index
 
   $ kb related alpha.md
   alpha.md · 1 link

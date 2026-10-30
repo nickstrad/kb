@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -180,7 +181,22 @@ func TestSearchGoldenDefaults(t *testing.T) {
 	if noExact, want := renderGolden(t, s), strings.ReplaceAll(got, ` exact="draw-visual" n_exact=0`, ""); noExact != want {
 		t.Errorf("exact_list=false ranks differently from the defaults on the golden corpus:\n%s", firstDiff(want, noExact))
 	}
-	path := filepath.Join("testdata", "golden", "search_defaults.golden")
+	checkGolden(t, "search_defaults.golden", got)
+	// The independent oracle (W13 pass): with the phrase/NEAR tiers off the ranking is the
+	// pre-4.6 one, bit for bit. search_untiered.golden is the defaults golden as it stood before
+	// 4.6, so a tier change can never move an untiered ranking unnoticed.
+	untiered := config.Default()
+	untiered.Search.PhraseBoost = false
+	if s.Settings, err = NewSettings(untiered); err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, "search_untiered.golden", renderGolden(t, s))
+}
+
+// checkGolden compares got with testdata/golden/name, rewriting it first under -update.
+func checkGolden(t *testing.T, name, got string) {
+	t.Helper()
+	path := filepath.Join("testdata", "golden", name)
 	if *update {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -195,6 +211,58 @@ func TestSearchGoldenDefaults(t *testing.T) {
 	}
 	if got != string(want) {
 		t.Errorf("ranked output differs from %s:\n%s", path, firstDiff(string(want), got))
+	}
+}
+
+// TestTierOnlyReordersFTS is the tiers' oracle against the untiered list (PLAN 4.6, W13 pass):
+// on every golden query whose AND list is not cut at list_limit, phrase_boost changes only the
+// order of the FTS list. The same chunks are in it, each with the same score (rescore puts back
+// the AND query's bm25), and the vector list is untouched.
+func TestTierOnlyReordersFTS(t *testing.T) {
+	s := goldenSearcher(t)
+	run := func(boost bool, req Request) *Outcome {
+		cfg := config.Default()
+		cfg.Search.PhraseBoost = boost
+		st, err := NewSettings(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Settings = st
+		out, err := s.Search(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Search(%+v): %v", req, err)
+		}
+		return out
+	}
+	scores := func(out *Outcome) (fts map[int64]float64, vec map[int64]int) {
+		fts, vec = map[int64]float64{}, map[int64]int{}
+		for _, c := range out.Candidates {
+			if c.FTSRank != nil {
+				fts[c.ChunkID] = *c.FTSScore
+			}
+			if c.VecRank != nil {
+				vec[c.ChunkID] = *c.VecRank
+			}
+		}
+		return fts, vec
+	}
+	tieredSeen := 0
+	for _, req := range goldenRequests {
+		on, off := run(true, req), run(false, req)
+		if off.NFTS >= ListLimit {
+			continue // a cut AND list: a phrase row below it may displace an AND row
+		}
+		if on.FTSTiers != nil {
+			tieredSeen++
+		}
+		onFTS, onVec := scores(on)
+		offFTS, offVec := scores(off)
+		if !maps.Equal(onFTS, offFTS) || !maps.Equal(onVec, offVec) {
+			t.Errorf("%q: tiers changed the lists' members or scores:\n on  fts %v vec %v\n off fts %v vec %v", req.Query, onFTS, onVec, offFTS, offVec)
+		}
+	}
+	if tieredSeen == 0 {
+		t.Fatal("no golden query ran tiered under its list limit: the property checked nothing")
 	}
 }
 

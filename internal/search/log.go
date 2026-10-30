@@ -77,6 +77,7 @@ func loggedHits(cs []Candidate) []store.LoggedHit {
 			Store: c.Store, ChunkID: c.ChunkID, EntryPath: c.EntryPath, Heading: c.Heading,
 			FTSRank: c.FTSRank, FTSScore: c.FTSScore, VecRank: c.VecRank, VecDistance: c.VecDistance,
 			ExactRank: c.ExactRank, ExactScore: c.ExactScore,
+			MemoryRank: c.MemoryRank, MemoryScore: c.MemoryScore, FTSTier: c.FTSTier,
 			RRFScore: c.RRFScore, Prior: c.Prior,
 		}
 	}

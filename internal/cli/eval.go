@@ -2,10 +2,12 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,20 +54,29 @@ func newEvalCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"(repeatable) tries a setting for this run without writing it, so\n" +
 			"kb eval --set search.rrf_k=20 --compare shows what that setting would change. A baseline\n" +
 			"of another file-format version, or at another k, is refused.\n" +
-			"Sweeps: --sweep key=v1,v2,... (repeatable, [search] keys only, at most 200 settings in\n" +
+			"Feedback prior: with [prior] enabled (in the config or --set prior.enabled=true, plus\n" +
+			"prior.query_memory=true for the query memory) every replay runs as of its original search's\n" +
+			"time and leaves out the feedback of its own query's searches, which is its gold: the prior\n" +
+			"learns only from what was known before, about other queries. The log is read once per run.\n" +
+			"The prior is off by default; to decide, run kb eval --save-baseline, then\n" +
+			"kb eval --set prior.enabled=true --compare, and enable it only if the chunk MRR delta's\n" +
+			"interval lies above 0.\n" +
+			"Sweeps: --sweep key=v1,v2,... (repeatable, [search] and [prior] keys, at most 200 settings in\n" +
 			"all) replays the log once per setting of the grid. The judged queries are split by a\n" +
 			"seeded hash of their text: [eval] holdout of them (0.3) are held out, the rest choose\n" +
 			"the setting with the best MRR (then nDCG, then hit rate; ties keep the current setting).\n" +
 			"The top 5 are shown on both sides against the current settings (delta, paired 95%\n" +
 			"interval, w/l/t, sign test), with a config snippet for the best. A best setting that wins\n" +
 			"on the chosen queries but not on the held-out ones is reported as likely overfitting.\n" +
-			"Below [eval] min_judged judged queries (30) a sweep is refused unless --force. Each query\n" +
+			"Below [eval] min_judged judged queries (30) a sweep is refused unless --force; a sweep of\n" +
+			"a [prior] key is refused even with --force. Each query\n" +
 			"is embedded once for the whole sweep. kb eval never writes the config.\n" +
 			"Only the log is read; baselines are the only files kb eval writes.",
 		Example: "  kb eval\n" +
 			"  kb eval --mode fts --since 30d --per-query\n" +
 			"  kb eval --caller claude --json\n" +
 			"  kb eval --save-baseline && kb eval --set search.rrf_k=20 --compare\n" +
+			"  kb eval --set prior.enabled=true --set prior.query_memory=true --compare\n" +
 			"  kb eval --sweep search.rrf_k=20,40,60 --sweep search.bm25.title=1,3,5",
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
@@ -100,7 +111,7 @@ func newEvalCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringArrayVar(&opts.sets, "set", nil, "try a setting for this run: section.key=value (repeatable)")
 	cmd.Flags().BoolVar(&opts.save, "save-baseline", false, "save this run as baseline NAME (default \"default\"), replacing it")
 	cmd.Flags().BoolVar(&opts.compare, "compare", false, "compare this run with baseline NAME (default \"default\")")
-	cmd.Flags().StringArrayVar(&opts.sweeps, "sweep", nil, "try every value of a [search] key: section.key=v1,v2,... (repeatable: a grid)")
+	cmd.Flags().StringArrayVar(&opts.sweeps, "sweep", nil, "try every value of a [search] or [prior] key: section.key=v1,v2,... (repeatable: a grid)")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "sweep even with fewer than [eval] min_judged judged queries")
 	return cmd
 }
@@ -174,6 +185,26 @@ func openJudged(cmd *cobra.Command, d *deps, ws *workspace.Workspace, since time
 	return st, searches, nil
 }
 
+// evalEvidence is what the replays' feedback prior and query memory read (PLAN 6.4): the whole
+// judged log, read once per run and prepared for slicing as of each replayed search (Q133). It
+// reuses the window's searches when the run reads the whole log, and reads it again without the
+// filter otherwise: the prior counts every caller's feedback, as kb search does. nil (no prior
+// source) when no setting of the run enables the prior, so nothing more is read. The log read is
+// returned too: the replays leave a query's searches in it out of the evidence (eval.Options.Evidence).
+func evalEvidence(ctx context.Context, st store.Store, searches []store.JudgedSearch, since time.Time, caller string, enabled bool) (store.JudgedLog, []store.JudgedSearch, error) {
+	if !enabled {
+		return nil, nil, nil
+	}
+	if !since.IsZero() || caller != "" {
+		var err error
+		// openJudged already checked that st is a JudgedLog.
+		if searches, err = st.(store.JudgedLog).Judged(ctx, store.JudgedFilter{}); err != nil {
+			return nil, nil, err
+		}
+	}
+	return search.NewEvidence(searches), searches, nil
+}
+
 // runEval reads the log read-only, loads the embedder only when there is something to replay,
 // and replays without logging. Exit 2 when the embedder was unavailable and some query was
 // replayed in fts-fallback (the report is still printed first).
@@ -221,13 +252,19 @@ func runEval(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOpt
 		return err
 	}
 	settings = settings.WithSynonyms(syn.Hash()) // as search does: the hash and the baseline carry the synonyms
-	// No Log: replays must not write the log they are scored against.
-	searcher := &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: settings, Synonyms: syn}
+	evidence, log, err := evalEvidence(ctx, st, searches, since, opts.caller, cfg.Prior.Enabled)
+	if err != nil {
+		return err
+	}
+	// No Log: replays must not write the log they are scored against. Prior: the log read once,
+	// sliced per replay as of its search's time (Q133, Q140).
+	searcher := &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: settings, Synonyms: syn, Prior: evidence}
 	rep, err := eval.Evaluate(ctx, searches, st, searcher, eval.Options{
 		Mode:         mode,
 		K:            search.ClampK(searchK(opts.kChanged, opts.k, cfg.Search.K)),
 		MinJudged:    cfg.Eval.MinJudged,
 		SettingsHash: settings.Hash,
+		Evidence:     log,
 	})
 	if err != nil {
 		return err
@@ -339,7 +376,9 @@ func renderCompare(c *eval.Comparison, r *eval.Report, perQuery bool) string {
 	}
 	if perQuery {
 		b.WriteString("\n")
-		b.WriteString(renderEval(r, true))
+		b.WriteString(renderEval(r, true)) // it has the prior line
+	} else {
+		b.WriteString(priorLine(r.Prior))
 	}
 	return b.String()
 }
@@ -368,6 +407,7 @@ func renderEval(r *eval.Report, perQuery bool) string {
 		fmt.Fprintf(&b, "gold from other stores (not scored; kb eval replays this store only): %d chunks · %d opens · %d queries with no gold here\n",
 			o.Chunks, o.Opens, o.Queries)
 	}
+	b.WriteString(priorLine(r.Prior))
 	fmt.Fprintf(&b, "negatives in top %d: %d\n", r.K, r.NegativesInTopK)
 	fmt.Fprintf(&b, "intervals: %g%% bootstrap, %d resamples, seed %d\n", r.Confidence*100, r.Resamples, r.Seed)
 	if r.SmallSample {
@@ -382,6 +422,20 @@ func renderEval(r *eval.Report, perQuery bool) string {
 		}
 	}
 	return b.String()
+}
+
+// priorLine says what the feedback prior and the query memory did in the replays; "" when the
+// prior was off. A prior that never opened explains a zero delta.
+func priorLine(u eval.PriorUse) string {
+	if u.Enabled == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("prior: active in %d/%d replays · query memory placed hits in %d (each replay as of its search's time, without its own query's feedback)\n",
+		u.Active, u.Enabled, u.Memory)
+	if u.Active == 0 {
+		line += "prior inactive in every replay: fewer than prior.min_judged judged searches before each one\n"
+	}
+	return line
 }
 
 // variantLine is "queries=N hit@k=x [lo, hi] mrr=… ndcg@k=…".
@@ -450,7 +504,15 @@ func runSweep(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOp
 	if err != nil {
 		return err
 	}
+	if err := eval.PriorGate(axes, grid, len(p.Judged()), cfg.Eval.MinJudged); err != nil {
+		return err
+	}
 	if err := eval.Gate(len(p.Judged()), cfg.Eval.MinJudged, opts.force); err != nil {
+		return err
+	}
+	priorOn := slices.ContainsFunc(grid, func(c eval.Combo) bool { return c.Config.Prior.Enabled })
+	evidence, log, err := evalEvidence(ctx, st, searches, since, opts.caller, priorOn)
+	if err != nil {
 		return err
 	}
 	embedder, mode, err := d.searchEmbedder(cmd, st, cfg, opts.mode, "cli.eval")
@@ -464,11 +526,11 @@ func runSweep(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOp
 	memo := &search.QueryMemo{} // one per sweep: the vector of a query does not depend on [search]
 	newSearcher := func(s search.Settings) eval.Searcher {
 		// No Log: replays must not write the log they are scored against.
-		return &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: s, Queries: memo, Synonyms: syn}
+		return &search.Searcher{Store: st, Embedder: embedder, KBVersion: Version, Settings: s, Queries: memo, Synonyms: syn, Prior: evidence}
 	}
 	rep, err := eval.Sweep(ctx, p, cfg, axes, grid, newSearcher, eval.SweepOptions{
 		Mode: mode, K: search.ClampK(searchK(opts.kChanged, opts.k, cfg.Search.K)),
-		MinJudged: cfg.Eval.MinJudged, Holdout: cfg.Eval.Holdout,
+		MinJudged: cfg.Eval.MinJudged, Holdout: cfg.Eval.Holdout, Evidence: log,
 	})
 	if err != nil {
 		return err

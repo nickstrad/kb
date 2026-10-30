@@ -72,7 +72,7 @@ func TestOtherStoreGoldDecisions(t *testing.T) {
 			}
 			fs := &fakeSearcher{hits: map[string][]string{"q": tc.hits}}
 			c := corpus()
-			rep, err := Evaluate(context.Background(), tc.searches, c, fs, Options{Mode: "fts", K: 8})
+			rep, err := Evaluate(context.Background(), stamped(tc.searches), c, fs, Options{Mode: "fts", K: 8})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -25,6 +25,7 @@ func compareChunk(a, b Chunk) int {
 type Query struct {
 	Key       string  // Normalize(text): lower case, whitespace collapsed
 	Text      string  // the newest search's text, which the replay runs
+	TS        string  // the newest search's logged time: the replay's asOf (PLAN 6.4)
 	SearchIDs []int64 // ascending
 	Useful    []Chunk // useful verdicts: the gold; sorted, unique
 	Negatives []Chunk // not-useful verdicts on chunks no search of the query marked useful
@@ -133,7 +134,7 @@ func Extract(searches []store.JudgedSearch) ([]Query, SearchCounts) {
 		}
 		a.q.SearchIDs = append(a.q.SearchIDs, j.ID)
 		if a.q.Text == "" || j.ID > a.newest {
-			a.q.Text, a.newest = j.Query, j.ID
+			a.q.Text, a.q.TS, a.newest = j.Query, j.TS, j.ID
 		}
 		for _, v := range j.Verdicts {
 			c := Chunk{Path: v.EntryPath, Heading: v.Heading}

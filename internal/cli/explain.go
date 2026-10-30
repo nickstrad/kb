@@ -40,6 +40,10 @@ func newExplainCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"the exact-identifier list, which matches those identifiers only as whole tokens: its\n" +
 			"expression is shown as \"exact:\" and each candidate in it gets an exact rank, bm25 score\n" +
 			"and RRF term (weight search.list_weights.exact; off with search.exact_list = false).\n\n" +
+			"A query of two or more words also runs the phrase and NEAR tiers of the FTS list\n" +
+			"(search.phrase_boost): the words as a phrase, then within 8 tokens of each other, then\n" +
+			"all of them (AND), concatenated in that order. The \"tiers:\" line shows each tier's\n" +
+			"expression and row count, and each candidate shows the tier that placed it.\n\n" +
 			"The per-column scores are diagnostic. FTS5 adds the column-weighted term frequencies\n" +
 			"before saturating them, so the columns do not add up to the total: the total lies\n" +
 			"between the largest column and their sum. A chunk's text starts with a context line\n" +
@@ -164,6 +168,15 @@ func renderExplanation(ex *search.Explanation) string {
 	default:
 		fmt.Fprintf(&b, "fts: match %s · AND\n", ex.FTS.Match)
 	}
+	if ex.FTS != nil && len(ex.FTS.Tiers) > 0 {
+		parts := make([]string, len(ex.FTS.Tiers))
+		for i, t := range ex.FTS.Tiers {
+			parts[i] = fmt.Sprintf("%s %s (%d %s)", t.Tier, t.Match, t.Rows, plural(t.Rows, "row", "rows"))
+		}
+		fmt.Fprintf(&b, "tiers: %s\n", strings.Join(parts, " · "))
+	} else if !s.PhraseBoost {
+		b.WriteString("tiers: off (search.phrase_boost = false)\n")
+	}
 	if ex.FTS != nil && len(ex.FTS.Synonyms) > 0 {
 		terms := slices.Sorted(maps.Keys(ex.FTS.Synonyms))
 		parts := make([]string, len(terms))
@@ -232,7 +245,11 @@ func renderExplanation(ex *search.Explanation) string {
 		}
 		fmt.Fprintf(&b, "#%d  rrf %.6f  %s  [%s]\n", h.Rank, h.RRFScore, loc, status)
 		if h.FTS != nil {
-			fmt.Fprintf(&b, "    fts  rank %d  bm25 %.4f", h.FTS.Rank, h.FTS.BM25)
+			fmt.Fprintf(&b, "    fts  rank %d  ", h.FTS.Rank)
+			if h.FTS.Tier != "" {
+				fmt.Fprintf(&b, "tier %s  ", h.FTS.Tier)
+			}
+			fmt.Fprintf(&b, "bm25 %.4f", h.FTS.BM25)
 		} else {
 			b.WriteString("    fts  -")
 		}

@@ -181,6 +181,23 @@ var indexSteps = migrate.Steps[execer]{
 			return err
 		},
 	},
+	// PLAN 4.6 + Q135. fts_tier is the tier of the main full-text list that placed a hit
+	// (phrase, near, and, or; NULL = the list ran untiered, which every older row did, or the hit
+	// was not in it). memory_rank and memory_score are the hit's place in the query-memory list
+	// and its u; NULL = not in it. All additive and nullable, so nothing is cleared.
+	{
+		Info: migrate.Info{From: 8, ID: "index/0009-tier-memory", Desc: "add fts_tier, memory_rank and memory_score to search_results and search_candidates"},
+		Up: func(ctx context.Context, db execer) error {
+			_, err := db.ExecContext(ctx, `
+			ALTER TABLE search_results ADD COLUMN fts_tier TEXT CHECK (fts_tier IN ('phrase', 'near', 'and', 'or'));
+			ALTER TABLE search_results ADD COLUMN memory_rank INTEGER;
+			ALTER TABLE search_results ADD COLUMN memory_score REAL;
+			ALTER TABLE search_candidates ADD COLUMN fts_tier TEXT CHECK (fts_tier IN ('phrase', 'near', 'and', 'or'));
+			ALTER TABLE search_candidates ADD COLUMN memory_rank INTEGER;
+			ALTER TABLE search_candidates ADD COLUMN memory_score REAL;`)
+			return err
+		},
+	},
 }
 
 func init() {

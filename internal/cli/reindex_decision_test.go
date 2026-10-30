@@ -118,3 +118,37 @@ func TestReindexInterruptedKind(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q; want 1 with the interrupted/rerun message", code, stderr)
 	}
 }
+
+// TestEnsureEmbedMetaForReindexNotice: on --all the mismatch notice says the index is being
+// rebuilt (not the advice to run `kb reindex --all`, which is what is already running), and only
+// once the embedder has passed its ping, so a refused reset does not claim a rebuild.
+func TestEnsureEmbedMetaForReindexNotice(t *testing.T) {
+	mismatch := errs.Wrap(&store.EmbedMetaMismatchError{StoredModel: "a", StoredDim: 1, WantModel: "b", WantDim: 2},
+		errs.Conflict, "sqlite.EnsureEmbedMeta", "mismatch")
+	down := errs.New(errs.Unavailable, "local.Load", "model not downloaded")
+	for _, tc := range []struct {
+		name       string
+		ping       error
+		wantNotice string // substring; "" = no notice
+	}{
+		{"ping ok: rebuilding notice", nil, "rebuilding the index"},
+		{"ping failed: no rebuild claim", down, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &metaIndex{ensure: []error{mismatch}}
+			var e embed.Embedder = pingEmbedder{fake.New("b", 2), tc.ping}
+			var stderr bytes.Buffer
+			_, _ = ensureEmbedMetaForReindex(context.Background(), st, e, true, &stderr)
+			got := stderr.String()
+			if tc.wantNotice == "" {
+				if strings.Contains(got, "rebuil") {
+					t.Fatalf("stderr %q claims a rebuild", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.wantNotice) || strings.Contains(got, "rebuild it with") {
+				t.Fatalf("stderr = %q, want %q and no advice to rebuild", got, tc.wantNotice)
+			}
+		})
+	}
+}

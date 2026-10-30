@@ -22,14 +22,14 @@ and says how to make one.
 
   $ kb search "history search" --mode fts --caller claude --stores global
   search 1 · 2 hits
-  [1] global:data/shell-tips.md · updated 2026-02-01
-  Shell history tips: Search your shell history with ctrl-r.
-
-  [2] global:data/shell-tips.md › (intro) · updated 2026-02-01
+  [1] global:data/shell-tips.md › (intro) · updated 2026-02-01
   Shell history tips › (intro)
   # Shell history tips
 
   Use ctrl-r for history search in the shell.
+
+  [2] global:data/shell-tips.md · updated 2026-02-01
+  Shell history tips: Search your shell history with ctrl-r.
   search_id=1
 
   $ kb show global:data/shell-tips.md
@@ -53,14 +53,14 @@ Outside any project there is no location to search.
 
   $ kb --global search "history search" --mode fts --caller claude
   search 1 · 2 hits
-  [1] data/shell-tips.md · updated 2026-02-01
-  Shell history tips: Search your shell history with ctrl-r.
-
-  [2] data/shell-tips.md › (intro) · updated 2026-02-01
+  [1] data/shell-tips.md › (intro) · updated 2026-02-01
   Shell history tips › (intro)
   # Shell history tips
 
   Use ctrl-r for history search in the shell.
+
+  [2] data/shell-tips.md · updated 2026-02-01
+  Shell history tips: Search your shell history with ctrl-r.
   search_id=1
 
 A global alias is a store ref in the global kb.toml. The project can use it by name.
@@ -78,14 +78,14 @@ A global alias is a store ref in the global kb.toml. The project can use it by n
 
   $ kb search "history search" --mode fts --caller claude --stores tips
   search 2 · 2 hits
-  [1] tips:data/shell-tips.md · updated 2026-02-01
-  Shell history tips: Search your shell history with ctrl-r.
-
-  [2] tips:data/shell-tips.md › (intro) · updated 2026-02-01
+  [1] tips:data/shell-tips.md › (intro) · updated 2026-02-01
   Shell history tips › (intro)
   # Shell history tips
 
   Use ctrl-r for history search in the shell.
+
+  [2] tips:data/shell-tips.md · updated 2026-02-01
+  Shell history tips: Search your shell history with ctrl-r.
   search_id=2
 
 -- notes/shell-tips.md --

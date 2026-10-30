@@ -2,9 +2,12 @@ package sqlite
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/nickstrad/kb/internal/store"
 )
 
 // FuzzSanitizeFTS checks the sanitiser's contract against a real FTS5 table built with the same
@@ -101,6 +104,43 @@ func FuzzSanitizeFTS(f *testing.F) {
 		for _, mq := range []string{andQuery, orQuery} {
 			if _, err := runMatch(ctx, s, mq); err != nil {
 				t.Fatalf("SanitizeFTS(%q) = %s: does not parse: %v", q, mq, err)
+			}
+		}
+		// The phrase and NEAR forms (PLAN 4.6) parse too, whatever the fields, and are empty
+		// together (both need two surviving fields).
+		fields := strings.Fields(q)
+		phrase, near := MatchPhrase(fields), MatchNear(fields, store.NearDistance)
+		if (phrase == "") != (near == "") {
+			t.Fatalf("MatchPhrase(%q) = %q, MatchNear = %q: want both empty or both set", q, phrase, near)
+		}
+		for _, mq := range []string{phrase, near} {
+			if mq == "" {
+				continue
+			}
+			rows, err := runMatch(ctx, s, mq)
+			if err != nil {
+				t.Fatalf("tier expression %s for %q does not parse: %v", mq, q, err)
+			}
+			// Every phrase or NEAR match is an AND match (W13 pass): mainList skips the tiers when
+			// AND is empty and rescore takes every tier row's score from the AND query.
+			andRows, _ := runMatch(ctx, s, andQuery)
+			for _, r := range rows {
+				if !slices.ContainsFunc(andRows, func(a store.FTSRow) bool { return a.ChunkID == r.ChunkID }) {
+					t.Fatalf("%q: chunk %d matches tier %s but not AND %s", q, r.ChunkID, mq, andQuery)
+				}
+			}
+		}
+		// The same on a document made of the phrase's own words, which the phrase always finds.
+		if phrase != "" {
+			matches := func(mq string) int {
+				var n int
+				if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM temp.fuzz_doc WHERE fuzz_doc MATCH ?`, mq).Scan(&n); err != nil {
+					t.Fatalf("match %s: %v", mq, err)
+				}
+				return n
+			}
+			if tokens(t, strings.Trim(phrase, `"`)) > 0 && matches(phrase) == 1 && matches(andQuery) != 1 {
+				t.Fatalf("%q: the document %s is found by its phrase but not by AND %s", q, phrase, andQuery)
 			}
 		}
 

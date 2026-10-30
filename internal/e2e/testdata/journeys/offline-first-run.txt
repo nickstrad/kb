@@ -51,7 +51,7 @@ here; `kb config --path` says where it is), then reindex (the index was built fo
 
   $ kb reindex --all
   entries: 0 scanned, 0 reindexed, 0 skipped; chunks: 0; embed calls: 0
-  [stderr] embedding model mismatch: this database was indexed with BAAI/bge-small-en-v1.5 (384 dims) but this run uses none (0 dims); rebuild it with `kb reindex --all`
+  [stderr] embedding model mismatch: this database was indexed with BAAI/bge-small-en-v1.5 (384 dims) but this run uses none (0 dims); rebuilding the index
 
   $ kb add $WORK/notes/tmux.md
   added data/tmux.md (2 chunks)

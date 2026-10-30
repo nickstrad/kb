@@ -1,0 +1,10 @@
+explain "alive after logout" · mode fts · k 8 · settings 43a17833f9e4
+settings: rrf_k=60 fts_weight=1 vec_weight=1 bm25 text=1 heading=2 title=3 list_limit=20 candidate_limit=40 per_entry_cap=3 exact=1
+fts: match "alive" AND "after" AND "logout" · AND
+tiers: phrase "alive after logout" (1 row) · near NEAR("alive" "after" "logout", 8) (1 row) · and "alive" AND "after" AND "logout" (1 row)
+lists: fts 1 rows · vec 0 rows · 1 candidates
+
+#1  rrf 0.016393  tmux.md › Detach  [returned as hit #1]
+    fts  rank 1  tier phrase  bm25 -3.1524  columns text -3.1524 · heading 0.0000 · title 0.0000
+    vec  -
+    rrf  fts 1/(60+1)=0.016393

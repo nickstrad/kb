@@ -80,6 +80,7 @@ type ExplainParams struct {
 	VecWeight      float64 `json:"vec_weight"`
 	ExactWeight    float64 `json:"exact_weight"`
 	ExactList      bool    `json:"exact_list"`
+	PhraseBoost    bool    `json:"phrase_boost"`
 	BM25Text       float64 `json:"bm25_text"`
 	BM25Heading    float64 `json:"bm25_heading"`
 	BM25Title      float64 `json:"bm25_title"`
@@ -100,6 +101,18 @@ type ExplainMatch struct {
 	Synonyms map[string][]string `json:"synonyms,omitempty"`
 	// Spell lists the words spell correction searched an alternative for (PLAN 5.6).
 	Spell []SpellFix `json:"spell,omitempty"`
+	// Tiers are the queries of a tiered list, best first (phrase, near, then the AND or OR
+	// expression above); omitted when the list ran untiered (PLAN 4.6).
+	Tiers []ExplainTier `json:"tiers,omitempty"`
+}
+
+// ExplainTier is one tier of the main FTS list: its MATCH expression (the NEAR window is in it)
+// and how many rows it returned before the tiers were merged. A tier that returned rows already
+// taken by a better tier still counts them here.
+type ExplainTier struct {
+	Tier  string `json:"tier"`
+	Match string `json:"match"`
+	Rows  int    `json:"rows"`
 }
 
 // ExplainHit is one fused candidate. Rank is its place in the fused list (1-based);
@@ -141,6 +154,9 @@ type ExplainTerm struct {
 type ExplainFTS struct {
 	Rank int     `json:"rank"`
 	BM25 float64 `json:"bm25"`
+	// Tier is the tier of the main list that placed the chunk (phrase, near, and, or); omitted
+	// for the exact list and for an untiered list. BM25 is that tier's own query's score.
+	Tier string `json:"tier,omitempty"`
 }
 
 // ExplainVec is the chunk's place in the vector list.
@@ -178,7 +194,7 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 		K:            out.K,
 		SettingsHash: out.Settings.Hash,
 		Settings: ExplainParams{
-			RRFK: p.RRFK, FTSWeight: p.FTSWeight, VecWeight: p.VecWeight, ExactWeight: p.ExactWeight, ExactList: p.ExactList,
+			RRFK: p.RRFK, FTSWeight: p.FTSWeight, VecWeight: p.VecWeight, ExactWeight: p.ExactWeight, ExactList: p.ExactList, PhraseBoost: p.PhraseBoost,
 			BM25Text: p.BM25.Text, BM25Heading: p.BM25.Heading, BM25Title: p.BM25.Title,
 			ListLimit: p.ListLimit, CandidateLimit: p.CandidateLimit, PerEntryCap: p.PerEntryCap, SupersedePenalty: p.SupersedePenalty,
 		},
@@ -203,6 +219,9 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 			op, name = store.OpOr, "OR"
 		}
 		ex.FTS = &ExplainMatch{Match: out.FTSMatch, Op: name, OrFallback: out.FTSFallbackToOr, Synonyms: out.FTSSynonyms, Spell: out.Spell}
+		for _, t := range out.FTSTiers {
+			ex.FTS.Tiers = append(ex.FTS.Tiers, ExplainTier(t))
+		}
 	}
 	if out.ExactMatch != "" {
 		name := "AND"
@@ -242,7 +261,7 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 			h.Status = StatusCapDropped
 		}
 		if c.FTSRank != nil {
-			h.FTS = &ExplainFTS{Rank: *c.FTSRank, BM25: *c.FTSScore}
+			h.FTS = &ExplainFTS{Rank: *c.FTSRank, BM25: *c.FTSScore, Tier: c.FTSTier}
 			h.RRF = append(h.RRF, ExplainTerm{List: "fts", Weight: p.FTSWeight, Rank: *c.FTSRank,
 				Term: p.FTSWeight / float64(p.RRFK+*c.FTSRank)})
 		}

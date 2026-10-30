@@ -127,6 +127,26 @@ type FTSOp int
 const (
 	OpAnd FTSOp = iota // every term must match
 	OpOr               // any term may match
+	// OpPhrase matches the terms as one phrase, in order and adjacent: "a b c". It needs two or
+	// more terms that survive sanitising, else it runs nothing (a single term is the AND query).
+	OpPhrase
+	// OpNear matches the terms within FTSQuery.Near tokens of each other, in any order:
+	// NEAR("a" "b", 8). Like OpPhrase it needs two or more surviving terms.
+	OpNear
+)
+
+// NearDistance is the default NEAR window: the tokens allowed between the terms of an OpNear
+// query. FTS5's own default is 10; 8 keeps "within a sentence" tighter.
+const NearDistance = 8
+
+// The tiers of the main full-text list (PLAN 4.6), best first. A row's tier is the first query
+// that returned it: the terms as a phrase, near each other, all present (AND), or any present
+// (the OR retry, used only when AND matched nothing). The searcher sets them, never a store.
+const (
+	TierPhrase = "phrase"
+	TierNear   = "near"
+	TierAnd    = "and"
+	TierOr     = "or"
 )
 
 // FTSQuery is one full-text query. Terms are raw user fields (search splits on whitespace); the
@@ -147,6 +167,8 @@ type FTSQuery struct {
 	Weights  *BM25Weights
 	ChunkIDs []int64
 	Exact    bool
+	// Near is the window of an OpNear query; 0 means NearDistance.
+	Near int
 	// Alts maps a raw term (exactly as it appears in Terms) to extra alternatives; the term then
 	// matches any of itself and them: ("k8s" OR "kubernetes"). An alternative may be several
 	// words and is matched as one phrase. nil means no expansion. Synonyms (PLAN 5.5).
@@ -178,6 +200,9 @@ type FTSResult struct {
 type FTSRow struct {
 	ChunkID int64
 	Score   float64
+	// Tier is the tier of the main list that placed the row (TierPhrase ...), set by the
+	// searcher; "" for a row of an untiered list (a store never sets it).
+	Tier string
 }
 
 // KNNQuery asks for the K nearest chunks to Vec. With a Tag (matched as FTSQuery.Tag is) the
@@ -258,7 +283,13 @@ type LoggedHit struct {
 	VecDistance *float64
 	ExactRank   *int
 	ExactScore  *float64
-	RRFScore    float64
+	// MemoryRank/MemoryScore are the hit's place in the query-memory list and its u (PLAN 6.3).
+	MemoryRank  *int
+	MemoryScore *float64
+	// FTSTier is the tier of the main FTS list that placed the hit (TierPhrase ...); "" (NULL)
+	// when the list ran untiered (one query group, phrase_boost off) or the hit was not in it.
+	FTSTier  string
+	RRFScore float64
 	// Prior is the feedback-prior multiplier (PLAN 6.2) already folded into RRFScore; nil when the
 	// prior was inactive for the search (off, --no-prior, below prior.min_judged or no source).
 	Prior *float64

@@ -203,17 +203,19 @@ The general rules for what to inject and how are in §12.2 and §12.4. This sect
 
 ```go
 type deps struct {
-	cfg      config.Config
-	embedder func(config.Embed) (embed.Embedder, error)
-	openStore func(ctx context.Context, path string) (store.Backend, error)
-	editor   func(ctx context.Context, path string) error
+	embedder      func(config.Embed) (embed.Embedder, error) // nil: the [embed] config builds it
+	openStore     func(ctx context.Context, path string, readOnly bool) (store.Store, error)
+	editor        func(ctx context.Context, configured, path string) error
+	now           func() time.Time // nil: time.Now
+	// …
 }
 
 func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int // production deps
-func execute(ctx context.Context, d deps, args []string, stdout, stderr io.Writer) int // tests
+func execute(ctx context.Context, d *deps, args []string, stdout, stderr io.Writer) (code int) // tests
 ```
 
-  Commands receive `d` from `newRootCmd`. Tests build their own `deps` with `internal/embed/fake`.
+  Commands receive `d` from `newRootCmd`. `productionDeps()` builds the real fields; tests build
+  their own `deps` with `internal/embed/fake`.
 - **Configuration (v2): no env vars.** `config.Load(ctx, startDir)` discovers the root by walking up from `startDir` to the nearest `.kb/`, parses `.kb/config.toml`, applies flags on top, validates once and returns a plain `Config` struct. Everything below `cli` takes the parts of `Config` it needs as arguments and never reads files, env vars or flags itself. Unknown keys in `config.toml` are a `Usage` error, not silently ignored.
 
 ## 6. SQL
