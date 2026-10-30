@@ -38,6 +38,7 @@ func (s *Searcher) Record(ctx context.Context, req Request, o *Outcome) (int64, 
 		return &ms
 	}
 	rec := store.SearchRecord{
+		TS:         s.now(),
 		Query:      req.Query,
 		Mode:       mode,
 		K:          o.K,
@@ -73,7 +74,7 @@ func loggedHits(cs []Candidate) []store.LoggedHit {
 	out := make([]store.LoggedHit, len(cs))
 	for i, c := range cs {
 		out[i] = store.LoggedHit{
-			ChunkID: c.ChunkID, EntryPath: c.EntryPath, Heading: c.Heading,
+			Store: c.Store, ChunkID: c.ChunkID, EntryPath: c.EntryPath, Heading: c.Heading,
 			FTSRank: c.FTSRank, FTSScore: c.FTSScore, VecRank: c.VecRank, VecDistance: c.VecDistance,
 			RRFScore: c.RRFScore,
 		}

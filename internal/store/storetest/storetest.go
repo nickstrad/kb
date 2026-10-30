@@ -43,6 +43,9 @@ func Run(t *testing.T, newStore Factory) {
 			t.Run("KNN: top-k ordered by distance, tag filter", func(t *testing.T) { knn(t, newStore(t, dim), dim) })
 			t.Run("ResetIndex empties the index, keeps the log", func(t *testing.T) { reset(t, newStore(t, dim), dim) })
 			t.Run("SearchLog: log, feedback, LastSearch, RecordOpen", func(t *testing.T) { searchLog(t, newStore(t, dim), dim) })
+			t.Run("SearchLog: settings, ts and hit stores round-trip", func(t *testing.T) { searchLogRoundTrip(t, newStore(t, dim)) })
+			t.Run("EntriesByPath: one read, missing paths absent", func(t *testing.T) { entriesByPath(t, newStore(t, dim), dim) })
+			t.Run("JudgedLog: verdict stores, opens by store, since bound", func(t *testing.T) { judgedLog(t, newStore(t, dim)) })
 			t.Run("model test (seeded ops)", func(t *testing.T) {
 				for _, seed := range ModelSeeds {
 					RunModel(t, newStore(t, dim), dim, seed)
@@ -436,23 +439,23 @@ func searchLog(t *testing.T, st store.Store, dim int) {
 		rank int
 		kind errs.Kind
 	}{{id1, 0, errs.Usage}, {id1, 3, errs.Usage}, {id2, 1, errs.Usage}, {id2 + 100, 1, errs.NotFound}} {
-		if err := st.Feedback(ctx, tc.id, tc.rank, true, ""); errs.KindOf(err) != tc.kind {
+		if err := st.Feedback(ctx, tc.id, tc.rank, true, "", time.Time{}); errs.KindOf(err) != tc.kind {
 			t.Errorf("Feedback(%d, %d) = %v, want kind %v", tc.id, tc.rank, err, tc.kind)
 		}
 	}
-	if err := st.FeedbackNone(ctx, id1, "none"); err != nil {
+	if err := st.FeedbackNone(ctx, id1, "none", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Feedback(ctx, id1, 2, true, "useful after all"); err != nil {
+	if err := st.Feedback(ctx, id1, 2, true, "useful after all", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.FeedbackNone(ctx, id1, ""); errs.KindOf(err) != errs.Conflict {
+	if err := st.FeedbackNone(ctx, id1, "", time.Time{}); errs.KindOf(err) != errs.Conflict {
 		t.Errorf("--none after useful = %v, want a Conflict", err)
 	}
-	if err := st.FeedbackNone(ctx, id2, ""); err != nil {
+	if err := st.FeedbackNone(ctx, id2, "", time.Time{}); err != nil {
 		t.Errorf("--none on a zero-result search = %v", err)
 	}
-	if err := st.FeedbackNone(ctx, id2+100, ""); errs.KindOf(err) != errs.NotFound {
+	if err := st.FeedbackNone(ctx, id2+100, "", time.Time{}); errs.KindOf(err) != errs.NotFound {
 		t.Errorf("--none on a missing search = %v, want NotFound", err)
 	}
 	now := time.Now()
@@ -460,11 +463,160 @@ func searchLog(t *testing.T, st store.Store, dim int) {
 		path string
 		want bool
 	}{{"a.md", true}, {"a.md", false}, {"c.md", false}} {
-		if got, err := st.RecordOpen(ctx, tc.path, now, openWindow); err != nil || got != tc.want {
+		if got, err := st.RecordOpen(ctx, store.OpenRecord{EntryPath: tc.path, At: now, Window: openWindow}); err != nil || got != tc.want {
 			t.Errorf("RecordOpen(%s) = %v, %v; want %v (c.md was only a candidate)", tc.path, got, err, tc.want)
 		}
 	}
-	if got, err := st.RecordOpen(ctx, "b.md", now.Add(openWindow+time.Minute), openWindow); err != nil || got {
+	if got, err := st.RecordOpen(ctx, store.OpenRecord{EntryPath: "b.md", At: now.Add(openWindow + time.Minute), Window: openWindow}); err != nil || got {
 		t.Errorf("RecordOpen outside the window = %v, %v", got, err)
+	}
+	// b.md was returned by this store, not by another one: an open of another store's b.md does
+	// not attach to it.
+	if got, err := st.RecordOpen(ctx, store.OpenRecord{Store: "notes@/elsewhere", EntryPath: "b.md", At: now, Window: openWindow}); err != nil || got {
+		t.Errorf("RecordOpen(notes@/elsewhere b.md) = %v, %v; want false (only this store returned b.md)", got, err)
+	}
+}
+
+// searchLogRoundTrip: what LogSearch writes is what the log holds, read back with QueryLog in
+// plain SQL: the settings, their hash and the FTS expression (NULL when not recorded), the
+// caller's timestamp, and each hit's store (NULL for this store's own hits). Two stores may hand
+// out the same chunk id, so returned is decided per (store, chunk id).
+func searchLogRoundTrip(t *testing.T, st store.Store) {
+	at := time.Date(2026, 10, 30, 9, 15, 42, 0, time.FixedZone("x", 3600))
+	other := "notes@/Users/someone/knowledge"
+	own := store.LoggedHit{ChunkID: 7, EntryPath: "a.md", Heading: "H", RRFScore: 0.03}
+	theirs := store.LoggedHit{Store: other, ChunkID: 7, EntryPath: "a.md", RRFScore: 0.02}
+	dropped := store.LoggedHit{Store: other, ChunkID: 8, EntryPath: "b.md", RRFScore: 0.01}
+	rec := store.SearchRecord{TS: at, Query: "q", Mode: "hybrid", K: 5, Caller: "c",
+		Settings: `{"search":{"k":5}}`, SettingsHash: "abc123", FTSMatch: `"q"`,
+		Results:    []store.LoggedHit{own, theirs},
+		Candidates: []store.LoggedHit{own, theirs, dropped}}
+	id, err := st.LogSearch(ctx, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare, err := st.LogSearch(ctx, store.SearchRecord{TS: at, Query: "bare", Mode: "fts", K: 5, Caller: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab, err := st.QueryLog(ctx, "SELECT id, ts, settings, settings_hash, fts_query FROM searches WHERE id IN (?, ?) ORDER BY id", id, bare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [][]any{{id, "2026-10-30T08:15:42Z", rec.Settings, "abc123", `"q"`}, {bare, "2026-10-30T08:15:42Z", nil, nil, nil}}
+	if fmt.Sprint(tab.Rows) != fmt.Sprint(want) {
+		t.Errorf("searches = %v, want %v", tab.Rows, want)
+	}
+	tab, err = st.QueryLog(ctx, "SELECT rank, store, chunk_id FROM search_results WHERE search_id = ? ORDER BY rank", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := fmt.Sprint(tab.Rows), fmt.Sprint([][]any{{int64(1), nil, int64(7)}, {int64(2), other, int64(7)}}); got != want {
+		t.Errorf("search_results = %s, want %s", got, want)
+	}
+	tab, err = st.QueryLog(ctx, "SELECT fused_rank, store, chunk_id, returned FROM search_candidates WHERE search_id = ? ORDER BY fused_rank", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := fmt.Sprint(tab.Rows), fmt.Sprint([][]any{{int64(1), nil, int64(7), int64(1)}, {int64(2), other, int64(7), int64(1)}, {int64(3), other, int64(8), int64(0)}}); got != want {
+		t.Errorf("search_candidates = %s, want %s", got, want)
+	}
+	// An open of the other store's a.md attaches to this search; so does this store's own a.md
+	// (one row per path: the second is already on record).
+	now := at.Add(time.Minute)
+	if got, err := st.RecordOpen(ctx, store.OpenRecord{Store: other, EntryPath: "a.md", At: now, Window: openWindow}); err != nil || !got {
+		t.Errorf("RecordOpen(%s a.md) = %v, %v; want recorded", other, got, err)
+	}
+	if got, err := st.RecordOpen(ctx, store.OpenRecord{Store: other, EntryPath: "b.md", At: now, Window: openWindow}); err != nil || got {
+		t.Errorf("RecordOpen(%s b.md) = %v, %v; want false (only a candidate)", other, got, err)
+	}
+}
+
+func entriesByPath(t *testing.T, st store.Store, dim int) {
+	mustReplace(t, st, entryIn("a.md"), chunks(dim, "alpha"))
+	dated := entryIn("d.md")
+	dated.Updated, dated.Summary = "2026-01-02", "dated summary"
+	mustReplace(t, st, dated, chunks(dim, "delta"))
+	got, err := st.EntriesByPath(ctx, []string{"d.md", "missing.md", "a.md", "d.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["a.md"].Title != "Title a.md" || got["d.md"].Updated != "2026-01-02" || got["d.md"].Summary != "dated summary" {
+		t.Errorf("EntriesByPath = %+v; want a.md and d.md only", got)
+	}
+	if _, ok := got["missing.md"]; ok {
+		t.Error("a missing path is in the map")
+	}
+	if empty, err := st.EntriesByPath(ctx, nil); err != nil || len(empty) != 0 {
+		t.Errorf("EntriesByPath(nil) = %v, %v; want an empty map", empty, err)
+	}
+	if one, err := st.EntriesByPath(ctx, []string{"a.md"}); err != nil || len(one) != 1 || one["a.md"].Path != "a.md" {
+		t.Errorf("EntriesByPath(one path) = %v, %v; want a.md", one, err)
+	}
+}
+
+// judgedLog is the read side of the log (kb eval), for a backend that has one. A cross-store
+// search logs other stores' hits: each verdict carries its hit's store, and opens are split by the
+// store inferred from the search's results at that path (this store's hit first, else the smallest
+// other ref; Q77, Q82). Since is inclusive at the log's one-second resolution.
+func judgedLog(t *testing.T, st store.Store) {
+	jl, ok := st.(store.JudgedLog)
+	if !ok {
+		t.Skip("no store.JudgedLog")
+	}
+	const notes, adr = "default@/notes", "adr@/loc"
+	hit := func(ref, path string) store.LoggedHit {
+		return store.LoggedHit{Store: ref, ChunkID: 7, EntryPath: path, Heading: "H", RRFScore: 1}
+	}
+	at := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	if _, err := st.LogSearch(ctx, store.SearchRecord{TS: at, Query: "q", Mode: "fts", K: 8, Caller: "c", Results: []store.LoggedHit{
+		hit("", "a.md"), hit(notes, "a.md"), hit(notes, "n.md"), hit(adr, "n.md"), hit(notes, "only.md"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Feedback(ctx, 1, 2, true, "", at); err != nil { // notes' a.md, not this store's
+		t.Fatal(err)
+	}
+	if err := st.Feedback(ctx, 1, 5, false, "", at); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range []store.OpenRecord{
+		{Store: notes, EntryPath: "a.md"}, // ambiguous: this store returned a.md too
+		{Store: notes, EntryPath: "n.md"}, // ambiguous between notes and adr: the smallest ref
+		{Store: notes, EntryPath: "only.md"},
+	} {
+		o.At, o.Window = at, time.Hour
+		if ok, err := st.RecordOpen(ctx, o); err != nil || !ok {
+			t.Fatalf("RecordOpen %+v: %v %v", o, ok, err)
+		}
+	}
+	got, err := jl.Judged(ctx, store.JudgedFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []store.JudgedSearch{{ID: 1, TS: "2026-10-30T12:00:00Z", Query: "q", Mode: "fts", K: 8, Caller: "c",
+		Verdicts: []store.Verdict{
+			{Rank: 2, Store: notes, Useful: true, EntryPath: "a.md", Heading: "H"},
+			{Rank: 5, Store: notes, EntryPath: "only.md", Heading: "H"},
+		},
+		Opens:      []string{"a.md"},
+		OtherOpens: []store.StorePath{{Store: adr, Path: "n.md"}, {Store: notes, Path: "only.md"}},
+	}}
+	if fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", want) {
+		t.Errorf("Judged:\n got %+v\nwant %+v", got, want)
+	}
+	for _, tc := range []struct {
+		since time.Time
+		n     int
+	}{
+		{at.Add(-time.Second), 1},
+		{at, 1},
+		{at.Add(time.Second), 0},
+		{at.In(time.FixedZone("x", 3600)), 1}, // the same instant in another zone
+	} {
+		got, err := jl.Judged(ctx, store.JudgedFilter{Since: tc.since})
+		if err != nil || len(got) != tc.n {
+			t.Errorf("since %v: %d searches (%v), want %d", tc.since, len(got), err, tc.n)
+		}
 	}
 }

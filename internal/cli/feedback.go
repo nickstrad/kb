@@ -161,14 +161,14 @@ func runFeedback(cmd *cobra.Command, d *deps, stdout io.Writer, opts feedbackOpt
 	}
 
 	if opts.none {
-		if err := st.FeedbackNone(ctx, searchID, opts.note); err != nil {
+		if err := st.FeedbackNone(ctx, searchID, opts.note, d.clock()); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "recorded: search %d none (nothing useful)%s\n", searchID, target)
 		return nil
 	}
 
-	if err := st.Feedback(ctx, searchID, rank, opts.useful, opts.note); err != nil {
+	if err := st.Feedback(ctx, searchID, rank, opts.useful, opts.note, d.clock()); err != nil {
 		return err
 	}
 	usefulValue := 0

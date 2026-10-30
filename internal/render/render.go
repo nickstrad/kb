@@ -30,9 +30,11 @@ import (
 	"github.com/nickstrad/kb/internal/assert"
 )
 
-// Hit is one search hit as the renderer needs it. Updated and Summary may be empty.
+// Hit is one search hit as the renderer needs it. Updated and Summary may be empty. Store is the
+// store a cross-store hit came from, as the user named it; "" for the primary store's hits.
 type Hit struct {
 	Rank    int
+	Store   string
 	Path    string
 	Heading string
 	Updated string // the entry's front-matter date, shown verbatim
@@ -199,9 +201,14 @@ func plus(first bool) string {
 	return ""
 }
 
-// header is "[r] path › heading · updated DATE".
+// header is "[r] path › heading · updated DATE", with the path written "store:path" for another
+// store's hit: the form kb show takes.
 func header(h Hit) string {
-	s := fmt.Sprintf("[%d] %s", h.Rank, h.Path)
+	path := h.Path
+	if h.Store != "" {
+		path = h.Store + ":" + path
+	}
+	s := fmt.Sprintf("[%d] %s", h.Rank, path)
 	if h.Heading != "" {
 		s += " › " + h.Heading
 	}

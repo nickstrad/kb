@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/nickstrad/kb/internal/store/sqlite"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 )
 
 // headerID is the search id from the first line of `kb search` human output ("search N · M hits"),
@@ -246,5 +249,30 @@ func TestFeedbackHelpNamesEveryVerdict(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("feedback help missing %q:\n%s", want, stdout)
 		}
+	}
+}
+
+// TestLogUsesInjectedClock (Q78, Q81): searches, verdicts and opens are stamped with deps.now, so
+// a test can place them at an exact time.
+func TestLogUsesInjectedClock(t *testing.T) {
+	root := openRepo(t)
+	at := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	orig := testDeps.now
+	t.Cleanup(func() { testDeps.now = orig })
+	testDeps.now = func() time.Time { return at }
+	id := searchID(t, "foo")
+	mustKB(t, "feedback", id, "1", "--useful")
+	mustKB(t, "show", "data/foo.md")
+	if n := feedbackRows(t, root, "ts = ?", "2025-01-02T03:04:05Z"); n != 1 {
+		t.Errorf("%d verdicts stamped with the injected clock, want 1", n)
+	}
+	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	got, err := st.Judged(context.Background(), store.JudgedFilter{Since: at})
+	if err != nil || len(got) != 1 || got[0].TS != "2025-01-02T03:04:05Z" || len(got[0].Opens) != 1 {
+		t.Errorf("Judged since the injected time = %+v, %v; want the one search, stamped then, with its open", got, err)
 	}
 }

@@ -9,7 +9,6 @@ import (
 
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/index"
-	"github.com/nickstrad/kb/internal/workspace"
 )
 
 // newIndexCmd builds `kb index`.
@@ -21,11 +20,16 @@ func newIndexCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ws, cfg, err := d.workspaceConfig(cmd)
+			rr, err := d.resolveWorkspace(cmd)
 			if err != nil {
 				return err
 			}
-			if def, isDefault := isDefaultStore(ws); !isDefault {
+			ws := rr.ws
+			cfg, err := d.loadConfig(cmd, ws)
+			if err != nil {
+				return err
+			}
+			if def := rr.lf.DefaultStore; def != ws.Store {
 				// index.md is one file at the location root: written for another store it would
 				// replace the default store's snapshot (W7 pass).
 				return usageErr("index.md at %s describes the default store (%q); kb index does not run for store %q", ws.Root, def, ws.Store)
@@ -33,16 +37,6 @@ func newIndexCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			return runIndex(stdout, stderr, ws.Root, cfg.Sources)
 		},
 	}
-}
-
-// isDefaultStore reports whether ws is its location's default_store, with that name. A location
-// file that cannot be read counts as "default" so the caller's own checks report it.
-func isDefaultStore(ws *workspace.Workspace) (string, bool) {
-	lf, err := config.ReadLocation(ws.Location.FilePath)
-	if err != nil {
-		return ws.Store, true
-	}
-	return lf.DefaultStore, lf.DefaultStore == ws.Store
 }
 
 // runIndex discovers every entry, warns on stderr about any whose front matter is broken (they

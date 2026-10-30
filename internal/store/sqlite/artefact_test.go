@@ -200,12 +200,12 @@ func TestRunIndex(t *testing.T) {
 // TestApplyCancelledMidStep: Ctrl-C during the last pending step rolls every step of the run back
 // (one transaction): the file keeps its starting version and schema, and a rerun succeeds.
 func TestApplyCancelledMidStep(t *testing.T) {
+	t.Parallel()
 	path := loadFixture(t, 1)
 	before := schemaAt(t, path)
 	ctx, cancel := context.WithCancel(context.Background())
-	orig := migrations
-	migrations = append(slices.Clone(orig), migrate.Step[execer]{
-		Info: migrate.Info{From: len(orig), ID: "index/9999-cancel", Desc: "cancel mid-step"},
+	steps := append(slices.Clone(indexSteps), migrate.Step[execer]{
+		Info: migrate.Info{From: len(indexSteps), ID: "index/9999-cancel", Desc: "cancel mid-step"},
 		Up: func(ctx context.Context, db execer) error {
 			if _, err := db.ExecContext(ctx, "CREATE TABLE half_done (x)"); err != nil {
 				return err
@@ -215,10 +215,8 @@ func TestApplyCancelledMidStep(t *testing.T) {
 			return err
 		},
 	})
-	schemaVersion = migrations.Target()
-	t.Cleanup(func() { migrations, schemaVersion = orig, orig.Target() })
 
-	rep, err := migrate.Run(ctx, []migrate.Artefact{NewArtefact(path)}, migrate.Options{})
+	rep, err := migrate.Run(ctx, []migrate.Artefact{&Artefact{path: path, steps: steps}}, migrate.Options{})
 	if errs.KindOf(err) != errs.Interrupted {
 		t.Fatalf("Run = %v (kind %v), want Interrupted", err, errs.KindOf(err))
 	}
@@ -231,7 +229,6 @@ func TestApplyCancelledMidStep(t *testing.T) {
 		t.Errorf("backup at %+v, %v; want v1", st, err)
 	}
 
-	migrations, schemaVersion = orig, orig.Target()
 	if _, err := migrate.Run(context.Background(), []migrate.Artefact{NewArtefact(path)}, migrate.Options{}); err != nil {
 		t.Fatalf("rerun after the cancel: %v", err)
 	}

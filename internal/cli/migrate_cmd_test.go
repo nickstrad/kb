@@ -132,6 +132,7 @@ func TestCommandsOnIndexStates(t *testing.T) {
 	}{
 		{[]string{"search", "zzz", "--mode", "fts"}, want{0, "", ""}, want{1, "", older}, want{1, "", newer}, want{1, "", "no index"}},
 		{[]string{"explain", "zzz", "--mode", "fts"}, want{0, "", ""}, want{1, "", older}, want{1, "", newer}, want{1, "", "no index"}},
+		{[]string{"eval", "--mode", "fts"}, want{0, "queries=0", ""}, want{1, "", older}, want{1, "", newer}, want{1, "", "no index"}},
 		{[]string{"stats", "overview"}, want{0, "", ""}, want{1, "", older}, want{1, "", newer}, want{1, "", "no search database"}},
 		{[]string{"reindex", "--all"}, want{0, "", ""}, want{1, "", older}, want{1, "", newer}, want{0, "", ""}},
 		// exempt commands

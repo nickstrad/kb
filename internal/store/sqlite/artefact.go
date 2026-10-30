@@ -22,7 +22,8 @@ import (
 // failure or a cancel leaves the starting version.
 type Artefact struct {
 	path   string
-	driver string // test seam, as Options.driver
+	driver string                // test seam, as Options.driver
+	steps  migrate.Steps[execer] // test seam, as Options.steps; nil = indexSteps
 }
 
 var (
@@ -35,13 +36,14 @@ func NewArtefact(path string) *Artefact { return &Artefact{path: path} }
 
 // Status reads the file's schema version without changing it; a missing file is version 0.
 func (a *Artefact) Status(ctx context.Context) (migrate.Status, error) {
-	st := migrate.Status{Artefact: artefactName, Path: a.path, Target: schemaVersion}
+	steps := stepsOr(a.steps)
+	st := migrate.Status{Artefact: artefactName, Path: a.path, Target: steps.Target()}
 	v, err := a.version(ctx)
 	if err != nil {
 		return st, err
 	}
 	st.Current = v
-	st.Pending = migrations.Pending(min(v, schemaVersion))
+	st.Pending = steps.Pending(min(v, st.Target))
 	return st, nil
 }
 
@@ -104,8 +106,9 @@ func (a *Artefact) Verify(ctx context.Context) error {
 		if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&v); err != nil {
 			return err
 		}
-		if v < 0 || v > schemaVersion {
-			return errs.New(errs.Conflict, op, "database %s is at schema version %d; this kb verifies 0 to %d", a.path, v, schemaVersion).
+		steps := stepsOr(a.steps)
+		if v < 0 || v > steps.Target() {
+			return errs.New(errs.Conflict, op, "database %s is at schema version %d; this kb verifies 0 to %d", a.path, v, steps.Target()).
 				With("db", a.path)
 		}
 		if err := integrity(ctx, s.db); err != nil {
@@ -116,7 +119,7 @@ func (a *Artefact) Verify(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		want, err := freshSchema(ctx, v)
+		want, err := freshSchema(ctx, steps, v)
 		if err != nil {
 			return err
 		}
@@ -133,7 +136,7 @@ func (a *Artefact) Verify(ctx context.Context) error {
 
 // with opens the file without migrating, runs fn and closes it, wrapping any failure once.
 func (a *Artefact) with(ctx context.Context, readOnly bool, op string, fn func(*Store) error) (err error) {
-	s, err := open(ctx, a.path, Options{ReadOnly: readOnly, driver: a.driver, noMigrate: true})
+	s, err := open(ctx, a.path, Options{ReadOnly: readOnly, driver: a.driver, noMigrate: true, steps: a.steps})
 	if err != nil {
 		return wrap(ctx, err, a.path, op, "could not open the database %s", a.path)
 	}
@@ -251,8 +254,8 @@ func ownedTables(ctx context.Context, db queryer) (map[string]bool, error) {
 	return out, rows.Err()
 }
 
-// freshSchema is schemaOf a new in-memory database after the first v steps.
-func freshSchema(ctx context.Context, v int) ([]string, error) {
+// freshSchema is schemaOf a new in-memory database after the first v of steps.
+func freshSchema(ctx context.Context, steps migrate.Steps[execer], v int) ([]string, error) {
 	vecOnce.Do(sqlite_vec.Auto)
 	db, err := sql.Open(driverName, ":memory:")
 	if err != nil {
@@ -264,7 +267,7 @@ func freshSchema(ctx context.Context, v int) ([]string, error) {
 		return nil, err
 	}
 	defer conn.Close()
-	if _, err := migrations[:v].Up(ctx, execer(conn), 0, stampVersion); err != nil {
+	if _, err := steps[:v].Up(ctx, execer(conn), 0, stampVersion); err != nil {
 		return nil, fmt.Errorf("build a reference database at v%d: %w", v, err)
 	}
 	return schemaOf(ctx, conn)

@@ -20,7 +20,7 @@ func fixture() []Hit {
 		{Rank: 2, Path: "data/git.md", Heading: "", Updated: "2026-02-11",
 			Summary: "Git recipes for rewriting history.",
 			Text:    "Use git rebase -i to squash the last commits before you push."},
-		{Rank: 3, Path: "data/deploy.md", Heading: "Rollback", Updated: "",
+		{Rank: 3, Store: "ops", Path: "data/deploy.md", Heading: "Rollback", Updated: "",
 			Summary: "Deploy and rollback runbook.",
 			Text:    "Roll back by redeploying the previous tag; never edit the live host by hand."},
 		{Rank: 4, Path: "data/naming.md", Heading: "Rules", Updated: "2025-12-31",
@@ -170,6 +170,8 @@ func TestHeaderShapes(t *testing.T) {
 		{Hit{Rank: 2, Path: "a.md", Heading: "H"}, "[2] a.md › H"},
 		{Hit{Rank: 2, Path: "a.md", Updated: "2026-01-02"}, "[2] a.md · updated 2026-01-02"},
 		{Hit{Rank: 2, Path: "a.md", Heading: "H", Updated: "2026-01-02"}, "[2] a.md › H · updated 2026-01-02"},
+		{Hit{Rank: 2, Store: "notes", Path: "a.md"}, "[2] notes:a.md"},
+		{Hit{Rank: 2, Store: "global", Path: "data/a.md", Heading: "H"}, "[2] global:data/a.md › H"},
 	} {
 		if got := header(tc.h); got != tc.want {
 			t.Errorf("header = %q, want %q", got, tc.want)

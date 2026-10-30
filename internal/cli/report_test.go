@@ -603,3 +603,32 @@ func TestIncidentLogPathDecision(t *testing.T) {
 		})
 	}
 }
+
+// panicFTSStore is a store whose full-text search panics: a bug inside a search worker goroutine.
+type panicFTSStore struct{ store.Store }
+
+func (panicFTSStore) FTS(context.Context, store.FTSQuery) (store.FTSResult, error) {
+	panic("boom in a search worker")
+}
+
+// TestSearchWorkerPanicExitsInternal: kb search runs each store's search in a goroutine; a panic
+// there still exits 3 with an incident, and --debug shows the worker's own stack.
+func TestSearchWorkerPanicExitsInternal(t *testing.T) {
+	root := newTempRoot(t)
+	useNoneModel(t, root)
+	src := filepath.Join(t.TempDir(), "a.md")
+	writeFile(t, src, validFrontMatter("A", "Alpha."))
+	if _, stderr, code := run(t, "add", src); code != 0 {
+		t.Fatal(stderr)
+	}
+	orig := testDeps.openStore
+	t.Cleanup(func() { testDeps.openStore = orig })
+	testDeps.openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
+		st, err := orig(ctx, path, ro)
+		return panicFTSStore{st}, err
+	}
+	_, stderr, code := run(t, "search", "alpha", "--mode", "fts", "--debug")
+	if code != ExitInternal || !strings.Contains(stderr, "boom in a search worker") || !strings.Contains(stderr, "panicFTSStore") {
+		t.Errorf("exit %d, stderr %q; want 3 with the panic value and the worker's stack", code, stderr)
+	}
+}

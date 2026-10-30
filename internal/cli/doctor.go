@@ -49,11 +49,11 @@ func newDoctorCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			if _, _, _, _, err := d.location(cmd); err != nil {
 				return doctorUnresolved(stdout, "location", locationProblem(err), err)
 			}
-			ws, err := d.workspace(cmd)
+			rr, err := d.resolveWorkspace(cmd)
 			if err != nil {
 				return doctorUnresolved(stdout, "store", err.Error(), err)
 			}
-			return runDoctor(cmd.Context(), cmd, d, stdout, ws)
+			return runDoctor(cmd.Context(), cmd, d, stdout, rr.ws, rr.lf.DefaultStore)
 		},
 	}
 }
@@ -96,8 +96,9 @@ func (d *doctorState) warn(check, detail string) {
 }
 
 // runDoctor runs every check in turn and prints the final "doctor: N failed, M warnings" line.
-// It returns a non-nil error (ExitUsage) only when at least one check FAILed.
-func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writer, ws *workspace.Workspace) error {
+// It returns a non-nil error (ExitUsage) only when at least one check FAILed. defaultStore is the
+// location's default_store, from the kb.toml ref resolution read: index.md is checked only for it.
+func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writer, ws *workspace.Workspace, defaultStore string) error {
 	d := &doctorState{stdout: stdout}
 	root, dbPath := ws.Root, ws.DBPath
 
@@ -157,10 +158,10 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 	if st != nil {
 		checkDBVsFiles(ctx, d, root, st, goodEntries)
 	}
-	if def, isDefault := isDefaultStore(ws); isDefault {
+	if defaultStore == ws.Store {
 		checkIndexMD(d, root, goodEntries)
 	} else {
-		d.ok("index.md", fmt.Sprintf("not checked: it describes the default store %q", def))
+		d.ok("index.md", fmt.Sprintf("not checked: it describes the default store %q", defaultStore))
 	}
 	checkVersion(d)
 

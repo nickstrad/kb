@@ -62,7 +62,7 @@ v2 moves (PLAN.md §2): `SanitizeFTS`, its fuzz target and its corpus move to `s
 - An assertion has no side effects. Behaviour must be the same with assertions on and off. The `noassert` CI job checks this (§8).
 - An assertion is never the only handling of a required error path.
 - **Panics, not `t.Fatal`.** Assertions live in production code and know nothing about `testing`. In a test, a panic fails the test with a stack trace. Under `-fuzz`, a panic is a crasher and gets minimised and saved.
-- **Recovery.** Only the top level (`cli.Execute`, CODING_STYLE.md §1.5) may recover. It recovers any panic, an `assert.Violation` or a runtime panic, writes it to the incident log as `Internal` with its stack, and exits with the internal-error code (3). It never continues past a violation. No other code calls `recover`. This also settles the exit-2 clash noted in CODING_STYLE.md §1.5: without a recover, a Go panic exits with status 2, the same code as "embedder unavailable". Tests may recover only to prove that a check fires (§3.4).
+- **Recovery.** Only the top level (`cli.Execute`, CODING_STYLE.md §1.5) may recover. It recovers any panic, an `assert.Violation` or a runtime panic, writes it to the incident log as `Internal` with its stack, and exits with the internal-error code (3). It never continues past a violation. No other code calls `recover`, except a worker goroutine handing its panic to the goroutine that started it (`errs.WorkerPanic`, CODING_STYLE.md §1.5), which raises it again. This also settles the exit-2 clash noted in CODING_STYLE.md §1.5: without a recover, a Go panic exits with status 2, the same code as "embedder unavailable". Tests may recover only to prove that a check fires (§3.4).
 
 ### 3.2 Package
 

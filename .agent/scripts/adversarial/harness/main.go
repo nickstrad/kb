@@ -113,7 +113,8 @@ func run() int {
 	if bin == "" {
 		bin = filepath.Join(work, "kb")
 		fmt.Fprintf(os.Stderr, "harness: building kb in %s\n", box)
-		cmd := exec.CommandContext(ctx, "go", "build", "-tags", "fts5", "-o", bin, "./cmd/kb")
+		// harnessfake adds the deterministic fake:<dim> model (DEFAULTS #189), only in this build.
+		cmd := exec.CommandContext(ctx, "go", "build", "-tags", "fts5,harnessfake", "-o", bin, "./cmd/kb")
 		cmd.Dir = box
 		cmd.Env = append(os.Environ(), "GOPROXY=off", "GOWORK=off")
 		if out, err := cmd.CombinedOutput(); err != nil {

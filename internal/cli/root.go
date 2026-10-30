@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -56,6 +57,16 @@ type deps struct {
 	// workspaceEnv supplies the working directory, home, XDG_DATA_HOME and cache base that
 	// location resolution reads.
 	workspaceEnv func() workspace.Env
+	// now is the clock searches and opens are logged with; nil is time.Now.
+	now func() time.Time
+}
+
+// clock is d.now, or the wall clock.
+func (d *deps) clock() time.Time {
+	if d.now == nil {
+		return time.Now()
+	}
+	return d.now()
 }
 
 // productionDeps are the real implementations.
@@ -142,15 +153,23 @@ func (d *deps) locationLenient(cmd *cobra.Command) (loc *workspace.Location, lf 
 // names no store, and that message names kb.toml. Under --debug it says on stderr which store was
 // chosen and how.
 func (d *deps) workspace(cmd *cobra.Command) (*workspace.Workspace, error) {
-	rr, err := d.resolveRef(cmd, true)
+	rr, err := d.resolveWorkspace(cmd)
 	if err != nil {
 		return nil, err
 	}
-	ws := rr.ws
-	if debugFlag(cmd) {
-		fmt.Fprintf(cmd.ErrOrStderr(), "%s: location %s store %s (%s)\n", cmd.CommandPath(), ws.Root, ws.Store, rr.how)
+	return rr.ws, nil
+}
+
+// resolveWorkspace is workspace with the whole resolution (the location file it read included).
+func (d *deps) resolveWorkspace(cmd *cobra.Command) (refResolution, error) {
+	rr, err := d.resolveRef(cmd, true)
+	if err != nil {
+		return refResolution{}, err
 	}
-	return ws, nil
+	if debugFlag(cmd) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "%s: location %s store %s (%s)\n", cmd.CommandPath(), rr.ws.Root, rr.ws.Store, rr.how)
+	}
+	return rr, nil
 }
 
 // storeHint lists the existing stores and says how to fix a missing one.
@@ -267,6 +286,7 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		newListCmd(d, stdout, stderr),
 		newSearchCmd(d, stdout, stderr),
 		newExplainCmd(d, stdout, stderr),
+		newEvalCmd(d, stdout, stderr),
 		newReindexCmd(d, stdout, stderr),
 		newIndexCmd(d, stdout, stderr),
 		newDoctorCmd(d, stdout, stderr),

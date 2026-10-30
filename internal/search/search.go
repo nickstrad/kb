@@ -57,7 +57,10 @@ var ErrNoVectors = errors.New("this index has no vectors yet; run `kb reindex --
 // {search_id, query, mode, hits:[...]}. FTSRank and VecRank are null when the chunk appeared in
 // only one of the two lists.
 type Hit struct {
-	Rank     int     `json:"rank"`
+	Rank int `json:"rank"`
+	// Store is the store that returned the hit in a cross-store search, as the user named it
+	// (--stores, search.stores); omitted for the primary store's hits.
+	Store    string  `json:"store,omitempty"`
 	RRFScore float64 `json:"rrf_score"`
 	FTSRank  *int    `json:"fts_rank"`
 	VecRank  *int    `json:"vec_rank"`
@@ -107,6 +110,19 @@ type Searcher struct {
 	KBVersion string
 	// CorpusRev optionally names the corpus revision, stored in searches.corpus_rev.
 	CorpusRev string
+	// Now is the clock Record stamps the search with (searches.ts); nil means time.Now.
+	Now func() time.Time
+	// Queries, when set, shares query vectors between searchers: a cross-store search embeds
+	// the query once per distinct (model, query text with its prefix). nil embeds every time.
+	Queries *QueryMemo
+}
+
+// now is s.Now, or the wall clock.
+func (s *Searcher) now() time.Time {
+	if s.Now == nil {
+		return time.Now()
+	}
+	return s.Now()
 }
 
 // Candidate is one chunk in the fused list. FTSRank/FTSScore are nil when the chunk was not in
@@ -114,8 +130,12 @@ type Searcher struct {
 // pair is always set. RRFScore is the reciprocal-rank-fusion score the list is sorted by.
 // CapDropped is true when the diversity cap skipped the chunk because its entry already filled
 // its places. The path/heading/text fields are filled in once the candidates are looked up in the
-// database, so the log can write search_candidates without re-reading anything.
+// database, so the log can write search_candidates without re-reading anything. Ord is the
+// chunk's position in its entry; with the entry path and the store's location root it is the
+// chunk's identity across stores (Merge). Store is "" for the primary store's chunks; Merge sets
+// it to the canonical ref of the store a merged candidate came from.
 type Candidate struct {
+	Store       string
 	ChunkID     int64
 	FTSRank     *int
 	FTSScore    *float64
@@ -125,6 +145,7 @@ type Candidate struct {
 	CapDropped  bool
 
 	EntryPath string
+	Ord       int
 	Heading   string
 	Text      string
 }
@@ -260,6 +281,21 @@ func rankOrMax(p *int) int {
 // the cap skipped gets CapDropped set in cands. A chunk missing from entryOf is skipped, not
 // marked: without an entry it can neither be capped nor displayed.
 func applyCap(cands []Candidate, entryOf map[int64]string, k, perEntryCap int) []Candidate {
+	return capBy(cands, entryByChunk(entryOf), k, perEntryCap)
+}
+
+// entryByChunk is capBy's entry identity within one store: the path of the chunk's entry.
+func entryByChunk(entryOf map[int64]string) func(Candidate) (string, bool) {
+	return func(c Candidate) (string, bool) {
+		path, ok := entryOf[c.ChunkID]
+		return path, ok
+	}
+}
+
+// capBy is the diversity cap over any entry identity: entryOf names a candidate's entry, false
+// when it has none (skipped, not marked). applyCap keys by path within one store; Merge keys by
+// (location root, path) across stores.
+func capBy(cands []Candidate, entryOf func(Candidate) (string, bool), k, perEntryCap int) []Candidate {
 	assert.Pre(k >= MinK && k <= MaxK, "applyCap: k=%d outside [MinK,MaxK]", k)
 	assert.Pre(perEntryCap >= 1, "applyCap: perEntryCap=%d must be positive", perEntryCap)
 	out := make([]Candidate, 0, k)
@@ -268,15 +304,15 @@ func applyCap(cands []Candidate, entryOf map[int64]string, k, perEntryCap int) [
 		if len(out) >= k {
 			break
 		}
-		path, ok := entryOf[c.ChunkID]
+		entry, ok := entryOf(c)
 		if !ok {
 			continue
 		}
-		if perEntry[path] >= perEntryCap {
+		if perEntry[entry] >= perEntryCap {
 			cands[i].CapDropped = true
 			continue
 		}
-		perEntry[path]++
+		perEntry[entry]++
 		out = append(out, c)
 	}
 	if assert.Enabled {
@@ -285,18 +321,19 @@ func applyCap(cands []Candidate, entryOf map[int64]string, k, perEntryCap int) [
 	return out
 }
 
-// assertCapped checks applyCap's postconditions: at most k, at most perEntryCap per entry, an
+// assertCapped checks capBy's postconditions: at most k, at most perEntryCap per entry, an
 // order-preserving subsequence of cands, and no returned chunk marked CapDropped.
-func assertCapped(cands, out []Candidate, entryOf map[int64]string, k, perEntryCap int) {
+func assertCapped(cands, out []Candidate, entryOf func(Candidate) (string, bool), k, perEntryCap int) {
 	assert.Post(len(out) <= k, "applyCap: len(out)=%d > k=%d", len(out), k)
 	perEntry := make(map[string]int)
 	j := 0
 	for _, c := range out {
-		perEntry[entryOf[c.ChunkID]]++
-		assert.Post(perEntry[entryOf[c.ChunkID]] <= perEntryCap, "applyCap: entry %q appears more than PerEntryCap=%d times",
-			entryOf[c.ChunkID], perEntryCap)
+		entry, _ := entryOf(c)
+		perEntry[entry]++
+		assert.Post(perEntry[entry] <= perEntryCap, "applyCap: entry %q appears more than PerEntryCap=%d times",
+			entry, perEntryCap)
 		assert.Post(!c.CapDropped, "applyCap: returned chunk %d is marked CapDropped", c.ChunkID)
-		for j < len(cands) && cands[j].ChunkID != c.ChunkID {
+		for j < len(cands) && (cands[j].Store != c.Store || cands[j].ChunkID != c.ChunkID) {
 			j++
 		}
 		assert.Post(j < len(cands), "applyCap: chunk %d is not in cands in order", c.ChunkID)
@@ -439,6 +476,7 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 	for i := range cands {
 		if m, ok := meta[cands[i].ChunkID]; ok {
 			cands[i].EntryPath = m.EntryPath
+			cands[i].Ord = m.Ord
 			cands[i].Heading = m.Heading
 			cands[i].Text = m.Text
 		}
@@ -451,9 +489,17 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 		out.Returned = returned
 	}
 
-	result := NewResult(req.Query, out.Mode)
+	out.Result = resultOf(req.Query, out.Mode, returned, nil)
+	out.TotalMs = time.Since(start).Milliseconds()
+	return out, nil
+}
+
+// resultOf is the Result for the returned candidates, ranked from 1. label maps a candidate's
+// store (its canonical ref) to the tag the hit shows; nil leaves every hit untagged.
+func resultOf(query, mode string, returned []Candidate, label func(store string) string) *Result {
+	result := NewResult(query, mode)
 	for i, c := range returned {
-		result.Hits = append(result.Hits, Hit{
+		h := Hit{
 			Rank:     i + 1,
 			RRFScore: c.RRFScore,
 			FTSRank:  c.FTSRank,
@@ -461,11 +507,13 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 			Path:     c.EntryPath,
 			Heading:  c.Heading,
 			Text:     c.Text,
-		})
+		}
+		if label != nil && c.Store != "" {
+			h.Store = label(c.Store)
+		}
+		result.Hits = append(result.Hits, h)
 	}
-	out.Result = result
-	out.TotalMs = time.Since(start).Milliseconds()
-	return out, nil
+	return result
 }
 
 // ftsList runs the full-text list: all terms ANDed first and, if that matches nothing and there
@@ -495,7 +543,7 @@ func (s *Searcher) embedQuery(ctx context.Context, query string) ([]float32, int
 		return nil, 0, errs.Wrap(embed.ErrUnavailable, errs.Unavailable, op, "no embedder is configured")
 	}
 	start := time.Now()
-	vecs, err := s.Embedder.Embed(ctx, []string{embed.QueryText(s.Embedder, query)})
+	vecs, err := s.Queries.embed(ctx, s.Embedder, embed.QueryText(s.Embedder, query))
 	ms := time.Since(start).Milliseconds()
 	if err != nil {
 		return nil, ms, errs.Wrap(err, errs.KindOf(err), op, "embed query: %v", err)

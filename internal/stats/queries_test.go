@@ -48,7 +48,7 @@ INSERT INTO searches (id, ts, query, mode, k, tag_filter, embed_model, n_fts, n_
 
 -- Provenance: a row with both ranks is 'both', one rank is 'fts-only' / 'vec-only'. The
 -- fts-fallback search (4) has no vector list at all, so both its rows are fts-only.
-INSERT INTO search_results VALUES
+INSERT INTO search_results (search_id, rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, rrf_score) VALUES
  (1, 1, 101, 'postgres.md',         'Tuning',     1, -5.0,    1, 0.10, 0.033),
  (1, 2, 102, 'droplet.md',          'Disks',      2, -4.0, NULL, NULL, 0.016),
  (1, 3, 103, 'postgres-tuning.md',  'WAL',     NULL, NULL,    1, 0.12, 0.016),
@@ -68,7 +68,7 @@ INSERT INTO search_results VALUES
 
 -- Candidates exist but no query may read them: orphan.md appears here only as a candidate that
 -- lost the fusion, so the entries query must still report it as never returned.
-INSERT INTO search_candidates VALUES
+INSERT INTO search_candidates (search_id, fused_rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, rrf_score, returned) VALUES
  (1, 1, 101, 'postgres.md',        'Tuning',   1, -5.0,    1, 0.10, 0.033, 1),
  (1, 2, 102, 'droplet.md',         'Disks',    2, -4.0, NULL, NULL, 0.016, 1),
  (1, 3, 103, 'postgres-tuning.md', 'WAL',   NULL, NULL,    1, 0.12, 0.016, 1),

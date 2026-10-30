@@ -100,7 +100,7 @@ func collectStores(ctx context.Context, cmd *cobra.Command, d *deps, loc *worksp
 		return storesJSON{}, err
 	}
 	doc := storesJSON{Location: loc.Root, DefaultStore: lf.DefaultStore, Stores: []storeRow{}, Skipped: skipped, Aliases: lf.Aliases, AliasStatus: []aliasRow{}}
-	res := d.resolver(cmd)
+	res := d.resolver(cmd, config.ReadLocation)
 	res.Warn = nil // listing is not resolving for use: shadowing is shown in the row
 	for _, a := range res.ListAliases(loc, locationInfo(lf)) {
 		doc.AliasStatus = append(doc.AliasStatus, aliasRow{Name: a.Name, Scope: a.Scope, Target: a.Target, Resolves: a.Problem == "",

@@ -194,6 +194,40 @@ func (s *Store) Entry(ctx context.Context, path string) (*store.EntryRow, error)
 	return e, nil
 }
 
+// EntriesByPath reads the entries at paths in one query (render looks up every hit's entry this
+// way); a path with no entry is absent from the map. Duplicate paths are fine.
+func (s *Store) EntriesByPath(ctx context.Context, paths []string) (map[string]store.EntryRow, error) {
+	out, err := s.entriesByPath(ctx, paths)
+	if err != nil {
+		return nil, wrap(ctx, err, s.path, "sqlite.EntriesByPath", "could not read %d entries", len(paths))
+	}
+	return out, nil
+}
+
+func (s *Store) entriesByPath(ctx context.Context, paths []string) (map[string]store.EntryRow, error) {
+	out := make(map[string]store.EntryRow, len(paths))
+	if len(paths) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(paths))
+	for i, p := range paths {
+		args[i] = p
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+entryColumns+` FROM entries WHERE path IN (`+placeholders(len(args))+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		e, err := scanEntry(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[e.Path] = *e
+	}
+	return out, rows.Err()
+}
+
 // Entries returns every entry, sorted by path.
 func (s *Store) Entries(ctx context.Context) ([]store.EntryRow, error) {
 	out, err := s.entries(ctx)

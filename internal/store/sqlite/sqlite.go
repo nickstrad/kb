@@ -49,8 +49,9 @@ type Options struct {
 	// file is NotFound; a schema version other than this build's is a Conflict.
 	ReadOnly bool
 
-	driver    string // test seam: a registered database/sql driver name; "" = driverName
-	noMigrate bool   // Artefact: open without checking or migrating the schema version
+	driver    string                // test seam: a registered database/sql driver name; "" = driverName
+	noMigrate bool                  // Artefact: open without checking or migrating the schema version
+	steps     migrate.Steps[execer] // test seam: the migration steps this build has; nil = indexSteps
 }
 
 // Schema versions on open (PLAN 1.8b, D10): a read-write open creates a missing or empty
@@ -63,6 +64,7 @@ type Store struct {
 	db       *sql.DB
 	path     string
 	readOnly bool
+	steps    migrate.Steps[execer] // the build's steps; their Target is the schema version it expects
 }
 
 var _ store.Store = (*Store)(nil)
@@ -111,7 +113,7 @@ func open(ctx context.Context, path string, opts Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, path: path, readOnly: opts.ReadOnly}
+	s := &Store{db: db, path: path, readOnly: opts.ReadOnly, steps: stepsOr(opts.steps)}
 	if err := s.init(ctx, opts.noMigrate); err != nil {
 		db.Close()
 		return nil, err
@@ -261,7 +263,7 @@ func (s *Store) DriverInfo(ctx context.Context) (DriverInfo, error) {
 	return info, nil
 }
 
-// migrate brings the database up to schemaVersion and returns the steps it applied. A database
+// migrate brings the database up to s.steps.Target() and returns the steps it applied. A database
 // that already has a schema (version > 0) is upgraded only when upgrade is set (Artefact.Apply);
 // otherwise an older one is a Conflict. The
 // read-decide-apply sequence runs inside one BEGIN IMMEDIATE on a pinned connection, so a second
@@ -282,7 +284,7 @@ func (s *Store) migrate(ctx context.Context, upgrade bool) ([]migrate.Info, erro
 	if err := s.checkVersion(version, upgrade); err != nil {
 		return nil, err
 	}
-	if version == schemaVersion {
+	if version == s.steps.Target() {
 		return nil, nil
 	}
 
@@ -305,7 +307,7 @@ func (s *Store) migrate(ctx context.Context, upgrade bool) ([]migrate.Info, erro
 	if err := s.checkVersion(version, upgrade); err != nil {
 		return nil, err
 	}
-	applied, err := migrations.Up(ctx, execer(conn), version, stampVersion)
+	applied, err := s.steps.Up(ctx, execer(conn), version, stampVersion)
 	if err != nil {
 		return nil, fmt.Errorf("migrate %s: %w", s.path, err)
 	}
@@ -337,6 +339,7 @@ var ErrSchemaOlder = errors.New("index schema is older than this kb")
 // other open says to run kb migrate up. Version 0 is a new database and passes. A negative
 // version is damage.
 func (s *Store) checkVersion(version int, upgrade bool) error {
+	schemaVersion := s.steps.Target()
 	switch {
 	case version < 0:
 		return errs.New(errs.Conflict, "sqlite.Open",

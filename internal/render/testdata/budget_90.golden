@@ -1,4 +1,4 @@
-levels=[3 2 2 2] tokens=88
+levels=[3 2 2 2] tokens=89
 [1] data/tmux.md › Logs · updated 2026-03-01
 Rotate tmux logs with logrotate.
 Set copytruncate so the pane keeps writing.
@@ -7,7 +7,7 @@ Keep seven days.
 [2] data/git.md · updated 2026-02-11
 Git recipes for rewriting history.
 
-[3] data/deploy.md › Rollback
+[3] ops:data/deploy.md › Rollback
 Deploy and rollback runbook.
 
 [4] data/naming.md › Rules · updated 2025-12-31

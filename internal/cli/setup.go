@@ -53,8 +53,17 @@ func (d *deps) loadConfig(cmd *cobra.Command, ws *workspace.Workspace) (config.C
 	return cfg, nil
 }
 
+// harnessModel builds an embedder for a model id outside the supported table; ok is false for
+// an id it does not know. Only a harnessfake build sets it (harnessfake.go): nil in release builds.
+var harnessModel func(id string) (e embed.Embedder, ok bool)
+
 // knownModel is config.CheckModel's lookup into the supported embedding models.
 func knownModel(id string) error {
+	if harnessModel != nil {
+		if _, ok := harnessModel(id); ok {
+			return nil
+		}
+	}
 	_, err := local.Lookup(id)
 	return err
 }
@@ -78,6 +87,11 @@ func (d *deps) buildEmbedder(cmd *cobra.Command, ecfg config.Embed) (embed.Embed
 	}
 	if ecfg.Model == config.ModelNone {
 		return embed.None{}, nil
+	}
+	if harnessModel != nil {
+		if e, ok := harnessModel(ecfg.Model); ok {
+			return e, nil
+		}
 	}
 	spec, err := local.Lookup(ecfg.Model)
 	if err != nil {
@@ -159,7 +173,7 @@ func discoverGoodEntries(root string, sources []config.Source, stderr io.Writer)
 }
 
 // embedCacheFile is the shared embedding cache for a user cache base: <base>/kb/embed-cache.sqlite,
-// the same file cache.DefaultPath names. "" base is an error: no user cache directory.
+// the one place that path is spelled. "" base is an error: no user cache directory.
 func embedCacheFile(base string) (string, error) {
 	if base == "" {
 		return "", errs.New(errs.Usage, "cli.embedCachePath", "cannot find the user cache directory for the embedding cache")

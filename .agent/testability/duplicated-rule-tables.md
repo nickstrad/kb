@@ -11,4 +11,5 @@
 - **Why it happens:** each package needed the rule and copied it rather than importing it, sometimes to avoid an import edge.
 - **Remedy:** Queue **Q76** (claimed `[~]` by sonnet-q-batch-b, a log now STALE, not yet landed) covers the shared table and deleting `cache.DefaultPath`. Still open after Q76: (3) one property test: anything `add` accepts, `Discover` finds. Smallest step first: delete `cache.DefaultPath` and its sync test. The shared table itself is in PLAN 1.5's area (entry, add), so re-check with the orchestrator before touching `entry` or `add.go`.
 - **Cost/benefit:** small. It removes a sync-only test and one `t.Setenv`, and turns "mirrors" comments into one rule.
-- **Last reviewed:** 2026-10-30 · W7 pass
+- **W8 pass:** Q76 landed (W7 drain): `config` owns `NeverWalkedDir`/`ReservedEntryDir`/`ReservedEntryFile[Fold]`, entry and kb add use them, `cache.DefaultPath` and its sync test are deleted. W8 added one more reserved word (`workspace.AllName`, beside `GlobalName`, in one place). Left: (3) the property test "anything kb add accepts, Discover finds".
+- **Last reviewed:** 2026-10-30 · W8 wave-end pass

@@ -20,6 +20,9 @@ const (
 	storesDirName    = "stores"
 	// GlobalName is the reserved store word that means "the global location's default store".
 	GlobalName = "global"
+	// AllName is the reserved word for every store of the current location (kb search --stores
+	// all); no store or alias may take it, so the keyword never hides one.
+	AllName = "all"
 )
 
 // MaxNameLen is the longest store name ValidName accepts.
@@ -51,6 +54,8 @@ func ValidName(name string) error {
 	switch {
 	case name == GlobalName:
 		return errs.New(errs.Usage, "workspace.ValidName", "store name %q is reserved: it means the global location", name)
+	case name == AllName:
+		return errs.New(errs.Usage, "workspace.ValidName", "store name %q is reserved: kb search --stores all means every store of this location", name)
 	case !nameRE.MatchString(name):
 		return errs.New(errs.Usage, "workspace.ValidName",
 			"invalid store name %q: use 1-%d characters from a-z, 0-9, _ and -, starting with a letter or digit", name, MaxNameLen)

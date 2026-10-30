@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
-	"github.com/nickstrad/kb/internal/store/sqlite"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 )
 
 // openRepo is a repo with foo.md and bar/ indexed. A search for "foo" returns data/foo.md only.
@@ -19,25 +22,27 @@ func openRepo(t *testing.T) string {
 	return root
 }
 
+// openRows lists the recorded opens as "search_id path", read through store.JudgedLog (the log's
+// read API) rather than the table (Q79).
 func openRows(t *testing.T, root string) []string {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{})
+	st, err := sqlite.Open(context.Background(), testDBPath(root), sqlite.Options{ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	rows, err := st.DB().Query("SELECT search_id || ' ' || entry_path FROM search_opens ORDER BY search_id, entry_path")
+	searches, err := st.Judged(context.Background(), store.JudgedFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
 	var out []string
-	for rows.Next() {
-		var s string
-		if err := rows.Scan(&s); err != nil {
-			t.Fatal(err)
+	for _, j := range searches {
+		for _, p := range j.Opens {
+			out = append(out, fmt.Sprintf("%d %s", j.ID, p))
 		}
-		out = append(out, s)
+		for _, o := range j.OtherOpens {
+			out = append(out, fmt.Sprintf("%d %s", j.ID, o.Path))
+		}
 	}
 	return out
 }

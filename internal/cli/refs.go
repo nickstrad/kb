@@ -16,24 +16,27 @@ import (
 	"github.com/nickstrad/kb/internal/workspace"
 )
 
-// readLocationInfo is workspace.Resolver.Read: the part of kb.toml that ref resolution needs.
-func readLocationInfo(l *workspace.Location) (workspace.LocationInfo, error) {
-	lf, err := config.ReadLocation(l.FilePath)
-	if err != nil {
-		return workspace.LocationInfo{}, err
-	}
-	return locationInfo(lf), nil
-}
+// locationReader reads a location's kb.toml for ref resolution. Every command reads it strictly
+// (config.ReadLocation); kb migrate reads it with rawLocation, since an older kb.toml is what that
+// command upgrades. It is the only thing that differs between them: the grammar is resolveRefWith.
+type locationReader func(path string) (config.Location, error)
 
 func locationInfo(lf config.Location) workspace.LocationInfo {
 	return workspace.LocationInfo{DefaultStore: lf.DefaultStore, Aliases: lf.Aliases}
 }
 
-// resolver builds the ref resolver for cmd; its warnings go to the command's stderr.
-func (d *deps) resolver(cmd *cobra.Command) workspace.Resolver {
+// resolver builds the ref resolver for cmd, reading kb.toml files with read; its warnings go to
+// the command's stderr.
+func (d *deps) resolver(cmd *cobra.Command, read locationReader) workspace.Resolver {
 	return workspace.Resolver{
-		Env:  d.workspaceEnv(),
-		Read: readLocationInfo,
+		Env: d.workspaceEnv(),
+		Read: func(l *workspace.Location) (workspace.LocationInfo, error) {
+			lf, err := read(l.FilePath)
+			if err != nil {
+				return workspace.LocationInfo{}, err
+			}
+			return locationInfo(lf), nil
+		},
 		Warn: func(msg string) { fmt.Fprintln(cmd.ErrOrStderr(), msg) },
 	}
 }
@@ -47,8 +50,20 @@ type refResolution struct {
 	ws  *workspace.Workspace
 }
 
-// resolveRef applies --root, --global and --store. It is the one place the grammar meets the
-// flags:
+// refQuery is one ref to resolve. fromFlag marks the command's own --store, which meets --root and
+// --global: a ref that names its own location (or an alias) cannot be combined with them, and
+// under them a bare NAME is a store of that location only. A fan-out ref (--stores, search.stores)
+// has fromFlag false: --root/--global only choose the current location it is resolved against.
+// needStore false resolves only the location (kb stores, kb doctor; see resolveRef).
+type refQuery struct {
+	ref       workspace.Ref
+	fromFlag  bool
+	needStore bool
+	read      locationReader
+}
+
+// resolveRef applies --root, --global and --store, reading kb.toml strictly. It is the one place
+// the grammar meets the flags:
 //   - global, NAME@LOC and PATH name their own location. NAME@LOC and PATH with --root or --global
 //     are Usage errors, and so is global with --root (--global is the same thing).
 //   - a bare NAME is a store of the current location (--root, --global, or discovery), else an alias
@@ -58,21 +73,39 @@ type refResolution struct {
 //
 // With needStore false (kb stores, kb doctor) only the location is resolved, so an unknown store
 // does not hide the others; ws is nil then, except for an alias, whose location is its target's.
-func (d *deps) resolveRef(cmd *cobra.Command, needStore bool) (rr refResolution, err error) {
-	// Get* fails only for an undefined flag; all are root persistent flags, so "" / false is safe.
-	root, _ := cmd.Flags().GetString("root")
-	global, _ := cmd.Flags().GetBool("global")
-	storeFlag, _ := cmd.Flags().GetString("store")
-	env := d.workspaceEnv()
-	rr.ref, err = workspace.ParseRef(storeFlag)
+func (d *deps) resolveRef(cmd *cobra.Command, needStore bool) (refResolution, error) {
+	return d.resolveStoreFlag(cmd, needStore, config.ReadLocation)
+}
+
+// resolveStoreFlag is resolveRef with the kb.toml reader given (kb migrate passes rawLocation).
+func (d *deps) resolveStoreFlag(cmd *cobra.Command, needStore bool, read locationReader) (refResolution, error) {
+	storeFlag, _ := cmd.Flags().GetString("store") // a root persistent flag: "" is safe
+	ref, err := workspace.ParseRef(storeFlag)
 	if err != nil {
 		return refResolution{}, err
 	}
+	return d.resolveRefWith(cmd, refQuery{ref: ref, fromFlag: true, needStore: needStore, read: read})
+}
+
+// resolveFanOutRef resolves a ref a search fans out to (always needing the store).
+func (d *deps) resolveFanOutRef(cmd *cobra.Command, ref workspace.Ref) (refResolution, error) {
+	return d.resolveRefWith(cmd, refQuery{ref: ref, needStore: true, read: config.ReadLocation})
+}
+
+// resolveRefWith is the grammar of resolveRef and of fan-out refs (refQuery).
+func (d *deps) resolveRefWith(cmd *cobra.Command, q refQuery) (rr refResolution, err error) {
+	// Get* fails only for an undefined flag; all are root persistent flags, so "" / false is safe.
+	root, _ := cmd.Flags().GetString("root")
+	global, _ := cmd.Flags().GetBool("global")
+	env := d.workspaceEnv()
+	rr.ref = q.ref
 	ref := rr.ref
 	explicit := root != "" || global
 	rr.how = "discovered from " + env.Cwd
-	r := d.resolver(cmd)
+	r := d.resolver(cmd, q.read)
 	switch {
+	case !q.fromFlag && ref.NamesLocation():
+		return d.resolveOwnLocation(r, rr, q)
 	case ref.Global && root != "":
 		return refResolution{}, usageErr("--store global cannot be combined with --root: global names the global location")
 	case (ref.At != "" || ref.Path != "") && explicit:
@@ -82,7 +115,7 @@ func (d *deps) resolveRef(cmd *cobra.Command, needStore bool) (rr refResolution,
 		}
 		return refResolution{}, usageErr("--store %s names its own location, so it cannot be combined with %s", ref, flag)
 	case ref.At != "" || ref.Path != "":
-		return d.resolveOwnLocation(r, rr, needStore)
+		return d.resolveOwnLocation(r, rr, q)
 	case ref.Global:
 		global, rr.how = true, "--store global"
 	case root != "":
@@ -90,13 +123,13 @@ func (d *deps) resolveRef(cmd *cobra.Command, needStore bool) (rr refResolution,
 	case global:
 		rr.how = "--global"
 	}
-	cur, lf, curErr := d.currentLocation(root, global, env)
+	cur, lf, curErr := currentLocation(root, global, env, q.read)
 	if ref.Name == "" { // no --store, or global: the location's default_store
 		if curErr != nil {
 			return refResolution{}, curErr
 		}
 		rr.loc, rr.lf = cur, lf
-		if needStore {
+		if q.needStore {
 			if rr.ws, err = defaultStoreOf(cur, lf); err != nil {
 				return refResolution{}, err
 			}
@@ -105,21 +138,22 @@ func (d *deps) resolveRef(cmd *cobra.Command, needStore bool) (rr refResolution,
 	}
 
 	// A bare NAME: a store of the current location, else an alias.
-	r.LocalOnly = explicit
+	localOnly := explicit && q.fromFlag
+	r.LocalOnly = localOnly
 	var curArg *workspace.Location
 	var info workspace.LocationInfo
 	if curErr == nil {
 		curArg, info = cur, locationInfo(lf)
 	}
 	_, localErr := workspaceStore(cur, ref.Name, curErr)
-	if explicit && localErr != nil && curErr == nil && r.HasAlias(ref.Name, cur, info) {
+	if localOnly && localErr != nil && curErr == nil && r.HasAlias(ref.Name, cur, info) {
 		return refResolution{}, usageErr("--store %s is an alias, which names its own location, so it cannot be combined with --root or --global", ref.Name)
 	}
-	if !needStore && curErr == nil {
+	if !q.needStore && curErr == nil {
 		rr.loc, rr.lf = cur, lf
 		if localErr != nil && r.HasAlias(ref.Name, cur, info) { // an alias: the command's location is its target's
 			if res, rerr := r.Resolve(ref, curArg, info); rerr == nil {
-				return d.fromResolved(rr, res)
+				return fromResolved(rr, res, q.read)
 			}
 		}
 		return rr, nil
@@ -131,7 +165,7 @@ func (d *deps) resolveRef(cmd *cobra.Command, needStore bool) (rr refResolution,
 		}
 		return refResolution{}, rerr
 	}
-	return d.fromResolved(rr, res)
+	return fromResolved(rr, res, q.read)
 }
 
 // workspaceStore is cur.Store(name), or curErr when there is no current location.
@@ -143,8 +177,8 @@ func workspaceStore(cur *workspace.Location, name string, curErr error) (*worksp
 }
 
 // fromResolved fills rr from a store Resolve found.
-func (d *deps) fromResolved(rr refResolution, res workspace.Resolved) (refResolution, error) {
-	lf, err := config.ReadLocation(res.Workspace.Location.FilePath)
+func fromResolved(rr refResolution, res workspace.Resolved, read locationReader) (refResolution, error) {
+	lf, err := read(res.Workspace.Location.FilePath)
 	if err != nil {
 		return refResolution{}, err
 	}
@@ -155,18 +189,19 @@ func (d *deps) fromResolved(rr refResolution, res workspace.Resolved) (refResolu
 	return rr, nil
 }
 
-// resolveOwnLocation handles NAME@LOC and PATH.
-func (d *deps) resolveOwnLocation(r workspace.Resolver, rr refResolution, needStore bool) (refResolution, error) {
+// resolveOwnLocation handles refs that name their own location: NAME@LOC and PATH (and global,
+// for a fan-out ref).
+func (d *deps) resolveOwnLocation(r workspace.Resolver, rr refResolution, q refQuery) (refResolution, error) {
 	loc, info, err := r.Location(rr.ref)
 	if err != nil {
 		return refResolution{}, err
 	}
-	lf, err := config.ReadLocation(loc.FilePath)
+	lf, err := q.read(loc.FilePath)
 	if err != nil {
 		return refResolution{}, err
 	}
 	rr.loc, rr.lf, rr.how = loc, lf, "--store "+rr.ref.String()
-	if needStore {
+	if q.needStore {
 		res, err := r.Resolve(rr.ref, nil, info)
 		if err != nil {
 			return refResolution{}, err
@@ -176,14 +211,14 @@ func (d *deps) resolveOwnLocation(r workspace.Resolver, rr refResolution, needSt
 	return rr, nil
 }
 
-// currentLocation resolves the location from the flags or discovery and reads its kb.toml; err
-// says why there is none.
-func (d *deps) currentLocation(root string, global bool, env workspace.Env) (*workspace.Location, config.Location, error) {
+// currentLocation resolves the location from the flags or discovery and reads its kb.toml with
+// read; err says why there is none.
+func currentLocation(root string, global bool, env workspace.Env, read locationReader) (*workspace.Location, config.Location, error) {
 	loc, err := workspace.ResolveLocation(root, global, env)
 	if err != nil {
 		return nil, config.Location{}, err
 	}
-	lf, err := config.ReadLocation(loc.FilePath)
+	lf, err := read(loc.FilePath)
 	if err != nil {
 		return nil, config.Location{}, err
 	}
@@ -218,27 +253,47 @@ type openedStore struct {
 // warning on stderr and a nil result with a nil error: the caller skips it. The caller closes the
 // store.
 func (d *deps) openStoreReadOnly(cmd *cobra.Command, ref string) (*openedStore, error) {
+	ws, err := d.resolveFanOut(cmd, ref)
+	if err != nil || ws == nil {
+		return nil, err
+	}
+	return d.openResolvedReadOnly(cmd, ref, ws)
+}
+
+// warnSkip prints the one warning for a fan-out store that is left out.
+func warnSkip(cmd *cobra.Command, ref, format string, args ...any) {
+	fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping store %s: %s\n", ref, fmt.Sprintf(format, args...))
+}
+
+// resolveFanOut is openStoreReadOnly's first half: the store ref names. A malformed ref, or a
+// Usage error from resolution, is returned; a ref that names nothing is warned about and nil.
+func (d *deps) resolveFanOut(cmd *cobra.Command, ref string) (*workspace.Workspace, error) {
 	parsed, err := workspace.ParseRef(ref)
 	if err != nil {
 		return nil, err
 	}
-	stderr := cmd.ErrOrStderr()
-	skip := func(format string, args ...any) (*openedStore, error) {
-		fmt.Fprintf(stderr, "warning: skipping store %s: %s\n", ref, fmt.Sprintf(format, args...))
-		return nil, nil
+	if parsed.IsZero() {
+		return nil, usageErr("empty store ref")
 	}
-	rr, err := d.resolveRefIn(cmd, parsed)
+	rr, err := d.resolveFanOutRef(cmd, parsed)
 	if err != nil {
 		if errs.KindOf(err) == errs.Usage {
 			return nil, err
 		}
-		return skip("%v", err)
+		warnSkip(cmd, ref, "%v", err)
+		return nil, nil
 	}
-	ws := rr.ws
+	return rr.ws, nil
+}
+
+// openResolvedReadOnly is openStoreReadOnly's second half: open ws's database read-only, warning
+// about (and returning nil for) a store with no database or with a schema this kb does not read.
+func (d *deps) openResolvedReadOnly(cmd *cobra.Command, ref string, ws *workspace.Workspace) (*openedStore, error) {
 	canonical := workspace.Canonical(ws.Store, ws.Root)
 	ctx := cmd.Context()
 	if !fileExists(ws.DBPath) {
-		return skip("%s has no database yet (not indexed)", canonical)
+		warnSkip(cmd, ref, "%s has no database yet (not indexed)", canonical)
+		return nil, nil
 	}
 	st, err := d.openStore(ctx, ws.DBPath, true)
 	if err != nil {
@@ -247,7 +302,8 @@ func (d *deps) openStoreReadOnly(cmd *cobra.Command, ref string) (*openedStore, 
 			if errors.Is(err, sqlite.ErrSchemaOlder) { // the fix runs in that store
 				msg += fmt.Sprintf(" (for that store: kb --store %s migrate up)", canonical)
 			}
-			return skip("%s", msg)
+			warnSkip(cmd, ref, "%s", msg)
+			return nil, nil
 		}
 		return nil, err
 	}
@@ -257,30 +313,6 @@ func (d *deps) openStoreReadOnly(cmd *cobra.Command, ref string) (*openedStore, 
 		return nil, err
 	}
 	return &openedStore{Workspace: ws, Canonical: canonical, Store: st, Meta: meta, Indexed: ok}, nil
-}
-
-// resolveRefIn resolves a store ref of a command that has no --store of its own (a fan-out ref):
-// bare names are stores or aliases of the current location, which is never forced by --root or
-// --global here beyond choosing where "current" is.
-func (d *deps) resolveRefIn(cmd *cobra.Command, ref workspace.Ref) (refResolution, error) {
-	root, _ := cmd.Flags().GetString("root")
-	global, _ := cmd.Flags().GetBool("global")
-	env := d.workspaceEnv()
-	r := d.resolver(cmd)
-	cur, lf, curErr := d.currentLocation(root, global, env)
-	var curArg *workspace.Location
-	var info workspace.LocationInfo
-	if curErr == nil {
-		curArg, info = cur, locationInfo(lf)
-	}
-	res, err := r.Resolve(ref, curArg, info)
-	if err != nil {
-		if curErr != nil && errors.Is(err, workspace.ErrUnknownRef) {
-			return refResolution{}, curErr
-		}
-		return refResolution{}, err
-	}
-	return refResolution{ref: ref, ws: res.Workspace, loc: res.Workspace.Location}, nil
 }
 
 // fileExists reports whether path exists (any kind of entry).

@@ -2,7 +2,7 @@
 > `resolveRef`, `resolveRefIn` and `migrateRefStore` each re-apply the --root/--global/--store grammar, and `isDefaultStore` reads kb.toml a fourth way; the W7 High (migrate used only the ref NAME and migrated the wrong store) came from one copy drifting.
 
 - **Smell:** duplicated rule · hidden coupling
-- **Status:** needs work
+- **Status:** resolved (2026-10-30)
 - **Where:** `internal/cli/refs.go:resolveRef` (with `readLocationInfo` as its `Read`), `internal/cli/refs.go:resolveRefIn` (fan-out refs), `internal/cli/migrate_cmd.go:migrateRefStore` (with `rawLocationInfo`, a lenient kb.toml reader), `internal/cli/index.go:isDefaultStore` (calls `config.ReadLocation` directly)
 - **Symptoms in tests:**
   - W7 High: `kb --store adr@OTHER migrate up` used only the NAME `adr` and migrated the current location's store. The fix lives in `migrateRefStore`; `TestMigrateScopeMatchesStoreRefs` (migrate_cmd_test.go) now pins it by running `config --path` and `migrate status --json` for each ref form, with and without `--root`, and requiring the same store and exit code. It can only exist because the copies can disagree.
@@ -12,4 +12,5 @@
 - **Why it happens:** the resolver grew one command at a time. `workspace.Resolver` has a `Read` hook, and migrate set it to `rawLocationInfo`, but the flag grammar (`explicit`, `LocalOnly`, the `ErrUnknownRef` → current-location error swap) was copied into `migrateRefStore` instead of taking the `Read` func as a parameter.
 - **Remedy:** one `resolveRef(cmd, read, needStore)` in `refs.go` that takes the `Read` func (strict for every command, `rawLocationInfo` only for `kb migrate`); `resolveRefIn` and `migrateRefStore` become calls to it; `isDefaultStore` takes the resolved ref. Smallest first step: make `migrateRefStore` call `resolveRef` with `rawLocationInfo` and keep the test. → **PLAN 3.2** (its carried-over note "Fold them into one resolver that takes the `Read` func, before 3.2 adds fan-out refs"; PLAN.md:764). It should land before 3.2 adds more fan-out callers.
 - **Cost/benefit:** medium. About 130 lines of grammar (resolveRef 75, migrateRefStore 34, resolveRefIn 20) in three places become one. It removes the class of bug behind the W7 High, and lets 3.2 add `--stores all` without a fourth copy. The existing tests above are the guard rails; keep them green.
-- **Last reviewed:** 2026-10-30 · W7 pass
+- **Resolution:** 3.2 (W8) folded `resolveRef`, the fan-out `resolveRefIn` and `migrateRefStore` into one grammar, `resolveRefWith(refQuery{ref, fromFlag, needStore, read})`, with kb.toml read strictly (`config.ReadLocation`) or leniently for kb migrate (`rawLocation`); kb index uses the resolved kb.toml. The W8 pass (Q80) made kb doctor use `d.resolveWorkspace` and `rr.lf.DefaultStore` and deleted `isDefaultStore`. Guards: `TestMigrateScopeMatchesStoreRefs`, `TestStoreRefDecisions`, `TestShowTargetDecisions` (REF:path), and the doctor index.md row in `index_hooks_test.go`.
+- **Last reviewed:** 2026-10-30 · W8 wave-end pass (archived)

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed/fake"
@@ -77,7 +78,7 @@ func TestFeedback(t *testing.T) {
 	id := out.Result.SearchID
 	n := len(out.Returned)
 
-	if err := st.Feedback(ctx, id, 1, true, "exactly what I needed"); err != nil {
+	if err := st.Feedback(ctx, id, 1, true, "exactly what I needed", time.Time{}); err != nil {
 		t.Fatalf("Feedback: %v", err)
 	}
 	var useful int
@@ -91,7 +92,7 @@ func TestFeedback(t *testing.T) {
 	}
 
 	// The last rank is in range; an empty note is stored as NULL.
-	if err := st.Feedback(ctx, id, n, false, ""); err != nil {
+	if err := st.Feedback(ctx, id, n, false, "", time.Time{}); err != nil {
 		t.Fatalf("Feedback on the last rank: %v", err)
 	}
 	if err := db.QueryRow("SELECT useful, note FROM search_feedback WHERE search_id = ? AND rank = ?", id, n).
@@ -103,7 +104,7 @@ func TestFeedback(t *testing.T) {
 	}
 
 	// Re-marking the same rank replaces the verdict instead of failing on the primary key.
-	if err := st.Feedback(ctx, id, 1, false, "changed my mind"); err != nil {
+	if err := st.Feedback(ctx, id, 1, false, "changed my mind", time.Time{}); err != nil {
 		t.Fatalf("Feedback upsert: %v", err)
 	}
 	if got := count(t, db, "SELECT count(*) FROM search_feedback WHERE search_id = ?", id); got != 2 {
@@ -128,7 +129,7 @@ func TestFeedback(t *testing.T) {
 		{name: "unknown search", searchID: id + 999, rank: 1, wantMsg: fmt.Sprintf("no search with id %d", id+999)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := st.Feedback(ctx, tc.searchID, tc.rank, true, "")
+			err := st.Feedback(ctx, tc.searchID, tc.rank, true, "", time.Time{})
 			if err == nil {
 				t.Fatal("Feedback accepted an invalid argument")
 			}
@@ -175,10 +176,10 @@ func TestFeedbackNone(t *testing.T) {
 	zeroID := zero.Result.SearchID
 
 	// Its ranks cannot be marked, and the error points at --none.
-	if err := st.Feedback(ctx, zeroID, 1, false, ""); err == nil || !strings.Contains(err.Error(), "--none") {
+	if err := st.Feedback(ctx, zeroID, 1, false, "", time.Time{}); err == nil || !strings.Contains(err.Error(), "--none") {
 		t.Errorf("Feedback on a zero-result search = %v, want an error suggesting --none", err)
 	}
-	if err := st.FeedbackNone(ctx, zeroID, "nothing about zebras"); err != nil {
+	if err := st.FeedbackNone(ctx, zeroID, "nothing about zebras", time.Time{}); err != nil {
 		t.Fatalf("FeedbackNone on a zero-result search: %v", err)
 	}
 	useful, note, ok := feedbackRow(t, db, zeroID, store.WholeSearchRank)
@@ -187,7 +188,7 @@ func TestFeedbackNone(t *testing.T) {
 	}
 
 	// A second --none replaces the row (one row, new note; an empty note is NULL), not a PK error.
-	if err := st.FeedbackNone(ctx, zeroID, ""); err != nil {
+	if err := st.FeedbackNone(ctx, zeroID, "", time.Time{}); err != nil {
 		t.Fatalf("FeedbackNone upsert: %v", err)
 	}
 	if got := count(t, db, "SELECT count(*) FROM search_feedback WHERE search_id = ?", zeroID); got != 1 {
@@ -206,17 +207,17 @@ func TestFeedbackNone(t *testing.T) {
 	if len(hits.Returned) < 2 {
 		t.Fatalf("hits fixture returned %d hits, want at least 2", len(hits.Returned))
 	}
-	if err := st.Feedback(ctx, id, 1, false, "wrong entry"); err != nil {
+	if err := st.Feedback(ctx, id, 1, false, "wrong entry", time.Time{}); err != nil {
 		t.Fatalf("Feedback not-useful: %v", err)
 	}
-	if err := st.FeedbackNone(ctx, id, "none of these"); err != nil {
+	if err := st.FeedbackNone(ctx, id, "none of these", time.Time{}); err != nil {
 		t.Fatalf("FeedbackNone after a not-useful verdict: %v", err)
 	}
 	if _, _, ok := feedbackRow(t, db, id, store.WholeSearchRank); !ok {
 		t.Error("rank-0 row missing after FeedbackNone")
 	}
 	// A later not-useful verdict leaves the --none row in place: the two agree.
-	if err := st.Feedback(ctx, id, 2, false, ""); err != nil {
+	if err := st.Feedback(ctx, id, 2, false, "", time.Time{}); err != nil {
 		t.Fatalf("Feedback not-useful rank 2: %v", err)
 	}
 	if _, _, ok := feedbackRow(t, db, id, store.WholeSearchRank); !ok {
@@ -225,7 +226,7 @@ func TestFeedbackNone(t *testing.T) {
 
 	// A later useful verdict withdraws --none: rows (0), (1,false), (2,false) become (1,false),
 	// (2,true).
-	if err := st.Feedback(ctx, id, 2, true, "rank 2 did help"); err != nil {
+	if err := st.Feedback(ctx, id, 2, true, "rank 2 did help", time.Time{}); err != nil {
 		t.Fatalf("Feedback useful: %v", err)
 	}
 	if _, _, ok := feedbackRow(t, db, id, store.WholeSearchRank); ok {
@@ -237,7 +238,7 @@ func TestFeedbackNone(t *testing.T) {
 
 	// Now --none contradicts rank 2 and is refused, naming the command that resolves it, and
 	// writes nothing.
-	err = st.FeedbackNone(ctx, id, "")
+	err = st.FeedbackNone(ctx, id, "", time.Time{})
 	wantFix := fmt.Sprintf("kb feedback %d 2 --not-useful", id)
 	if err == nil || !strings.Contains(err.Error(), wantFix) {
 		t.Errorf("FeedbackNone with a useful verdict = %v, want it to name %q", err, wantFix)
@@ -246,7 +247,7 @@ func TestFeedbackNone(t *testing.T) {
 		t.Error("a refused FeedbackNone still wrote the rank-0 row")
 	}
 
-	if err := st.FeedbackNone(ctx, id+999, ""); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("no search with id %d", id+999)) {
+	if err := st.FeedbackNone(ctx, id+999, "", time.Time{}); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("no search with id %d", id+999)) {
 		t.Errorf("FeedbackNone on an unknown search = %v, want a no-search error", err)
 	}
 	// The zero-result search's row is untouched by everything above.
@@ -313,7 +314,7 @@ func TestLogCascadeDelete(t *testing.T) {
 		t.Fatalf("SearchAndLog: %v", err)
 	}
 	id := out.Result.SearchID
-	if err := st.Feedback(ctx, id, 1, true, "keep"); err != nil {
+	if err := st.Feedback(ctx, id, 1, true, "keep", time.Time{}); err != nil {
 		t.Fatalf("Feedback: %v", err)
 	}
 	for _, table := range []string{"search_results", "search_candidates", "search_feedback"} {
@@ -500,5 +501,47 @@ func TestSearcherLogsSettingsAndMatch(t *testing.T) {
 	}
 	if _, _, f := settingsRow(t, st, out.Result.SearchID); f != nil {
 		t.Errorf("a vec search logged fts_query %v, want NULL", deref(f))
+	}
+}
+
+// TestFeedbackStampsAt (Q81): verdicts are stamped with the caller's time, at the log's one-second
+// UTC resolution; the zero time is now.
+func TestFeedbackStampsAt(t *testing.T) {
+	ctx := context.Background()
+	st := emptyLog(t)
+	id, err := st.LogSearch(ctx, store.SearchRecord{Query: "q", Mode: "fts", K: 8, Caller: "c",
+		Results: []store.LoggedHit{{ChunkID: 1, EntryPath: "a.md", RRFScore: 1}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 30, 12, 0, 0, 500, time.FixedZone("x", 3600))
+	if err := st.Feedback(ctx, id, 1, true, "", at); err != nil {
+		t.Fatal(err)
+	}
+	other, err := st.LogSearch(ctx, store.SearchRecord{Query: "q", Mode: "fts", K: 8, Caller: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FeedbackNone(ctx, other, "", at.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FeedbackNone(ctx, other, "", time.Time{}); err != nil { // re-marked now
+		t.Fatal(err)
+	}
+	var got []string
+	rows, err := st.DB().Query("SELECT ts FROM search_feedback ORDER BY search_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ts string
+		if err := rows.Scan(&ts); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, ts)
+	}
+	if len(got) != 2 || got[0] != "2026-10-30T11:00:00Z" || got[1] <= "2026-10-30T11:01:00Z" {
+		t.Errorf("ts = %v, want the given instant in UTC, then now", got)
 	}
 }

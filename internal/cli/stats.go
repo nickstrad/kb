@@ -123,7 +123,7 @@ func runStats(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts statsO
 		return usageErr("--since and --caller do not apply to --sql; filter in the SQL instead")
 	}
 
-	since, err := parseSince(opts.since)
+	since, err := parseSince(opts.since, d.clock())
 	if err != nil {
 		return usageErr("%s", err)
 	}
@@ -208,10 +208,10 @@ func listQueries(stdout io.Writer) {
 }
 
 // parseSince implements the --since grammar: a Go duration, an "Nd" whole-number-of-days
-// suffix (7d = 168h), or a YYYY-MM-DD date meaning UTC midnight. The bound itself is
-// time.Now().UTC() minus the duration; a literal date is returned as-is. An empty string means no
-// bound (the zero time.Time), matching stats.Filter's zero value.
-func parseSince(s string) (time.Time, error) {
+// suffix (7d = 168h), or a YYYY-MM-DD date meaning UTC midnight. The bound itself is now (in
+// UTC) minus the duration; a literal date is returned as-is. An empty string means no bound (the
+// zero time.Time), matching stats.Filter's zero value.
+func parseSince(s string, now time.Time) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, nil
 	}
@@ -222,7 +222,7 @@ func parseSince(s string) (time.Time, error) {
 		if d < 0 {
 			return time.Time{}, fmt.Errorf("invalid --since %q: a duration must not be negative", s)
 		}
-		return time.Now().UTC().Add(-d), nil
+		return now.UTC().Add(-d), nil
 	}
 	return time.Time{}, fmt.Errorf("invalid --since %q (want a duration like 7d or 24h, or a YYYY-MM-DD date)", s)
 }

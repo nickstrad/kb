@@ -679,6 +679,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **2.3 `kb eval` core**
 - Carried from testability (#3, #4): `parseSince(s, now)` with an injected clock; give eval a real read API for logged searches instead of raw `.DB()` SQL in tests.
 - Model: Opus (eval methodology: gold extraction, metrics, CI); review: Opus via testing-standards-pass
+- Status: done (W8). 2.4 adds `--set` (apply before `NewSettings`, as explain does) and uses `per_query.first_gold_rank`.
 - Files: new `internal/eval/{gold.go,replay.go,metrics.go}` and `cli/eval.go`. Add `SearchLog.Judged` in sqlite.
 - Steps:
   1. Gold per logged search:
@@ -701,6 +702,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: gold drift when headings are renamed. Report "gold not in index" as its own count.
 
 **2.4 Baselines and variants**
+- Carried from W8 pass: `kb eval` replays the primary store only; gold on other stores' hits of a cross-store search is counted in `Report.OtherStore` (Q77) and never scored. A baseline should record `other_store` so `--compare` can warn when it changed; `--stores` for eval (replay with fan-out, scoring each store's gold against its own index) is a separate decision, not part of 2.4. `--set` applies before `NewSettings`, as explain does.
 - Model: Sonnet (baseline I/O plus sign test); review: Opus via testing-standards-pass (stats check)
 - Files: `internal/eval/baseline.go`, `cli/eval.go`.
 - Steps:
@@ -763,6 +765,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Carried from 4.1: `render.Hit` has no store field, so cross-store hits need a store tag in the header (`[r] store:path › heading`). Add the field and update the goldens.
 - Carried from W7 pass: (a) Q63 part (a) is done: `deps.openSearch`/`searchEmbedder` in cli/search.go are shared by search and explain (explain opens read-only); `renderHits` still takes `store.Store`. (b) `--store` resolution now has three copies: `resolveRef`, `resolveRefIn` (fan-out) and `migrateRefStore` (kb migrate, which reads kb.toml leniently through `rawLocationInfo`), plus `isDefaultStore` (index.go) reading kb.toml a third way. Fold them into one resolver that takes the `Read` func, before 3.2 adds fan-out refs; `TestMigrateScopeMatchesStoreRefs` and `TestStoreRefDecisions` pin the behaviour. (c) Render looks up one entry row per hit path (`renderHits`, memoised); with fan-out, batch it per store (`EntriesByPath`). (d) Harness H39: fan-out over an older store, one with no database and one ok. (e) The settings/settings_hash/fts_query round-trip is tested only in sqlite (searchlog_test.go); add it to storetest once the log has a read method. (f) `index.md` describes the location's default store only (`kb index` refuses others, doctor skips the check); if per-store snapshots are wanted, write them per store rather than lifting the refusal.
 - Model: Opus (cross-store fusion, per-store models, migration, logging); review: Opus via testing-standards-pass
+- Status: done (W8). W8 pass: a panic in a fan-out worker is handed back to the command goroutine (`errs.WorkerPanic`, exit 3); `all` is reserved like `global`; kb explain and kb eval never fan out (eval counts other stores' gold apart, Q77); `search_opens.store` deferred to 4.5 (Q82).
 - Files: `search/multi.go`, migration 4→5, `sqlite/log.go`, `cli/search.go` (`--stores a,b`; default `search.stores`; `--stores ''` disables).
 - Steps:
   1. Run the normal per-store search, using the *primary's* search settings and each store's own embed model. Embed the query once per distinct (model, prefix). At most 8 extra stores (Usage above that); warn when more than 2 distinct models load.
@@ -819,6 +822,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: output format break; listed in Breaking changes.
 
 **4.2 `--expand section|entry`**
+- Carried from W8 pass: a cross-store hit's chunks live in its own store; read them through that store (the `lookups` map by hit `Store` tag in `cli/search.go`, as `renderHits` does), never the primary's, and expand nothing for a hit whose store has no lookup.
 - Carried from W7 pass: one entry's chunks can appear as several hits, and a hit header repeats the chunk's own context line ("› (intro)" then "Alpha › (intro)"); dedupe per entry and drop the repeated context line when expanding.
 - Model: Sonnet (bounded rendering feature)
 - Files: `render/expand.go`; `Index.Chunks`; `ChunkMeta` gains entry_id/ord/source_file.
@@ -857,6 +861,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **4.5 Identifier-aware exact list**
+- Carried from W8 pass (Q82): v6 should also `ALTER TABLE search_opens ADD COLUMN store TEXT` (NULL = this store) and have `RecordOpen` write `o.Store`; today `sqlite.Judged` infers an open's store from the search's results at that path (this store's hit wins, else the smallest other ref), and the `(search_id, entry_path)` key keeps one open per path, so `kb show notes:x.md` after `kb show x.md` is dropped. Widen the key to `(search_id, store, entry_path)` (a table rebuild) or document the ambiguity; update `Judged`, storetest `judgedLog` and stats' `opened_pct` join.
 - Model: Opus (backfilled migration, three write paths, third rank list); review: Opus via testing-standards-pass
 - Files: migration 5→6; `sqlite/entries.go` (maintain `chunks_exact` alongside `chunks_fts` in `ReplaceEntry`, `clearChunks`, `ResetIndex`); `sqlite/retrieve.go` (`FTSQuery.Exact`); `search` (third list when the query contains an identifier-like token matching `[_./:-]|[a-z][A-Z]|\d[a-z]`); logs `exact_rank/exact_score`; `explain` shows it.
 - Steps:
@@ -947,6 +952,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 ### Phase 6: Feedback-based boosts (off by default)
 
 **6.1 Prior model (pure) ∥**
+- Carried from W8 pass: the primary's log holds verdicts on other stores' hits (`store.Verdict.Store`, `JudgedSearch.OtherOpens`); a prior keyed on `(entry_path, heading)` must use only `Store == ""` rows, or key on the store too. Verdict times are now the caller's clock (`Feedback(..., at)`), so half-life tests can place verdicts exactly.
 - Model: Sonnet (pure formula given in full); review: Opus via testing-standards-pass (math)
 - Files: new `internal/prior/prior.go` and its test.
 - Steps:
@@ -992,6 +998,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 ---
 
 **T1 Test infrastructure: per-test deps, typed CLI outcomes, shared fault seams** (from .agent/testability #4–#9)
+- Carried from W8 pass: `openRows` (show_open_test.go) now reads through `store.JudgedLog`, and the stats fixture places searches with `Searcher.Now` (no `UPDATE searches SET ts`). Left for step 5: `feedbackRows` (checks notes and raw row counts, which `Judged` collapses), `disableSearchLog`, `settings_log_test`, `index_hooks_test`, `report_test`, `edit_regression_test`, `fanout_test` (`openRaw`), `search_test.dbOf`, `reindex_test.countRows`. Rows a scan or `rows.Err` fails mid-iteration are untestable without a row-level fault in the shared driver (judged.go, `entriesByPath` survivors).
 - Model: Sonnet (mechanical test refactor); review: Opus via testability-check
 - Status: planned. Schedule: its own wave after W8 (it touches every cli test file).
 - Steps:
@@ -1131,7 +1138,7 @@ A wave starts when every item of the previous wave is merged and its review pass
   - 3.1: workspace/refs.go, cli/root.go, cli/stores.go.
   - 4.1: render/ new, cli/search.go.
   - 3.3b: setup.go wiring.
-- **W8:** 3.2 (mig v5, sqlite/log.go, store/types.go, cli/search.go, search/multi.go) ∥ 2.3 (eval/, cli/eval.go, new `sqlite/judged.go` + `store/judged.go` to stay out of log.go/types.go).
+- **W8 (done):** 3.2 (mig v5, sqlite/log.go, store/types.go, cli/search.go, search/multi.go) ∥ 2.3 (eval/, cli/eval.go, new `sqlite/judged.go` + `store/judged.go` to stay out of log.go/types.go).
 - **W9:**
   - 4.5: mig v6, sqlite/entries.go, retrieve.go, log.go, search.go, explain.
   - 4.2: render/, cli/search.go.

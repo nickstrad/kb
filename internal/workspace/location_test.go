@@ -179,6 +179,8 @@ func TestValidName(t *testing.T) {
 		{"non-ascii", "é", false},
 		{"newline suffix", "a\n", false},
 		{"reserved global", "global", false},
+		{"reserved all", "all", false},
+		{"all as a prefix is fine", "all-notes", true},
 		{"global prefix is fine", "globalx", true},
 		{"default", "default", true},
 	}
@@ -375,6 +377,7 @@ func TestParseRef(t *testing.T) {
 		{in: "adr@", wantErr: true, msg: "nothing after @"},
 		{in: "@/p", wantErr: true, msg: "invalid store name"},
 		{in: "global@/p", wantErr: true, msg: "reserved"},
+		{in: "all@/p", wantErr: true, msg: "reserved"},
 		{in: "Adr@/p", wantErr: true, msg: "invalid store name"},
 		{in: "adr@~bob/x", wantErr: true, msg: "not ~user"},
 		{in: "c:proj", wantErr: true, msg: `":" is not part of a ref`},

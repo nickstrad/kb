@@ -60,7 +60,8 @@ func buildStatsFixture(t *testing.T) *statsFixture {
 
 	f := &statsFixture{root: root, oldCaller: "alice", newCaller: "bob"}
 
-	sAlice := &search.Searcher{Store: st, Log: st}
+	oldTS := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	sAlice := &search.Searcher{Store: st, Log: st, Now: func() time.Time { return oldTS }}
 	oldOut := &search.Outcome{
 		Mode: search.ModeHybrid, K: 5, NFTS: 1, NVec: 1, TotalMs: 20,
 		Returned: []search.Candidate{
@@ -74,15 +75,12 @@ func buildStatsFixture(t *testing.T) *statsFixture {
 		t.Fatalf("log old search: %v", err)
 	}
 	f.oldID = id
-	if err := st.Feedback(ctx, f.oldID, 1, true, "good"); err != nil {
+	if err := st.Feedback(ctx, f.oldID, 1, true, "good", oldTS); err != nil {
 		t.Fatalf("feedback: %v", err)
 	}
-	oldTS := time.Now().UTC().Add(-30 * 24 * time.Hour)
-	if _, err := st.DB().Exec(`UPDATE searches SET ts = ? WHERE id = ?`, oldTS.Format(time.RFC3339), f.oldID); err != nil {
-		t.Fatalf("set old ts: %v", err)
-	}
 
-	sBob := &search.Searcher{Store: st, Log: st}
+	f.recentTS = time.Now().UTC().Add(-1 * time.Hour)
+	sBob := &search.Searcher{Store: st, Log: st, Now: func() time.Time { return f.recentTS }}
 	newOut := &search.Outcome{
 		Mode: search.ModeFTS, K: 5, NFTS: 1, NVec: 0, TotalMs: 10,
 		Returned: []search.Candidate{
@@ -95,10 +93,6 @@ func buildStatsFixture(t *testing.T) *statsFixture {
 		t.Fatalf("log recent search: %v", err)
 	}
 	f.recentID = id
-	f.recentTS = time.Now().UTC().Add(-1 * time.Hour)
-	if _, err := st.DB().Exec(`UPDATE searches SET ts = ? WHERE id = ?`, f.recentTS.Format(time.RFC3339), f.recentID); err != nil {
-		t.Fatalf("set recent ts: %v", err)
-	}
 
 	return f
 }

@@ -159,3 +159,16 @@ func formatCtx(ctx map[string]any) string {
 	}
 	return out + "}"
 }
+
+// WorkerPanic is a panic caught in a worker goroutine and raised again, with this value, on the
+// goroutine that started the worker. Only the command's own goroutine reaches the top-level
+// recover in cli.Execute (exit 3, an incident); a panic left in a worker would crash kb with Go's
+// exit 2, which is ExitEmbedder's. Value is what the worker panicked with, Stack the worker's
+// stack at that point. A worker recovers only to hand the panic over, never to carry on.
+type WorkerPanic struct {
+	Value any
+	Stack []byte
+}
+
+// String is the panic value as the incident log records it.
+func (p WorkerPanic) String() string { return fmt.Sprintf("%v (in a worker goroutine)", p.Value) }

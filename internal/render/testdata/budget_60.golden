@@ -1,10 +1,10 @@
-levels=[2 1 1 1] tokens=56
+levels=[2 1 1 1] tokens=57
 [1] data/tmux.md › Logs · updated 2026-03-01
 How tmux logs are rotated.
 
 [2] data/git.md · updated 2026-02-11
 
-[3] data/deploy.md › Rollback
+[3] ops:data/deploy.md › Rollback
 
 [4] data/naming.md › Rules · updated 2025-12-31
 

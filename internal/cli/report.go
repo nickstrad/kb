@@ -104,6 +104,9 @@ func report(stderr io.Writer, d *deps, cmd *cobra.Command, args []string, err er
 // reportPanic turns a recovered panic into an incident and ExitInternal.
 func reportPanic(stderr io.Writer, d *deps, cmd *cobra.Command, args []string, r any) int {
 	stack := debug.Stack()
+	if wp, ok := r.(errs.WorkerPanic); ok { // raised again from a worker goroutine: its own stack
+		r, stack = wp.Value, wp.Stack
+	}
 	kind := "panic"
 	if v, ok := r.(assert.Violation); ok {
 		kind = "assert:" + v.Kind

@@ -36,6 +36,9 @@ type Index interface {
 	ResetIndex(ctx context.Context) error
 	// Entry returns the entry at path, or (nil, nil) when there is none.
 	Entry(ctx context.Context, path string) (*EntryRow, error)
+	// EntriesByPath returns the entries at the given paths in one read, keyed by path; a path
+	// with no entry is absent from the map.
+	EntriesByPath(ctx context.Context, paths []string) (map[string]EntryRow, error)
 	// Entries returns every entry sorted by path.
 	Entries(ctx context.Context) ([]EntryRow, error)
 	// Chunks returns one entry's chunks in ord order.
@@ -71,16 +74,18 @@ type SearchLog interface {
 	LogSearch(ctx context.Context, r SearchRecord) (searchID int64, err error)
 	// Feedback records a verdict on one returned hit; it replaces an earlier verdict on the same
 	// rank and, when useful, withdraws a whole-search --none. No such search is NotFound; a rank
-	// outside 1..n_returned is Usage.
-	Feedback(ctx context.Context, searchID int64, rank int, useful bool, note string) error
-	// FeedbackNone records that nothing the search returned was useful. A search with a useful
-	// verdict is a Conflict.
-	FeedbackNone(ctx context.Context, searchID int64, note string) error
+	// outside 1..n_returned is Usage. at is when the verdict was given; zero means now by the
+	// backend's clock (as SearchRecord.TS).
+	Feedback(ctx context.Context, searchID int64, rank int, useful bool, note string, at time.Time) error
+	// FeedbackNone records that nothing the search returned was useful, at at (zero = now). A
+	// search with a useful verdict is a Conflict.
+	FeedbackNone(ctx context.Context, searchID int64, note string, at time.Time) error
 	// LastSearch returns the newest search logged by caller, or NotFound.
 	LastSearch(ctx context.Context, caller string) (LastSearch, error)
-	// RecordOpen attaches a read of entryPath at now to the newest search at most window old
-	// that returned it. recorded is false when there is none or the open is already on record.
-	RecordOpen(ctx context.Context, entryPath string, now time.Time, window time.Duration) (recorded bool, err error)
+	// RecordOpen attaches a read (OpenRecord) to the newest search at most o.Window old that
+	// returned that entry of that store. recorded is false when there is none or the open is
+	// already on record.
+	RecordOpen(ctx context.Context, o OpenRecord) (recorded bool, err error)
 	// QueryLog runs read-only analytic SQL in the backend's dialect (kb stats).
 	QueryLog(ctx context.Context, sql string, args ...any) (*Table, error)
 }

@@ -353,10 +353,10 @@ func TestDriverFaultsOnReadsAndLog(t *testing.T) {
 		{"DeleteEntry read", "FROM entries WHERE path", 1, func(st *Store, _ int64) error { return st.DeleteEntry(ctx, "a.md") }},
 		{"DeleteEntry chunk ids", "SELECT id FROM chunks WHERE entry_id", 1, func(st *Store, _ int64) error { return st.DeleteEntry(ctx, "a.md") }},
 		{"FeedbackNone useful-rank read", "SELECT min(rank)", 1, func(st *Store, id int64) error {
-			if err := st.Feedback(ctx, id, 1, true, ""); err != nil {
+			if err := st.Feedback(ctx, id, 1, true, "", time.Time{}); err != nil {
 				return err
 			}
-			return st.FeedbackNone(ctx, id, "")
+			return st.FeedbackNone(ctx, id, "", time.Time{})
 		}},
 		{"EmbedMeta", "FROM embed_meta", 1, func(st *Store, _ int64) error { _, _, err := st.EmbedMeta(ctx); return err }},
 		{"HasVectors", "sqlite_master", 1, func(st *Store, _ int64) error { _, err := st.HasVectors(ctx); return err }},
@@ -377,6 +377,10 @@ func TestDriverFaultsOnReadsAndLog(t *testing.T) {
 			_, err := st.KNN(ctx, store.KNNQuery{Vec: []float32{1, 0, 0, 0}, K: 2, Tag: "x", OverFetch: 4})
 			return err
 		}},
+		{"EntriesByPath", "FROM entries WHERE path IN", 1, func(st *Store, _ int64) error {
+			_, err := st.EntriesByPath(ctx, []string{"a.md", "b.md"})
+			return err
+		}},
 		{"ChunkMeta", "SELECT c.id, e.path", 1, func(st *Store, _ int64) error { _, err := st.ChunkMeta(ctx, []int64{1}); return err }},
 		{"LogSearch begin", "BEGIN", 1, func(st *Store, _ int64) error { _, err := st.LogSearch(ctx, rec); return err }},
 		{"LogSearch searches", "INSERT INTO searches", 1, func(st *Store, _ int64) error { _, err := st.LogSearch(ctx, rec); return err }},
@@ -385,15 +389,15 @@ func TestDriverFaultsOnReadsAndLog(t *testing.T) {
 		{"LogSearch prepare candidates", "PREPARE \n\t\tINSERT INTO search_candidates", 1, func(st *Store, _ int64) error { _, err := st.LogSearch(ctx, rec); return err }},
 		{"LogSearch candidates", "INSERT INTO search_candidates", 2, func(st *Store, _ int64) error { _, err := st.LogSearch(ctx, rec); return err }},
 		{"LogSearch commit", "COMMIT", 1, func(st *Store, _ int64) error { _, err := st.LogSearch(ctx, rec); return err }},
-		{"Feedback read", "SELECT n_returned", 1, func(st *Store, id int64) error { return st.Feedback(ctx, id, 1, true, "") }},
-		{"Feedback begin", "BEGIN", 1, func(st *Store, id int64) error { return st.Feedback(ctx, id, 1, true, "") }},
-		{"Feedback write", "INSERT OR REPLACE INTO search_feedback", 1, func(st *Store, id int64) error { return st.Feedback(ctx, id, 1, true, "") }},
-		{"Feedback withdraw none", "DELETE FROM search_feedback", 1, func(st *Store, id int64) error { return st.Feedback(ctx, id, 1, true, "") }},
-		{"Feedback commit", "COMMIT", 1, func(st *Store, id int64) error { return st.Feedback(ctx, id, 1, true, "") }},
-		{"FeedbackNone write", "INSERT OR REPLACE INTO search_feedback", 1, func(st *Store, id int64) error { return st.FeedbackNone(ctx, id, "") }},
+		{"Feedback read", "SELECT n_returned", 1, func(st *Store, id int64) error { return st.Feedback(ctx, id, 1, true, "", time.Time{}) }},
+		{"Feedback begin", "BEGIN", 1, func(st *Store, id int64) error { return st.Feedback(ctx, id, 1, true, "", time.Time{}) }},
+		{"Feedback write", "INSERT OR REPLACE INTO search_feedback", 1, func(st *Store, id int64) error { return st.Feedback(ctx, id, 1, true, "", time.Time{}) }},
+		{"Feedback withdraw none", "DELETE FROM search_feedback", 1, func(st *Store, id int64) error { return st.Feedback(ctx, id, 1, true, "", time.Time{}) }},
+		{"Feedback commit", "COMMIT", 1, func(st *Store, id int64) error { return st.Feedback(ctx, id, 1, true, "", time.Time{}) }},
+		{"FeedbackNone write", "INSERT OR REPLACE INTO search_feedback", 1, func(st *Store, id int64) error { return st.FeedbackNone(ctx, id, "", time.Time{}) }},
 		{"LastSearch", "FROM searches", 1, func(st *Store, _ int64) error { _, err := st.LastSearch(ctx, "c"); return err }},
 		{"RecordOpen", "INSERT OR IGNORE INTO search_opens", 1, func(st *Store, _ int64) error {
-			_, err := st.RecordOpen(ctx, "a.md", time.Now(), openWindow)
+			_, err := st.RecordOpen(ctx, store.OpenRecord{EntryPath: "a.md", At: time.Now(), Window: openWindow})
 			return err
 		}},
 		{"QueryLog", "SELECT count(*) FROM searches", 1, func(st *Store, _ int64) error {

@@ -55,20 +55,16 @@ func dumpTable(t *testing.T, db *sql.DB, table string) []string {
 	return out
 }
 
-// openAtVersion opens path with only the first v migrations, i.e. as an older kb would.
-// Like TestMigrateRunsOnlyOutstandingMigrations it swaps package state, so no test in this
-// package may run in parallel.
+// openAtVersion opens path with only the first v migrations, i.e. as an older kb would. The
+// older build's steps travel in Options.steps and Artefact.steps, never in package state.
 func openAtVersion(t *testing.T, path string, v int) *Store {
 	t.Helper()
-	origMigrations, origVersion := migrations, schemaVersion
-	migrations, schemaVersion = origMigrations[:v], v
-	defer func() { migrations, schemaVersion = origMigrations, origVersion }()
 	if _, err := os.Stat(path); err == nil { // an older file: Open would refuse it, Apply upgrades it
-		if _, err := NewArtefact(path).Apply(context.Background()); err != nil {
+		if _, err := artefactAt(path, v).Apply(context.Background()); err != nil {
 			t.Fatalf("upgrade to version %d: %v", v, err)
 		}
 	}
-	s, err := Open(context.Background(), path, Options{})
+	s, err := Open(context.Background(), path, Options{steps: indexSteps[:v]})
 	if err != nil {
 		t.Fatalf("open at version %d: %v", v, err)
 	}

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/nickstrad/kb/internal/store"
 )
 
 func openTestDB(t *testing.T) *Store {
@@ -83,7 +85,7 @@ func TestRecordOpenWindow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db := openTestDB(t)
 			id := addSearch(t, db, now.Add(-tc.age), []string{"data/a.md"}, "")
-			got, err := db.RecordOpen(context.Background(), "data/a.md", now, openWindow)
+			got, err := db.RecordOpen(context.Background(), store.OpenRecord{EntryPath: "data/a.md", At: now, Window: openWindow})
 			if err != nil {
 				t.Fatalf("RecordOpen: %v", err)
 			}
@@ -107,7 +109,7 @@ func TestRecordOpenSelection(t *testing.T) {
 
 	t.Run("no searches at all", func(t *testing.T) {
 		db := openTestDB(t)
-		if got, err := db.RecordOpen(ctx, "data/a.md", now, openWindow); err != nil || got {
+		if got, err := db.RecordOpen(ctx, store.OpenRecord{EntryPath: "data/a.md", At: now, Window: openWindow}); err != nil || got {
 			t.Errorf("RecordOpen = %t, %v; want false, nil", got, err)
 		}
 	})
@@ -115,7 +117,7 @@ func TestRecordOpenSelection(t *testing.T) {
 	t.Run("entry not returned by the recent search", func(t *testing.T) {
 		db := openTestDB(t)
 		addSearch(t, db, now, []string{"data/b.md"}, "")
-		if got, err := db.RecordOpen(ctx, "data/a.md", now, openWindow); err != nil || got {
+		if got, err := db.RecordOpen(ctx, store.OpenRecord{EntryPath: "data/a.md", At: now, Window: openWindow}); err != nil || got {
 			t.Errorf("RecordOpen = %t, %v; want false, nil", got, err)
 		}
 	})
@@ -123,7 +125,7 @@ func TestRecordOpenSelection(t *testing.T) {
 	t.Run("a candidate that lost the fusion does not count", func(t *testing.T) {
 		db := openTestDB(t)
 		addSearch(t, db, now, []string{"data/b.md"}, "data/a.md")
-		if got, err := db.RecordOpen(ctx, "data/a.md", now, openWindow); err != nil || got {
+		if got, err := db.RecordOpen(ctx, store.OpenRecord{EntryPath: "data/a.md", At: now, Window: openWindow}); err != nil || got {
 			t.Errorf("RecordOpen = %t, %v; want false, nil", got, err)
 		}
 	})
@@ -133,7 +135,7 @@ func TestRecordOpenSelection(t *testing.T) {
 		addSearch(t, db, now.Add(-10*time.Minute), []string{"data/a.md"}, "")
 		newest := addSearch(t, db, now.Add(-5*time.Minute), []string{"data/a.md"}, "")
 		addSearch(t, db, now.Add(-time.Minute), []string{"data/b.md"}, "") // newer, but not a hit
-		if got, err := db.RecordOpen(ctx, "data/a.md", now, openWindow); err != nil || !got {
+		if got, err := db.RecordOpen(ctx, store.OpenRecord{EntryPath: "data/a.md", At: now, Window: openWindow}); err != nil || !got {
 			t.Fatalf("RecordOpen = %t, %v; want true, nil", got, err)
 		}
 		if ids := openedSearches(t, db, "data/a.md"); len(ids) != 1 || ids[0] != newest {
@@ -144,10 +146,10 @@ func TestRecordOpenSelection(t *testing.T) {
 	t.Run("repeated open is a no-op", func(t *testing.T) {
 		db := openTestDB(t)
 		addSearch(t, db, now, []string{"data/a.md"}, "")
-		if got, _ := db.RecordOpen(ctx, "data/a.md", now, openWindow); !got {
+		if got, _ := db.RecordOpen(ctx, store.OpenRecord{EntryPath: "data/a.md", At: now, Window: openWindow}); !got {
 			t.Fatal("first open not recorded")
 		}
-		if got, err := db.RecordOpen(ctx, "data/a.md", now.Add(time.Minute), openWindow); err != nil || got {
+		if got, err := db.RecordOpen(ctx, store.OpenRecord{EntryPath: "data/a.md", At: now.Add(time.Minute), Window: openWindow}); err != nil || got {
 			t.Errorf("second RecordOpen = %t, %v; want false, nil", got, err)
 		}
 		if ids := openedSearches(t, db, "data/a.md"); len(ids) != 1 {
@@ -161,7 +163,7 @@ func TestRecordOpenErrors(t *testing.T) {
 	if _, err := db.DB().Exec("DROP TABLE search_opens"); err != nil {
 		t.Fatal(err)
 	}
-	if recorded, err := db.RecordOpen(context.Background(), "data/a.md", time.Now(), openWindow); err == nil || recorded {
+	if recorded, err := db.RecordOpen(context.Background(), store.OpenRecord{EntryPath: "data/a.md", At: time.Now(), Window: openWindow}); err == nil || recorded {
 		t.Errorf("missing table: recorded, err = %v, %v; want false and an error", recorded, err)
 	}
 }

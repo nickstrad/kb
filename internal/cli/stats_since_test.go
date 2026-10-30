@@ -10,7 +10,7 @@ import (
 // (maxSinceDays and one above it, which would overflow time.Duration), negative durations, and
 // date forms. The CLI tests only check that --since reaches the filter.
 func TestParseSince(t *testing.T) {
-	const slack = time.Minute // the bound is computed from time.Now inside parseSince
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.FixedZone("x", 3600)) // not UTC: the bound must come back in UTC
 	for _, tc := range []struct {
 		name    string
 		in      string
@@ -37,7 +37,7 @@ func TestParseSince(t *testing.T) {
 		{name: "garbage: error", in: "bogus", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseSince(tc.in)
+			got, err := parseSince(tc.in, now)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("parseSince(%q) = %v, want an error", tc.in, got)
@@ -57,9 +57,9 @@ func TestParseSince(t *testing.T) {
 					t.Fatalf("parseSince(%q) = %v, want %v", tc.in, got, want)
 				}
 			default:
-				want := time.Now().UTC().Add(-tc.wantAgo)
-				if d := got.Sub(want); d > slack || d < -slack {
-					t.Fatalf("parseSince(%q) = %v, want about %v", tc.in, got, want)
+				want := now.UTC().Add(-tc.wantAgo)
+				if !got.Equal(want) || got.Location() != time.UTC {
+					t.Fatalf("parseSince(%q) = %v, want %v in UTC", tc.in, got, want)
 				}
 			}
 		})

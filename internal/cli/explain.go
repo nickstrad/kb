@@ -40,7 +40,10 @@ func newExplainCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"\"title › heading\", so a title term scores in the text column as well as the title one.\n\n" +
 			"--set key=value (repeatable) tries a [search] setting for this run without writing it.\n" +
 			"Explain does not log: the search log feeds kb stats and kb eval, which a diagnostic\n" +
-			"run must not change.",
+			"run must not change.\n\n" +
+			"Explain covers one store and never fans out: [search] stores does not apply. A\n" +
+			"cross-store search merges each store's list on ranks only, so explain each store\n" +
+			"with kb --store REF explain.",
 		Example: "  kb explain \"tmux logout\"\n" +
 			"  kb explain \"tmux logout\" --mode fts --set search.bm25.title=5 --json",
 		Args:          cobra.MinimumNArgs(1),

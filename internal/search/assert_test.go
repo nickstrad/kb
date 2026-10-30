@@ -33,13 +33,17 @@ func TestSearchAssertionsFire(t *testing.T) {
 	mustViolate(t, "postcondition", func() {                                                   // ordered, but chunk 1 twice
 		assertFused([]Candidate{a, b, {ChunkID: 1, FTSRank: &two, RRFScore: 0.3}}, CandidateLimit)
 	})
-	mustViolate(t, "postcondition", func() { assertFused([]Candidate{{ChunkID: 3}}, CandidateLimit) })                              // no rank
-	mustViolate(t, "postcondition", func() { assertFused(make([]Candidate, CandidateLimit+1), CandidateLimit) })                    // too long
-	mustViolate(t, "postcondition", func() { assertCapped([]Candidate{a}, []Candidate{a, b}, map[int64]string{}, 1, PerEntryCap) }) // > k
-	mustViolate(t, "postcondition", func() { assertCapped([]Candidate{a, b}, []Candidate{b, a}, map[int64]string{}, 2, PerEntryCap) })
+	mustViolate(t, "postcondition", func() { assertFused([]Candidate{{ChunkID: 3}}, CandidateLimit) })           // no rank
+	mustViolate(t, "postcondition", func() { assertFused(make([]Candidate, CandidateLimit+1), CandidateLimit) }) // too long
+	mustViolate(t, "postcondition", func() {
+		assertCapped([]Candidate{a}, []Candidate{a, b}, entryByChunk(map[int64]string{}), 1, PerEntryCap)
+	}) // > k
+	mustViolate(t, "postcondition", func() {
+		assertCapped([]Candidate{a, b}, []Candidate{b, a}, entryByChunk(map[int64]string{}), 2, PerEntryCap)
+	})
 	four := []Candidate{a, b, {ChunkID: 3, FTSRank: &one}, {ChunkID: 4, FTSRank: &one}}
 	same := map[int64]string{1: "x", 2: "x", 3: "x", 4: "x"}
-	mustViolate(t, "postcondition", func() { assertCapped(four, four, same, MaxK, PerEntryCap) }) // PerEntryCap
+	mustViolate(t, "postcondition", func() { assertCapped(four, four, entryByChunk(same), MaxK, PerEntryCap) }) // PerEntryCap
 	mustViolate(t, "postcondition", func() { assertOutcome(&Outcome{Mode: "bogus", Result: NewResult("q", "bogus")}) })
 	mustViolate(t, "postcondition", func() {
 		assertOutcome(&Outcome{Mode: ModeFTSFallback, Result: NewResult("q", ModeFTSFallback)})
@@ -56,12 +60,16 @@ func TestSearchAssertionsFire(t *testing.T) {
 	mustViolate(t, "precondition", func() { (&Searcher{}).Record(context.Background(), Request{}, nil) })
 	mustViolate(t, "precondition", func() { (&Searcher{}).Record(context.Background(), Request{}, &Outcome{}) })
 	// one candidate cannot be returned twice
-	mustViolate(t, "postcondition", func() { assertCapped([]Candidate{a}, []Candidate{a, a}, map[int64]string{}, 2, PerEntryCap) })
+	mustViolate(t, "postcondition", func() {
+		assertCapped([]Candidate{a}, []Candidate{a, a}, entryByChunk(map[int64]string{}), 2, PerEntryCap)
+	})
 	mustViolate(t, "precondition", func() { applyCap(nil, nil, MaxK, 0) })
 	dropped := Candidate{ChunkID: 1, FTSRank: &one, CapDropped: true}
-	mustViolate(t, "postcondition", func() { assertCapped([]Candidate{dropped}, []Candidate{dropped}, map[int64]string{1: "x"}, 1, 1) })
+	mustViolate(t, "postcondition", func() {
+		assertCapped([]Candidate{dropped}, []Candidate{dropped}, entryByChunk(map[int64]string{1: "x"}), 1, 1)
+	})
 	assertFused([]Candidate{a, b}, CandidateLimit)
-	assertCapped([]Candidate{a, b}, []Candidate{a, b}, map[int64]string{1: "x", 2: "y"}, 2, PerEntryCap)
+	assertCapped([]Candidate{a, b}, []Candidate{a, b}, entryByChunk(map[int64]string{1: "x", 2: "y"}), 2, PerEntryCap)
 }
 
 // TestSearchInvalidParamsAssert: Params that skipped config validation are a programmer error.

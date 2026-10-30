@@ -69,6 +69,7 @@ var scenarios = []scenario{
 	{"stores-alias", "store refs: alias, NAME@LOC, path, global, shadowing warns once, an alias with --root is refused, unknown words suggest names, hostile alias targets and refs exit 1 and never 3, kb stores lists a broken alias", scStoresAlias},
 	{"cache-two-stores", "the shared embedding cache (H19): processes on two stores open one cache file at once without locking errors; a garbage or newer cache file warns and falls back, is left alone, and kb model cache --clear removes it; --stats and --clear on a missing cache exit 0", scCacheTwoStores},
 	{"explain-hostile", "kb explain on hostile queries is valid JSON, --set overrides apply and bad ones exit 1, and it never writes the search log", scExplain},
+	{"eval-basic", "kb eval on an empty log, a judged search, hostile flags and an index with deleted gold: exit 0/1 only, valid JSON, and it never writes the search log", scEval},
 }
 
 // scWorkspaceDiscovery attacks "kb finds the right store, or none, and never creates one by
@@ -993,5 +994,50 @@ func scStoresAlias(h *H) {
 		if r := at("stores"); r.Code == 3 {
 			h.fail("kb stores with alias target %s reached an incident:\n%s", name, r)
 		}
+	}
+}
+
+// scEval attacks kb eval: an empty log scores nothing, a judged FTS search scores mrr 1, hostile
+// flags exit 1 (out-of-range -k is clamped), --json is valid, deleting the gold entry moves it to
+// "gold not in index", and the replays never reach the search log.
+func scEval(h *H) {
+	const none = "[embed]\nmodel = \"none\"\n"
+	h.write("data/eval-a.md", entryText("Eval A", "## Body\n\npulsarword appears here.\n"))
+	h.write("data/eval-b.md", entryText("Eval B", "## Body\n\npulsarword and quasarword live here.\n"))
+	h.setConfig(none, false)
+	h.must(h.kb(withNone("reindex", "--all")...).Code == 0, "index with an FTS-only config")
+
+	if r := h.kb("eval"); h.expect(r, 0) && !strings.Contains(r.Stdout, "queries=0") {
+		h.fail("eval on an empty log:\n%s", r)
+	}
+	r := h.kb("search", "pulsarword", "--mode", "fts")
+	h.must(r.Code == 0 && strings.HasPrefix(r.Stdout, "search 1 ·"), "first search is search 1: %s", r)
+	h.must(h.kb("feedback", "1", "1", "--useful").Code == 0, "feedback on search 1")
+
+	if r := h.kb("eval"); h.expect(r, 0) && !strings.Contains(r.Stdout, "queries=1 hit@8=1.000 [1.000, 1.000] mrr=1.000") {
+		h.fail("eval of one judged search (hybrid with a none embedder runs fts):\n%s", r)
+	}
+	for _, flags := range [][]string{{"--json"}, {"--json", "--per-query", "-k", "1"}, {"--json", "-k", "99"}, {"--json", "-k", "0"},
+		{"--json", "--caller", "'; DROP TABLE searches; --"}, {"--json", "--since", "0s"}, {"--json", "--since", "1970-01-01"}} {
+		r := h.kb(append([]string{"eval"}, flags...)...)
+		if h.expect(r, 0) && !json.Valid([]byte(r.Stdout)) {
+			h.fail("eval %v --json is not valid JSON:\n%s", flags, r)
+		}
+	}
+	for _, bad := range [][]string{{"--mode", "bogus"}, {"--mode", ""}, {"--since", "-1h"}, {"--since", "99999999999999999999d"},
+		{"--since", "2026-02-30"}, {"-k", "x"}, {"query"}} {
+		h.expect(h.kb(append([]string{"eval"}, bad...)...), 1)
+	}
+	h.expect(h.kb("eval", "--mode", "vec"), 1) // vec needs an embedder; none is configured
+
+	// Delete the gold entry: eval drops it and says so.
+	h.must(os.Remove(filepath.Join(h.root, "data", "eval-a.md")) == nil, "remove eval-a.md")
+	h.must(os.Remove(filepath.Join(h.root, "data", "eval-b.md")) == nil, "remove eval-b.md")
+	h.must(h.kb(withNone("reindex", "--all")...).Code == 0, "reindex after deleting the entries")
+	if r := h.kb("eval"); h.expect(r, 0) && !strings.Contains(r.Stdout, "gold not in index: 1 chunks (1 queries dropped) · 1 entries") {
+		h.fail("deleted gold is not reported as not in the index:\n%s", r)
+	}
+	if r := h.kb("search", "pulsarword", "--mode", "fts"); h.expect(r, 0) && !strings.HasPrefix(r.Stdout, "search 2 ·") {
+		h.fail("eval wrote the search log (the next real search is not search 2):\n%s", r)
 	}
 }

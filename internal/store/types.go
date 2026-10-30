@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // FTSOnlyModel is the embed_meta model of an index built with no embedder. Its dim is 0 and it
@@ -166,6 +167,10 @@ const WholeSearchRank = 0
 // SearchRecord is one search as the log stores it. A nil *Ms means that stage did not run,
 // which the log keeps distinct from 0 ms.
 type SearchRecord struct {
+	// TS is when the search ran (searches.ts, stored in UTC at one-second resolution). The caller
+	// sets it (search.Searcher.Now), so tests can place a search at an exact time; the zero value
+	// means "now" by the backend's clock.
+	TS         time.Time
 	Query      string
 	Mode       string
 	K          int
@@ -191,8 +196,11 @@ type SearchRecord struct {
 }
 
 // LoggedHit is one result or candidate row. A nil rank or score means the chunk was not in
-// that list.
+// that list. Store is "" for a hit of the store that logs the search and otherwise the canonical
+// ref NAME@ABSROOT of the store that returned it (a cross-store search); ChunkID is that store's,
+// so a hit is identified by (Store, ChunkID).
 type LoggedHit struct {
+	Store       string
 	ChunkID     int64
 	EntryPath   string
 	Heading     string
@@ -201,6 +209,16 @@ type LoggedHit struct {
 	VecRank     *int
 	VecDistance *float64
 	RRFScore    float64
+}
+
+// OpenRecord is one read of an entry (kb show) to attach to a recent search: the entry at
+// EntryPath of Store ("" = the logging store itself, else a canonical ref as in LoggedHit), read
+// at At. It attaches to the newest search at most Window old that returned that entry.
+type OpenRecord struct {
+	Store     string
+	EntryPath string
+	At        time.Time
+	Window    time.Duration
 }
 
 // LastSearch is the newest logged search for one caller (kb feedback --last).

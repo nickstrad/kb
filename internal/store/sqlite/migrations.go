@@ -18,10 +18,12 @@ var schemaSQL string
 // artefactName is the index DB's name in migration IDs and kb migrate output.
 const artefactName = "index"
 
-// migrations[v] takes a database from PRAGMA user_version v to v+1. Append-only: to change the
+// indexSteps[v] takes a database from PRAGMA user_version v to v+1. Append-only: to change the
 // schema, append a step (its ID pre-assigned in the plan's migration table) and leave every
-// earlier one alone; schemaVersion follows. Each Up runs inside the caller's BEGIN IMMEDIATE.
-var migrations = migrate.Steps[execer]{
+// earlier one alone; SchemaVersion follows. Each Up runs inside the caller's BEGIN IMMEDIATE.
+// It is never reassigned: a test that needs an older or a longer list passes its own through
+// Options.steps or Artefact.steps, so tests in this package may run in parallel.
+var indexSteps = migrate.Steps[execer]{
 	{
 		Info: migrate.Info{From: 0, ID: "index/0001-baseline", Desc: "create the index, FTS, vector and search-log tables"},
 		Up: func(ctx context.Context, db execer) error {
@@ -72,21 +74,37 @@ var migrations = migrate.Steps[execer]{
 			return err
 		},
 	},
+	// A cross-store search (PLAN 3.2) logs every hit in the primary store's log. store is NULL
+	// for a hit of the primary itself and the canonical ref NAME@ABSROOT of the store that
+	// returned it otherwise; chunk_id is that store's. Older rows keep NULL: they are all primary.
+	{
+		Info: migrate.Info{From: 4, ID: "index/0005-hit-store", Desc: "add search_results.store and search_candidates.store"},
+		Up: func(ctx context.Context, db execer) error {
+			_, err := db.ExecContext(ctx, `
+			ALTER TABLE search_results ADD COLUMN store TEXT;
+			ALTER TABLE search_candidates ADD COLUMN store TEXT;`)
+			return err
+		},
+	},
 }
 
 func init() {
 	if assert.Enabled {
-		err := migrations.Check(artefactName)
+		err := indexSteps.Check(artefactName)
 		assert.Invariant(err == nil, "index migrations: %v", err)
 	}
 }
 
-// schemaVersion is the PRAGMA user_version this build expects: one per migration. A variable,
-// not migrations.Target(), so tests can pin an older build's view.
-var schemaVersion = migrations.Target()
+// SchemaVersion is the PRAGMA user_version this build reads and writes: one per step.
+func SchemaVersion() int { return indexSteps.Target() }
 
-// SchemaVersion is the PRAGMA user_version this build reads and writes.
-func SchemaVersion() int { return schemaVersion }
+// stepsOr is steps, or this build's indexSteps when nil (the test seam's zero value).
+func stepsOr(steps migrate.Steps[execer]) migrate.Steps[execer] {
+	if steps == nil {
+		return indexSteps
+	}
+	return steps
+}
 
 // execer is what a migration step needs: *sql.Conn and *sql.Tx both satisfy it. Steps run inside
 // the caller's transaction, so they must not BEGIN or COMMIT.

@@ -350,6 +350,7 @@ func TestValidateBoundaries(t *testing.T) {
 		{"open_window empty", set(func(c *Config) { c.Log.OpenWindow = "" }), "log.open_window"},
 		{"stale.days 0", set(func(c *Config) { c.Stale.Days = 0 }), "stale.days"},
 		{"eval.min_judged -1", set(func(c *Config) { c.Eval.MinJudged = -1 }), "eval.min_judged"},
+		{"eval.min_judged 0: never a small sample", set(func(c *Config) { c.Eval.MinJudged = 0 }), ""},
 		{"holdout 0", set(func(c *Config) { c.Eval.Holdout = 0 }), ""},
 		{"holdout 1", set(func(c *Config) { c.Eval.Holdout = 1 }), "eval.holdout"},
 		{"holdout -0.1", set(func(c *Config) { c.Eval.Holdout = -0.1 }), "eval.holdout"},

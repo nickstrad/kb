@@ -18,43 +18,55 @@ import (
 	"github.com/nickstrad/kb/internal/workspace"
 )
 
-// entryStub is a store whose Entry answers from a table; every other method is unused.
+// entryStub is an entry lookup that answers from a table and counts its calls.
 type entryStub struct {
-	store.Store
-	rows map[string]*store.EntryRow
-	err  error
-	n    int
+	rows  map[string]store.EntryRow
+	err   error
+	n     int
+	asked [][]string
 }
 
-func (s *entryStub) Entry(_ context.Context, path string) (*store.EntryRow, error) {
+func (s *entryStub) EntriesByPath(_ context.Context, paths []string) (map[string]store.EntryRow, error) {
 	s.n++
+	s.asked = append(s.asked, paths)
 	if s.err != nil {
 		return nil, s.err
 	}
-	return s.rows[path], nil // nil, nil when missing, as the sqlite store does
+	out := map[string]store.EntryRow{}
+	for _, p := range paths {
+		if r, ok := s.rows[p]; ok {
+			out[p] = r
+		}
+	}
+	return out, nil
 }
 
-// TestRenderHitsEntryErrors is the decision table for the per-hit entry lookup (Q70): a row fills
-// the summary and date, a missing row degrades quietly, any other error is returned, and a path is
-// looked up once however many hits it has.
+// TestRenderHitsEntryErrors is the decision table for the entry lookup (Q70, PLAN 3.2): a row
+// fills the summary and date, a missing row degrades quietly, any other error is returned, and each
+// store is asked once for all its hits, each hit from its own store (by its Store tag); a tag with
+// no lookup degrades like a missing row.
 func TestRenderHitsEntryErrors(t *testing.T) {
-	hits := []search.Hit{{Rank: 1, Path: "a.md", Text: "x"}, {Rank: 2, Path: "a.md", Text: "y"}, {Rank: 3, Path: "gone.md", Text: "z"}}
-	rows := map[string]*store.EntryRow{"a.md": {Summary: "sum", Updated: "2026-01-02"}}
+	hits := []search.Hit{{Rank: 1, Path: "a.md", Text: "x"}, {Rank: 2, Path: "a.md", Text: "y"}, {Rank: 3, Path: "gone.md", Text: "z"},
+		{Rank: 4, Store: "notes", Path: "a.md"}, {Rank: 5, Store: "lost", Path: "a.md"}}
 	boom := errs.New(errs.Interrupted, "sqlite.Entry", "interrupted")
 
-	st := &entryStub{rows: rows}
-	got, err := renderHits(context.Background(), st, hits)
-	if err != nil || len(got) != 3 {
+	prim := &entryStub{rows: map[string]store.EntryRow{"a.md": {Summary: "sum", Updated: "2026-01-02"}}}
+	notes := &entryStub{rows: map[string]store.EntryRow{"a.md": {Summary: "notes sum"}}}
+	got, err := renderHits(context.Background(), map[string]entryLookup{"": prim, "notes": notes}, hits)
+	if err != nil || len(got) != 5 {
 		t.Fatalf("renderHits = %v, %v", got, err)
 	}
 	if got[0].Summary != "sum" || got[1].Updated != "2026-01-02" || got[2].Summary != "" || got[2].Updated != "" {
 		t.Errorf("hits = %+v, want a.md filled and gone.md degraded", got)
 	}
-	if st.n != 2 {
-		t.Errorf("Entry called %d times, want 2 (one per path)", st.n)
+	if got[3].Summary != "notes sum" || got[3].Store != "notes" || got[4].Summary != "" {
+		t.Errorf("cross-store hits = %+v, %+v; want notes' own row, and lost degraded", got[3], got[4])
+	}
+	if prim.n != 1 || notes.n != 1 {
+		t.Errorf("EntriesByPath called %d and %d times, want once per store", prim.n, notes.n)
 	}
 
-	got, err = renderHits(context.Background(), &entryStub{err: boom}, hits)
+	got, err = renderHits(context.Background(), map[string]entryLookup{"": &entryStub{err: boom}}, hits)
 	if !errors.Is(err, boom) || errs.KindOf(err) != errs.Interrupted || got != nil {
 		t.Errorf("renderHits with a store error = %v, %v; want the error and no hits", got, err)
 	}

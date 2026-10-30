@@ -32,6 +32,7 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		asJSON bool
 		caller string
 		budget int
+		stores string
 	)
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -43,7 +44,13 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"Output opens with \"search N · M hits\" (N is the search id, so it survives | head).\n" +
 			"Read a hit with kb show <path>; that read is recorded as an open of this search.\n" +
 			"Feedback is optional: kb feedback N <rank> --useful (or kb feedback N --none) judges\n" +
-			"a search, and --json carries those commands in its \"feedback\" field.",
+			"a search, and --json carries those commands in its \"feedback\" field.\n\n" +
+			"--stores a,b also searches other stores (names, aliases, global, NAME@LOC or a path;\n" +
+			"all = every store of this location; at most 8). The default is [search] stores;\n" +
+			"--stores '' searches this store only. Each store uses its own embedding model and\n" +
+			"this store's [search] settings; the lists are merged on ranks. Another store's hit\n" +
+			"shows as REF:path (read it with kb show REF:path). A store that cannot be searched\n" +
+			"is skipped with a warning. The search is logged in this store only.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -56,6 +63,8 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 				asJSON: asJSON,
 				caller: caller,
 				budget: budget,
+				stores: stores,
+				fanOut: cmd.Flags().Changed("stores"),
 			})
 		},
 	}
@@ -65,6 +74,7 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable output")
 	cmd.Flags().StringVar(&caller, "caller", "", "who is searching (default [agent] caller, else unknown)")
 	cmd.Flags().IntVar(&budget, "budget", 0, "cap the human output at about N tokens (ceil(chars/4)); 0 = unlimited (default [output] budget)")
+	cmd.Flags().StringVar(&stores, "stores", "", "also search these stores, comma-separated ('' = none, all = every store here; default [search] stores)")
 	return cmd
 }
 
@@ -77,6 +87,8 @@ type searchOpts struct {
 	asJSON bool
 	caller string
 	budget int
+	stores string // --stores as typed
+	fanOut bool   // --stores was given (else [search] stores applies)
 }
 
 // runSearch validates the flags, opens the database (it never creates one), builds the embedder
@@ -101,7 +113,8 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	if err != nil {
 		return err
 	}
-	st, embedder, mode, err := d.openSearch(cmd, ws, cfg, opts.mode, "cli.search", false)
+	embs := embedderSet{}
+	st, embedder, mode, err := d.openSearchWith(cmd, ws, cfg, opts.mode, "cli.search", false, embs)
 	if err != nil {
 		return err
 	}
@@ -111,7 +124,17 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	if err != nil {
 		return err
 	}
-	searcher := &search.Searcher{Store: st, Log: st, Embedder: embedder, KBVersion: Version, Settings: settings}
+	memo := &search.QueryMemo{}
+	searcher := &search.Searcher{Store: st, Log: st, Embedder: embedder, KBVersion: Version, Settings: settings, Now: d.clock, Queries: memo}
+	refs := fanOutRefs(opts.fanOut, opts.stores, cfg.Search.Stores)
+	extras, err := d.openExtraStores(cmd, ws, refs, mode, settings, memo, embs)
+	defer extras.close()
+	if err != nil {
+		return err
+	}
+	if n := embs.models(); len(n) > 2 {
+		fmt.Fprintf(stderr, "warning: this search loads %d embedding models (%s); each one takes memory and time\n", len(n), strings.Join(n, ", "))
+	}
 	req := search.Request{
 		Query:  opts.query,
 		Mode:   mode,
@@ -120,20 +143,31 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 		Caller: callerFor(opts.caller, cfg),
 	}
 
-	out, err := searcher.SearchAndLog(ctx, req)
-	logFailed := errors.Is(err, search.ErrLogFailed)
-	if err != nil && !logFailed {
+	parts := append([]search.Part{{Root: ws.Root, Searcher: searcher}}, extras.parts...)
+	mo, err := search.SearchStores(ctx, parts, req)
+	if err != nil {
 		return err
 	}
+	for _, s := range mo.Skipped {
+		fmt.Fprintf(stderr, "warning: skipping store %s: %s\n", s.Part.Label, s.Err)
+	}
+	for _, s := range mo.Degraded {
+		fmt.Fprintf(stderr, "warning: store %s searched with FTS only: %s\n", s.Part.Label, s.Err)
+	}
+	out := mo.Outcome
+	_, logErr := searcher.Record(ctx, req, out)
+	logged := logErr == nil
 	budget := opts.budget
 	if !cmd.Flags().Changed("budget") {
 		budget = cfg.Output.Budget
 	}
-	if err := printResults(ctx, stdout, st, out.Result, opts.asJSON, !logFailed, budget); err != nil {
+	lookups := extras.lookups()
+	lookups[""] = st
+	if err := printResults(ctx, stdout, lookups, out.Result, opts.asJSON, logged, budget); err != nil {
 		return err
 	}
-	if logFailed {
-		fmt.Fprintf(stderr, "warning: search not logged: %s\n", err)
+	if !logged {
+		fmt.Fprintf(stderr, "warning: search not logged: %s\n", logErr)
 	}
 
 	if out.Mode == search.ModeFTSFallback {
@@ -177,7 +211,9 @@ func callerFor(flag string, cfg config.Config) string {
 // so, and its JSON search_id and feedback are null rather than the zero value Go
 // leaves in Result.SearchID. An encoding failure (a NaN or Inf score from a model) is returned
 // as an Internal error with nothing written.
-func printResults(ctx context.Context, stdout io.Writer, st store.Store, result *search.Result, asJSON, logged bool, budget int) error {
+//
+// lookups holds each store's entry lookup by the hit's Store tag ("" = the primary store).
+func printResults(ctx context.Context, stdout io.Writer, lookups map[string]entryLookup, result *search.Result, asJSON, logged bool, budget int) error {
 	if asJSON {
 		var searchID *int64
 		var feedback *feedbackCommands
@@ -219,7 +255,7 @@ func printResults(ctx context.Context, stdout io.Writer, st store.Store, result 
 	if len(result.Hits) == 0 {
 		fmt.Fprintln(stdout, "no results")
 	} else {
-		rendered, err := renderHits(ctx, st, result.Hits)
+		rendered, err := renderHits(ctx, lookups, result.Hits)
 		if err != nil {
 			return err
 		}
@@ -252,24 +288,37 @@ func newFeedbackCommands(searchID int64, nHits int) *feedbackCommands {
 	return fc
 }
 
-// renderHits adds each hit's entry summary and updated date (search.Hit carries neither) from
-// the store. An entry missing from the index (the file was removed since) leaves those two fields
-// empty: the hit still renders from what the search returned. Any other failure, a cancel or a
-// database error, is returned: it is not "no such entry".
-func renderHits(ctx context.Context, st store.Store, hits []search.Hit) ([]render.Hit, error) {
-	out := make([]render.Hit, len(hits))
-	cache := map[string]*store.EntryRow{}
-	for i, h := range hits {
-		out[i] = render.Hit{Rank: h.Rank, Path: h.Path, Heading: h.Heading, Text: h.Text}
-		row, seen := cache[h.Path]
-		if !seen {
-			var err error
-			if row, err = st.Entry(ctx, h.Path); err != nil {
-				return nil, err // a cancel or a database error is not "no such entry"
-			}
-			cache[h.Path] = row
+// entryLookup is what rendering needs from a store: its entry rows, in one read per store.
+type entryLookup interface {
+	EntriesByPath(ctx context.Context, paths []string) (map[string]store.EntryRow, error)
+}
+
+// renderHits adds each hit's entry summary and updated date (search.Hit carries neither), read
+// from the hit's own store (lookups by Store tag) with one EntriesByPath per store. An entry
+// missing from its index (the file was removed since), or a store with no lookup, leaves those two
+// fields empty: the hit still renders from what the search returned. Any other failure, a cancel or
+// a database error, is returned: it is not "no such entry".
+func renderHits(ctx context.Context, lookups map[string]entryLookup, hits []search.Hit) ([]render.Hit, error) {
+	paths := map[string][]string{}
+	for _, h := range hits {
+		paths[h.Store] = append(paths[h.Store], h.Path)
+	}
+	rows := map[string]map[string]store.EntryRow{}
+	for tag, ps := range paths {
+		l, ok := lookups[tag]
+		if !ok || l == nil {
+			continue
 		}
-		if row != nil {
+		got, err := l.EntriesByPath(ctx, ps)
+		if err != nil {
+			return nil, err // a cancel or a database error is not "no such entry"
+		}
+		rows[tag] = got
+	}
+	out := make([]render.Hit, len(hits))
+	for i, h := range hits {
+		out[i] = render.Hit{Rank: h.Rank, Store: h.Store, Path: h.Path, Heading: h.Heading, Text: h.Text}
+		if row, ok := rows[h.Store][h.Path]; ok {
 			out[i].Updated = row.Updated
 			out[i].Summary = row.Summary
 		}
@@ -283,6 +332,11 @@ func renderHits(ctx context.Context, st store.Store, hits []search.Hit) ([]rende
 // returns the mode actually run and a nil embedder for fts. op names the command in errors. On
 // success the caller closes st.
 func (d *deps) openSearch(cmd *cobra.Command, ws *workspace.Workspace, cfg config.Config, mode, op string, readOnly bool) (store.Store, embed.Embedder, string, error) {
+	return d.openSearchWith(cmd, ws, cfg, mode, op, readOnly, nil)
+}
+
+// openSearchWith is openSearch building its embedder through embs (nil: build a new one).
+func (d *deps) openSearchWith(cmd *cobra.Command, ws *workspace.Workspace, cfg config.Config, mode, op string, readOnly bool, embs embedderSet) (store.Store, embed.Embedder, string, error) {
 	ctx := cmd.Context()
 	if _, err := os.Stat(ws.DBPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -294,7 +348,7 @@ func (d *deps) openSearch(cmd *cobra.Command, ws *workspace.Workspace, cfg confi
 	if err != nil {
 		return nil, nil, "", err
 	}
-	embedder, mode, err := d.searchEmbedder(cmd, st, cfg, mode, op)
+	embedder, mode, err := d.searchEmbedderWith(cmd, st, cfg, mode, op, embs)
 	if err != nil {
 		st.Close()
 		return nil, nil, "", err
@@ -304,10 +358,17 @@ func (d *deps) openSearch(cmd *cobra.Command, ws *workspace.Workspace, cfg confi
 
 // searchEmbedder is openSearch's embedder step.
 func (d *deps) searchEmbedder(cmd *cobra.Command, st store.Store, cfg config.Config, mode, op string) (embed.Embedder, string, error) {
+	return d.searchEmbedderWith(cmd, st, cfg, mode, op, nil)
+}
+
+// searchEmbedderWith is searchEmbedder building through embs, which, when not nil, shares one
+// embedder per distinct [embed] config between the stores of a cross-store search (one loaded
+// model each).
+func (d *deps) searchEmbedderWith(cmd *cobra.Command, st store.Store, cfg config.Config, mode, op string, embs embedderSet) (embed.Embedder, string, error) {
 	if mode != search.ModeHybrid && mode != search.ModeVec {
 		return nil, mode, nil
 	}
-	client, err := d.newEmbedder(cmd, cfg.Embed)
+	client, err := embs.get(cfg.Embed, func() (embed.Embedder, error) { return d.newEmbedder(cmd, cfg.Embed) })
 	if err != nil {
 		return nil, "", err
 	}

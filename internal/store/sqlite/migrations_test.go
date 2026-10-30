@@ -36,7 +36,8 @@ func fixturePath(v int) string { return filepath.Join(fixtureDir, fmt.Sprintf("i
 // TestIndexSteps: the index steps are well-formed, and each declares the effect the plan's
 // migration table gives it. A step that drops or clears derived data must say so here.
 func TestIndexSteps(t *testing.T) {
-	if err := migrations.Check(artefactName); err != nil {
+	t.Parallel()
+	if err := indexSteps.Check(artefactName); err != nil {
 		t.Fatal(err)
 	}
 	want := []struct {
@@ -47,17 +48,18 @@ func TestIndexSteps(t *testing.T) {
 		{"index/0002-log-provenance", migrate.EffectNone},
 		{"index/0003-vec-width", migrate.EffectReembed},
 		{"index/0004-search-settings", migrate.EffectNone},
+		{"index/0005-hit-store", migrate.EffectNone},
 	}
-	if len(migrations) != len(want) {
-		t.Fatalf("%d steps, the effect table lists %d: add the new step's (ID, Effect) row", len(migrations), len(want))
+	if len(indexSteps) != len(want) {
+		t.Fatalf("%d steps, the effect table lists %d: add the new step's (ID, Effect) row", len(indexSteps), len(want))
 	}
 	for i, w := range want {
-		if got := migrations[i]; got.ID != w.id || got.Effect != w.effect {
+		if got := indexSteps[i]; got.ID != w.id || got.Effect != w.effect {
 			t.Errorf("step %d = (%s, %v), want (%s, %v)", i, got.ID, got.Effect, w.id, w.effect)
 		}
 	}
-	if SchemaVersion() != migrations.Target() {
-		t.Errorf("SchemaVersion %d != Target %d", SchemaVersion(), migrations.Target())
+	if SchemaVersion() != indexSteps.Target() {
+		t.Errorf("SchemaVersion %d != Target %d", SchemaVersion(), indexSteps.Target())
 	}
 }
 
@@ -65,6 +67,7 @@ func TestIndexSteps(t *testing.T) {
 // builds would) gives the same schema and user_version as creating it fresh at the target, and as
 // the reference Verify uses.
 func TestReplay(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	stepwise := filepath.Join(t.TempDir(), "stepwise.sqlite")
 	for v := 1; v <= SchemaVersion(); v++ {
@@ -81,7 +84,7 @@ func TestReplay(t *testing.T) {
 	if !slices.Equal(a, b) {
 		t.Errorf("stepwise schema differs from fresh:\n%s", diffSchema(b, a))
 	}
-	ref, err := freshSchema(ctx, SchemaVersion())
+	ref, err := freshSchema(ctx, indexSteps, SchemaVersion())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +102,7 @@ func TestReplay(t *testing.T) {
 // edit to an old step fails here), passes Verify, round-trips through the dumper, and upgrades to
 // the target with a result that passes Verify and keeps every search-log row.
 func TestFixtures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for v := 1; v <= SchemaVersion(); v++ {
 		t.Run(fmt.Sprintf("v%d", v), func(t *testing.T) {
@@ -148,6 +152,7 @@ func renamesSince(v int) map[string]string {
 // TestStepEffects applies each step alone to the fixture at its From and checks what the step
 // promises, plus that the search log survives it.
 func TestStepEffects(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	checks := map[string]func(t *testing.T, db *sql.DB){
 		"index/0002-log-provenance": func(t *testing.T, db *sql.DB) {
@@ -191,8 +196,22 @@ func TestStepEffects(t *testing.T) {
 				t.Error("the fixture has no searches: the preservation check would be vacuous")
 			}
 		},
+		"index/0005-hit-store": func(t *testing.T, db *sql.DB) {
+			for _, table := range []string{"search_results", "search_candidates"} {
+				if n := count(t, db, "SELECT count(*) FROM pragma_table_info('"+table+"') WHERE name = 'store' AND type = 'TEXT' AND \"notnull\" = 0"); n != 1 {
+					t.Errorf("%s.store: want one nullable TEXT column, found %d", table, n)
+				}
+				// Every hit logged before v5 came from the primary store: NULL, never "".
+				if n := count(t, db, "SELECT count(*) FROM "+table+" WHERE store IS NOT NULL"); n != 0 {
+					t.Errorf("%d old %s rows have a store; want NULL (primary)", n, table)
+				}
+				if n := count(t, db, "SELECT count(*) FROM "+table); n == 0 {
+					t.Errorf("the fixture has no %s rows: the NULL check would be vacuous", table)
+				}
+			}
+		},
 	}
-	for _, step := range migrations[1:] { // the baseline has no From fixture: v0 is "no file"
+	for _, step := range indexSteps[1:] { // the baseline has no From fixture: v0 is "no file"
 		t.Run(step.ID, func(t *testing.T) {
 			check, ok := checks[step.ID]
 			if !ok {
@@ -200,8 +219,7 @@ func TestStepEffects(t *testing.T) {
 			}
 			path := loadFixture(t, step.From)
 			before := logRows(t, path)
-			pinVersion(t, step.From+1)
-			if _, err := NewArtefact(path).Apply(ctx); err != nil {
+			if _, err := artefactAt(path, step.From+1).Apply(ctx); err != nil {
 				t.Fatal(err)
 			}
 			db := rawDB(t, path)
@@ -258,6 +276,7 @@ var fixtureSeeds = map[int]func(t *testing.T, s *Store){
 	2: func(t *testing.T, s *Store) { seedV2(t, s, "with vectors") },
 	3: seedV3,
 	4: seedV4,
+	5: seedV5,
 }
 
 func seedV1(t *testing.T, s *Store) {
@@ -333,6 +352,25 @@ func seedV4(t *testing.T, s *Store) {
 		INSERT INTO search_results (search_id, rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, rrf_score)
 		VALUES (2, 1, 2, 'alpha.md', 'Body', 1, -2.5, 2, 0.25, 0.0325);
 		INSERT INTO search_feedback (search_id, rank, useful, note, ts) VALUES (2, 1, 1, NULL, '2026-10-02T09:01:00Z');`)
+}
+
+// seedV5 is a v5 store: the v4 data, plus a cross-store search as a v5 kb logs it, with one
+// primary hit (store NULL) and one hit of another store (its canonical ref, its own chunk id).
+func seedV5(t *testing.T, s *Store) {
+	t.Helper()
+	seedV4(t, s)
+	execAll(t, s.DB(), `
+		INSERT INTO searches (id, ts, query, mode, k, n_returned, caller, corpus_rev, kb_version, settings, settings_hash, fts_query)
+		VALUES (4, '2026-10-04T09:00:00Z', 'checkpoint', 'hybrid', 8, 2, 'claude', NULL, 'v0.4.0',
+		        '{"embed":{"batch":16,"dim":0,"int8":false,"model":"BAAI/bge-small-en-v1.5","workers":0},"search":{"k":8,"rrf_k":60}}',
+		        '46f97a2e73fad76c672908714f5b5b8d84d59364f53d925f8f7fcec05bb4092f', '"checkpoint"');
+		INSERT INTO search_results (search_id, rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, rrf_score, store)
+		VALUES (4, 1, 2, 'alpha.md', 'Body', 1, -2.5, 1, 0.25, 0.0328, NULL),
+		       (4, 2, 7, 'notes/wal.md', 'WAL', 1, -1.5, NULL, NULL, 0.0164, 'notes@/Users/someone/knowledge');
+		INSERT INTO search_candidates (search_id, fused_rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, rrf_score, returned, store)
+		VALUES (4, 1, 2, 'alpha.md', 'Body', 1, -2.5, 1, 0.25, 0.0328, 1, NULL),
+		       (4, 2, 7, 'notes/wal.md', 'WAL', 1, -1.5, NULL, NULL, 0.0164, 1, 'notes@/Users/someone/knowledge');
+		INSERT INTO search_opens (search_id, entry_path, ts) VALUES (4, 'notes/wal.md', '2026-10-04T09:02:00Z');`)
 }
 
 // dumpFixture renders the database at path as the SQL text that rebuilds it: the version, every
@@ -495,13 +533,9 @@ func schemaAt(t *testing.T, path string) []string {
 	return append(s, fmt.Sprintf("user_version %d", count(t, rawDB(t, path), "PRAGMA user_version")))
 }
 
-// pinVersion makes this build look like one whose last step is v, for the rest of the test.
-// Package state: no test in this package runs in parallel.
-func pinVersion(t *testing.T, v int) {
-	t.Helper()
-	orig, origV := migrations, schemaVersion
-	migrations, schemaVersion = orig[:v], v
-	t.Cleanup(func() { migrations, schemaVersion = orig, origV })
+// artefactAt is the index artefact at path as a build whose last step is v sees it.
+func artefactAt(path string, v int) *Artefact {
+	return &Artefact{path: path, steps: indexSteps[:v]}
 }
 
 // logRows reads every search-log table that exists, each row as column -> value.

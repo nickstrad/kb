@@ -36,8 +36,8 @@ func TestOpenAppliesSchema(t *testing.T) {
 	if err := s.DB().QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != schemaVersion {
-		t.Errorf("user_version = %d, want %d", version, schemaVersion)
+	if version != SchemaVersion() {
+		t.Errorf("user_version = %d, want %d", version, SchemaVersion())
 	}
 
 	var vecVersion string
@@ -126,8 +126,8 @@ func TestOpenIsIdempotent(t *testing.T) {
 	if err := second.DB().QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != schemaVersion {
-		t.Errorf("user_version = %d, want %d", version, schemaVersion)
+	if version != SchemaVersion() {
+		t.Errorf("user_version = %d, want %d", version, SchemaVersion())
 	}
 }
 
@@ -955,13 +955,13 @@ func TestForeignKeyCascade(t *testing.T) {
 
 // --- migrations -------------------------------------------------------------------------------
 
-// TestMigrateRunsOnlyOutstandingMigrations mutates the package-level migrations and schemaVersion
-// variables and restores them afterwards. NO TEST IN THIS PACKAGE MAY CALL t.Parallel: a parallel
-// test opening a database while this one is running would be migrated against the wrong schema.
+// TestMigrateRunsOnlyOutstandingMigrations runs a build with one more step than this one (passed
+// through Options.steps and Artefact.steps, not package state).
 //
 // After a second migration is added, reopening a version-1 database must apply that one step
 // only, not schema.sql again (which would fail with "table entries already exists").
 func TestMigrateRunsOnlyOutstandingMigrations(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "kb.sqlite")
 	first, err := Open(context.Background(), path, Options{})
 	if err != nil {
@@ -969,26 +969,24 @@ func TestMigrateRunsOnlyOutstandingMigrations(t *testing.T) {
 	}
 	first.Close()
 
-	origMigrations, origVersion := migrations, schemaVersion
-	defer func() { migrations, schemaVersion = origMigrations, origVersion }()
-	migrations = append(slices.Clone(origMigrations), migrate.Step[execer]{
-		Info: migrate.Info{From: len(origMigrations), ID: "index/9999-probe", Desc: "probe"},
+	steps := append(slices.Clone(indexSteps), migrate.Step[execer]{
+		Info: migrate.Info{From: len(indexSteps), ID: "index/9999-probe", Desc: "probe"},
 		Up: func(ctx context.Context, db execer) error {
 			_, err := db.ExecContext(ctx, "CREATE TABLE probe (id INTEGER PRIMARY KEY)")
 			return err
 		},
 	})
-	schemaVersion = migrations.Target()
+	schemaVersion := steps.Target()
 
 	// A plain open no longer upgrades (PLAN 1.8b); only the artefact's Apply does.
-	if _, err := Open(context.Background(), path, Options{}); errs.KindOf(err) != errs.Conflict || !strings.Contains(err.Error(), "kb migrate up") {
+	if _, err := Open(context.Background(), path, Options{steps: steps}); errs.KindOf(err) != errs.Conflict || !strings.Contains(err.Error(), "kb migrate up") {
 		t.Fatalf("Open of an older database = %v, want a Conflict saying kb migrate up", err)
 	}
-	applied, err := NewArtefact(path).Apply(context.Background())
+	applied, err := (&Artefact{path: path, steps: steps}).Apply(context.Background())
 	if err != nil || len(applied) != 1 || applied[0].ID != "index/9999-probe" {
 		t.Fatalf("Apply = %v, %v; want only the probe step", applied, err)
 	}
-	second, err := Open(context.Background(), path, Options{})
+	second, err := Open(context.Background(), path, Options{steps: steps})
 	if err != nil {
 		t.Fatalf("reopen after migrating: %v", err)
 	}
@@ -1018,7 +1016,7 @@ func TestOpenRefusesNewerSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if _, err := s.DB().Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion+1)); err != nil {
+	if _, err := s.DB().Exec(fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion()+1)); err != nil {
 		t.Fatalf("bump user_version: %v", err)
 	}
 	s.Close()
@@ -1067,8 +1065,8 @@ func TestConcurrentOpen(t *testing.T) {
 	if err := stores[0].DB().QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != schemaVersion {
-		t.Errorf("user_version = %d, want %d", version, schemaVersion)
+	if version != SchemaVersion() {
+		t.Errorf("user_version = %d, want %d", version, SchemaVersion())
 	}
 	if n := countRows(t, stores[0], "SELECT count(*) FROM sqlite_master WHERE name = 'entries'"); n != 1 {
 		t.Errorf("entries table appears %d times in sqlite_master, want 1", n)

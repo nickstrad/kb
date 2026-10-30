@@ -116,7 +116,8 @@ type Stale struct {
 	Days int `toml:"days"`
 }
 
-// Eval is [eval]. Reserved.
+// Eval is [eval]. MinJudged is read by kb eval: fewer chunk-level queries than this and the report
+// says the sample is small (0 never does). Holdout is reserved.
 type Eval struct {
 	MinJudged int     `toml:"min_judged"`
 	Holdout   float64 `toml:"holdout"`

@@ -20,7 +20,8 @@
 // Keys wired today (a command reads them): embed.model, embed.batch, search.k,
 // search.list_limit, search.candidate_limit, search.per_entry_cap, search.rrf_k,
 // search.vec_overfetch, search.bm25 (text, heading, title), search.list_weights.fts and
-// search.list_weights.vec, output.budget, log.open_window, agent.caller, edit.editor and
+// search.list_weights.vec, output.budget, log.open_window, eval.min_judged (kb eval's
+// small-sample caveat), agent.caller, edit.editor and
 // [[sources]] (path or glob, layout, exclude: the store's corpus, relative to the location root;
 // none means nothing is indexed; see Source and validateSources). The
 // search.* tuning keys have upper bounds (Max* constants) so no value can overflow a score or
@@ -30,7 +31,7 @@
 // stays valid, but no command acts on them yet: embed.workers, search.list_weights.exact,
 // search.list_weights.memory, search.phrase_boost, search.exact_list, search.synonyms,
 // search.spell, search.supersede_penalty, search.stores (store refs: name, alias, name@path or
-// global), output.context_budget, output.expand, log.corpus_rev, [stale], [eval], [prior].
+// global), output.context_budget, output.expand, log.corpus_rev, [stale], eval.holdout, [prior].
 // embed.dim and embed.int8 change what the index holds, so a value other than the default is
 // rejected instead of being ignored.
 package config

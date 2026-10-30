@@ -124,11 +124,11 @@ func (d *deps) migrateScope(cmd *cobra.Command, all bool) ([]migrateItem, error)
 	case !all && !ref.IsZero():
 		// NAME, NAME@LOC, PATH or an alias: resolved like every other command (resolveRef), but
 		// reading kb.toml leniently, since an older location file is what this command upgrades.
-		ws, err := d.migrateRefStore(cmd, ref, root, global, env)
+		rr, err := d.resolveStoreFlag(cmd, true, rawLocation)
 		if err != nil {
 			return nil, err
 		}
-		return d.withCacheItem(append(locationItems(ws.Location), storeItems(ws)...)), nil
+		return d.withCacheItem(append(locationItems(rr.ws.Location), storeItems(rr.ws)...)), nil
 	}
 	loc, err := workspace.ResolveLocation(root, global, env)
 	if err != nil {
@@ -171,11 +171,11 @@ func (d *deps) migrateScope(cmd *cobra.Command, all bool) ([]migrateItem, error)
 			}
 		}
 	} else { // no --store, or global: the location's default_store
-		info, err := rawLocationInfo(loc)
+		lf, err := rawLocation(loc.FilePath)
 		if err != nil {
 			return nil, err
 		}
-		ws, err := loc.Store(info.DefaultStore)
+		ws, err := loc.Store(lf.DefaultStore)
 		if err != nil {
 			return nil, err
 		}
@@ -192,44 +192,6 @@ func (d *deps) withCacheItem(items []migrateItem) []migrateItem {
 		}
 	}
 	return items
-}
-
-// migrateRefStore resolves a --store ref that is not "global" with resolveRef's rules: NAME@LOC
-// and PATH name their own location (so not with --root/--global); a bare NAME is a store of the
-// current location, else an alias (not with --root/--global, where only stores count).
-func (d *deps) migrateRefStore(cmd *cobra.Command, ref workspace.Ref, root string, global bool, env workspace.Env) (*workspace.Workspace, error) {
-	r := d.resolver(cmd)
-	r.Read = rawLocationInfo
-	explicit := root != "" || global
-	if ref.At != "" || ref.Path != "" {
-		if explicit {
-			return nil, usageErr("--store %s names its own location, so it cannot be combined with --root or --global", ref)
-		}
-		res, err := r.Resolve(ref, nil, workspace.LocationInfo{})
-		if err != nil {
-			return nil, err
-		}
-		return res.Workspace, nil
-	}
-	r.LocalOnly = explicit
-	cur, curErr := workspace.ResolveLocation(root, global, env)
-	var info workspace.LocationInfo
-	if curErr == nil {
-		if info, curErr = rawLocationInfo(cur); curErr != nil && errs.KindOf(curErr) != errs.NotFound {
-			return nil, curErr // a kb.toml that exists but does not parse
-		}
-	}
-	if curErr != nil {
-		cur = nil
-	}
-	res, err := r.Resolve(ref, cur, info)
-	if err != nil {
-		if curErr != nil && errors.Is(err, workspace.ErrUnknownRef) {
-			return nil, curErr // no location, no such global alias: say so
-		}
-		return nil, err
-	}
-	return res.Workspace, nil
 }
 
 func locationItems(loc *workspace.Location) []migrateItem {
@@ -252,28 +214,28 @@ func existing(it migrateItem) migrateItem {
 	return it
 }
 
-// rawLocationInfo is workspace.Resolver.Read for kb migrate: default_store and [aliases] of a
-// kb.toml, read without the version check config.ReadLocation makes (an older location file must
-// not stop the command that upgrades it). No kb.toml is NotFound, as the Resolver expects.
-func rawLocationInfo(l *workspace.Location) (workspace.LocationInfo, error) {
-	data, err := os.ReadFile(l.FilePath)
+// rawLocation is the locationReader of kb migrate: default_store and [aliases] of a kb.toml,
+// read without the version check config.ReadLocation makes (an older location file must not stop
+// the command that upgrades it). No kb.toml is NotFound, as the Resolver expects.
+func rawLocation(path string) (config.Location, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return workspace.LocationInfo{}, errs.Wrap(err, errs.NotFound, "cli.migrate", "no kb location file at %s; run kb init", l.FilePath).With("path", l.FilePath)
+			return config.Location{}, errs.Wrap(err, errs.NotFound, "cli.migrate", "no kb location file at %s; run kb init", path).With("path", path)
 		}
-		return workspace.LocationInfo{}, usageErr("cannot read %s: %v", l.FilePath, err)
+		return config.Location{}, usageErr("cannot read %s: %v", path, err)
 	}
 	var head struct {
 		DefaultStore string            `toml:"default_store"`
 		Aliases      map[string]string `toml:"aliases"`
 	}
 	if _, err := toml.Decode(string(data), &head); err != nil {
-		return workspace.LocationInfo{}, usageErr("%s: %v", l.FilePath, err)
+		return config.Location{}, usageErr("%s: %v", path, err)
 	}
 	if head.DefaultStore == "" {
 		head.DefaultStore = config.DefaultStoreName
 	}
-	return workspace.LocationInfo{DefaultStore: head.DefaultStore, Aliases: head.Aliases}, nil
+	return config.Location{DefaultStore: head.DefaultStore, Aliases: head.Aliases}, nil
 }
 
 // migrateRow is one file in the status output; the JSON shape is a stable contract.
