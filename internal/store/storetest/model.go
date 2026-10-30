@@ -21,7 +21,9 @@ var ModelSeeds = [][]byte{
 // RunModel applies ops to st and to a map model (path → chunk text hashes). Each op is two bytes:
 // op%4 == 3 deletes entry op/4%4, anything else replaces that entry with n%4 chunks whose text
 // depends on n. After every op the entries, their chunk hashes and (for dim > 0) their stored
-// vectors read back from st must equal the model. The backend asserts the row-set invariant itself.
+// vectors read back from st must equal the model, and each entry's word (main FTS index) and
+// identifier (exact index) find exactly that entry's chunks: no index keeps a stale row or misses
+// a live one. The backend asserts the row-set invariant itself.
 // st must be fresh or reset; RunModel resets it first and leaves embed_meta recorded for dim.
 func RunModel(t testing.TB, st store.Store, dim int, ops []byte) {
 	t.Helper()
@@ -43,7 +45,7 @@ func RunModel(t testing.TB, st store.Store, dim int, ops []byte) {
 		} else {
 			texts := make([]string, int(n%4))
 			for j := range texts {
-				texts[j] = fmt.Sprintf("modelword%d v%d c%d", op/4%4, n, j)
+				texts[j] = fmt.Sprintf("modelword%d v%d c%d %s", op/4%4, n, j, modelIdent(int(op/4%4)))
 			}
 			cs := chunks(dim, texts...)
 			if _, err := st.ReplaceEntry(ctx, entryIn(path), cs); err != nil {
@@ -58,6 +60,9 @@ func RunModel(t testing.TB, st store.Store, dim int, ops []byte) {
 		checkModel(t, st, dim, model, i/2)
 	}
 }
+
+// modelIdent is entry i's identifier: one token in the exact index, three words in the main one.
+func modelIdent(i int) string { return fmt.Sprintf("model_ident.%d", i) }
 
 func checkModel(t testing.TB, st store.Store, dim int, model map[string][]string, step int) {
 	t.Helper()
@@ -95,6 +100,22 @@ func checkModel(t testing.TB, st store.Store, dim int, model map[string][]string
 		}
 		if len(embs) != wantVecs {
 			t.Fatalf("step %d: %s has %d vectors, want %d", step, e.Path, len(embs), wantVecs)
+		}
+	}
+	// Every entry slot, live or not: a deleted or emptied entry must leave no index rows.
+	for i := 0; i < 4; i++ {
+		path := fmt.Sprintf("e%d.md", i)
+		var want []int64
+		for _, e := range es {
+			if e.Path == path {
+				want = chunkIDs(t, st, e.ID)
+			}
+		}
+		if got := ftsIDs(t, st, store.OpAnd, "", fmt.Sprintf("modelword%d", i)); !slices.Equal(got, want) {
+			t.Fatalf("step %d: FTS modelword%d = %v, want %s's chunks %v", step, i, got, path, want)
+		}
+		if got := exactIDs(t, st, modelIdent(i)); !slices.Equal(got, want) {
+			t.Fatalf("step %d: exact %s = %v, want %s's chunks %v", step, modelIdent(i), got, path, want)
 		}
 	}
 }

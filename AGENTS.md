@@ -37,7 +37,7 @@ It is mid-way through a v2 rework.
 | Doc | What it holds |
 |---|---|
 | `docs/PLAN.md` | v2 phased work plan (items, files, tests, accept criteria) and model/concurrency assignments: who does what, what can run in parallel |
-| `docs/TESTING.md` | test layers, assertions, table tests, fuzzing, coverage gates, build tags |
+| `docs/TESTING.md` | test layers, assertions, table tests, fuzzing, coverage gates, build tags, and E2E journeys (L7, §11: cross-command user flows against the real binary; planned, PLAN Phase 7) |
 | `docs/CODING_STYLE.md` | errors, packages, naming, SQL, logging, CLI output, review checklist |
 | `docs/DEFAULTS.md` | **local only, git-excluded, never commit.** Judgment calls pending owner review |
 | `README.md` | user-facing install and usage |

@@ -34,6 +34,10 @@ func newExplainCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"each reciprocal-rank-fusion term weight/(rrf_k+rank). The header shows the FTS\n" +
 			"expression used, whether the OR retry fired (the AND query matched nothing), and the\n" +
 			"settings hash.\n\n" +
+			"A query holding an identifier (foo_bar, pkg.Func, --flag, path/to, camelCase) also runs\n" +
+			"the exact-identifier list, which matches those identifiers only as whole tokens: its\n" +
+			"expression is shown as \"exact:\" and each candidate in it gets an exact rank, bm25 score\n" +
+			"and RRF term (weight search.list_weights.exact; off with search.exact_list = false).\n\n" +
 			"The per-column scores are diagnostic. FTS5 adds the column-weighted term frequencies\n" +
 			"before saturating them, so the columns do not add up to the total: the total lies\n" +
 			"between the largest column and their sum. A chunk's text starts with a context line\n" +
@@ -138,7 +142,9 @@ func runExplain(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts expl
 	return nil
 }
 
-// renderExplanation is the human form: a three-line header, then one block per candidate.
+// renderExplanation is the human form: a header (with an "exact:" line only when the exact list
+// ran or is turned off), then one block per candidate (an "exact" line only for a chunk in that
+// list).
 func renderExplanation(ex *search.Explanation) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "explain %q · mode %s · k %d · settings %s\n", ex.Query, ex.Mode, ex.K, shortHash(ex.SettingsHash))
@@ -154,10 +160,22 @@ func renderExplanation(ex *search.Explanation) string {
 	default:
 		fmt.Fprintf(&b, "fts: match %s · AND\n", ex.FTS.Match)
 	}
+	switch {
+	case ex.Exact != nil && ex.Exact.OrFallback:
+		fmt.Fprintf(&b, "exact: match %s · OR retry fired · weight %s\n", ex.Exact.Match, num(s.ExactWeight))
+	case ex.Exact != nil:
+		fmt.Fprintf(&b, "exact: match %s · AND · weight %s\n", ex.Exact.Match, num(s.ExactWeight))
+	case !s.ExactList:
+		b.WriteString("exact: off (search.exact_list = false)\n")
+	}
 	if ex.FallbackReason != "" {
 		fmt.Fprintf(&b, "fallback: %s\n", ex.FallbackReason)
 	}
-	fmt.Fprintf(&b, "lists: fts %d rows · vec %d rows · %d candidates\n", ex.NFTS, ex.NVec, len(ex.Candidates))
+	exactRows := ""
+	if ex.Exact != nil {
+		exactRows = fmt.Sprintf(" · exact %d rows", ex.NExact)
+	}
+	fmt.Fprintf(&b, "lists: fts %d rows · vec %d rows%s · %d candidates\n", ex.NFTS, ex.NVec, exactRows, len(ex.Candidates))
 	if len(ex.Candidates) == 0 {
 		b.WriteString("no candidates\n")
 		return b.String()
@@ -187,6 +205,9 @@ func renderExplanation(ex *search.Explanation) string {
 			fmt.Fprintf(&b, "    vec  rank %d  distance %.4f\n", h.Vec.Rank, h.Vec.Distance)
 		} else {
 			b.WriteString("    vec  -\n")
+		}
+		if h.Exact != nil {
+			fmt.Fprintf(&b, "    exact rank %d  bm25 %.4f\n", h.Exact.Rank, h.Exact.BM25)
 		}
 		terms := make([]string, len(h.RRF))
 		for i, t := range h.RRF {

@@ -23,6 +23,13 @@
 //   - Gold the index no longer has (a deleted entry, a renamed heading) is dropped from scoring and
 //     counted as gold_not_in_index; a query left with none is counted as dropped.
 //
+// Baselines (baseline.go, compare.go): SaveBaseline writes a Report with its settings, hash,
+// embed model, entry count and kb version to <store>/eval/<name>.json (schema BaselineVersion,
+// refused when different; the files are derived and git-ignored, so they are rewritten rather
+// than migrated). Compare pairs two runs' queries by normalised text and, per metric, reports
+// the mean delta with a paired bootstrap interval, wins/losses/ties and the exact two-sided
+// sign-test p-value over the wins and losses.
+//
 // Invariants: every Score has rr and nDCG in [0, 1] and hit ⇔ nDCG > 0; a gold item earns gain
 // once; the same log, index, settings and seed give the same Report, intervals included.
 package eval

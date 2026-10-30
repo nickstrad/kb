@@ -24,6 +24,17 @@ gold apart (`Query.OtherUseful/OtherOpens`, never a negative either) and `Report
 it; it is never checked against this index, where a same-named path is another entry.
 `eval.Replayable` decides whether the embedder must load.
 
+**Baselines (2.4, W9).** `eval.Baseline` (baseline.go) = version 1 + name, kb version, date, embed
+model, entry count, settings JSON+hash and the whole `Report` (per_query first_gold_rank, other_store).
+It lives at `<store>/eval/<name>.json` (gitignored by init's `stores/*/eval/`), written atomically;
+other versions are refused (Conflict, "rewrite with --save-baseline"), not migrated: it is derived.
+`eval.Compare(base, cur)` pairs queries by `Query` key per variant (chunk/entry/opens), per metric
+gives delta + paired bootstrap CI (reuses `Bootstrap` on the differences), wins/losses/ties
+(|diff| <= 1e-9 ties) and `SignTest` (exact two-sided binomial, log-space). Different k is refused;
+embed model, entry count, other-store, fallback differences are warnings. The CLI takes NAME as an
+optional positional (`--save-baseline|--compare [NAME]`); `--set` goes through `config.Apply` before
+`NewSettings`. A fallback run is never saved. 2.6's sweep can build `Baseline`s in memory and reuse Compare.
+
 **Why it matters.** 2.4 (baselines) needs `Result.Chunk.FirstRank` per query; 2.6 (sweep) needs a
 deterministic query order (`Query.Key`, sorted) to hash for the holdout and a Searcher to swap.
 
@@ -31,5 +42,10 @@ deterministic query order (`Query.Key`, sorted) to hash for the holdout and a Se
 apply to cfg before `search.NewSettings` in cli/eval.go, as explain does. Tests that need logged
 verdicts or opens should read them with `Judged`, not raw SQL. Mutation survivors in
 `ScoreRanking`'s postconditions, assertion messages and `discount`'s numerator are equivalent.
+
+`Comparison.Warnings` are data (in `--json`); the CLI prints them on stderr, never in the stdout
+table (W9 pass, CODING_STYLE §9). A per-query difference of exactly ±tieEps (1e-9) is a tie
+(`TestMetricDiffTieBoundary`). `kb eval --set search.exact_list=false --compare` is the tested way to
+measure the exact list (`TestEvalCompareExactListOff`).
 
 **Seen in:** internal/eval, internal/store/judged.go, internal/store/sqlite/judged.go, internal/cli/eval.go · 2026-10-30

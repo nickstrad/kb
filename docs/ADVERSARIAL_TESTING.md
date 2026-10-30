@@ -60,9 +60,20 @@ go run ./.agent/scripts/adversarial/harness                 # all scenarios, ~5 
 go run ./.agent/scripts/adversarial/harness -run 'concurrent|corrupt' -keep
 ```
 
-Scenarios (in `harness/scenarios.go`): `exit-codes`, `fts-roundtrip`, `no-model-search`, `no-model-index`, `hostile-queries`, `markdown-edges`, `front-matter-hostile`, `path-traversal`, `feedback-hostile`, `concurrent-fresh-db`, `sigint-mid-reindex`, `corrupt-db`, `newer-schema`, `workspace-discovery` (the only scenario that runs kb without `--root`). Every kb run is checked for a Go panic trace, an exit code outside {0,1,2} (exit 3, an internal error, is a contract code but always a finding under hostile input), a hang over 60 s, and a model download.
+Scenarios (in `harness/*_scenarios.go` and `scenarios.go`; `harness -list` prints all 26 with what each attacks), among them `exit-codes`, `fts-roundtrip`, `no-model-search`, `no-model-index`, `hostile-queries`, `markdown-edges`, `front-matter-hostile`, `path-traversal`, `feedback-hostile`, `concurrent-fresh-db`, `sigint-mid-reindex`, `corrupt-db`, `newer-schema`, `workspace-discovery` (the only scenario that runs kb without `--root`). Every kb run is checked for a Go panic trace, an exit code outside {0,1,2} (exit 3, an internal error, is a contract code but always a finding under hostile input), a hang over 60 s, and a model download.
 
 **Reading the result.** `PASS`/`FAIL` per scenario. Each `✗` line carries the command, exit code, stderr and stdout as evidence. `·` lines are notes: observed behaviour that is not a contract violation but may need a decision (for example, that a symlink under `data/` is followed). A FAIL is either a product bug or a stale expectation in the scenario. Read the evidence and the code before filing it.
+
+**Harness vs E2E.** Both run the real binary in temp roots, but they answer different questions, and neither copies the other's cases.
+
+| | Harness (this section) | E2E journeys (TESTING.md §11, planned: PLAN E1–E5) |
+|---|---|---|
+| Question | Does kb keep its contracts (exit codes 0/1/2/3, no panic, no hang, no download) under hostile conditions? | Do the commands work together as README and `kb help` say? |
+| Inputs | Hostile, malformed, edge: concurrent writers, SIGINT, corrupt and newer-schema files, path traversal, odd queries | Realistic: a small corpus, the documented flags, the documented recovery steps |
+| Checks | Invariants plus targeted expectations, written in Go | Whole transcripts (stdout, stderr, exit code, file effects) that read as documentation |
+| Lives in | `.agent/scripts/adversarial/harness/` (agent tooling, run at wave end and nightly) | `internal/e2e/` (product tests, every PR) |
+
+Put a new probe in the harness if its point is to *break* an assumption, and in a journey if its point is that a *documented flow works*. When a harness failure is fixed, the regression test goes to the owning layer (§5), not into a journey. When a journey exposes a hostile case, add a harness scenario instead of extending the journey.
 
 ### 3.3 Test-validation helpers
 

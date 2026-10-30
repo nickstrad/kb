@@ -22,6 +22,8 @@
 
 **How to apply.** Reuse `dumpFixture`/`ownedTables` in internal/store/sqlite (migrations_test.go,
 artefact.go). Schema comparisons leave out tables a virtual table owns (`ownedTables`: shadow, or
-`<vtab>_` prefix). A new artefact with a virtual table needs the same treatment.
+an ordinary table with a `<vtab>_` prefix). A virtual table is never owned, even with such a name:
+`chunks_exact_vocab` (v6) was silently dropped from the fixture and from Verify's schema until
+ownedTables required `type = 'table'`. A new artefact with a virtual table needs the same treatment.
 
 **Seen in:** internal/store/sqlite/migrations_test.go, internal/store/sqlite/artefact.go · 2026-10-30

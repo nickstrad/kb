@@ -223,11 +223,31 @@ func TestOverview(t *testing.T) {
 func TestSources(t *testing.T) {
 	db := openFixture(t)
 	checkQuery(t, db, "sources", Filter{},
-		[]string{"source", "results", "share_pct", "judged", "useful", "useful_rate_pct", "avg_rank"},
+		[]string{"source", "results", "share_pct", "judged", "useful", "useful_rate_pct", "avg_rank", "with_exact"},
 		[][]any{
-			{"both", int64(4), 36.4, int64(3), int64(1), 33.3, 1.0},
-			{"fts-only", int64(4), 36.4, int64(0), int64(0), nil, 1.75},
-			{"vec-only", int64(3), 27.3, int64(1), int64(1), 100.0, 2.67},
+			{"both", int64(4), 36.4, int64(3), int64(1), 33.3, 1.0, int64(0)},
+			{"fts-only", int64(4), 36.4, int64(0), int64(0), nil, 1.75, int64(0)},
+			{"vec-only", int64(3), 27.3, int64(1), int64(1), 100.0, 2.67, int64(0)},
+		})
+}
+
+// TestSourcesExact: an exact-list rank (schema v6) marks a row with_exact, and a row only the
+// exact list returned is 'exact-only'. Search 7 (hybrid) gains an exact rank on its 'both' row
+// (rank 1) and a fourth, exact-only row at rank 4: both keeps 4 rows with 1 with_exact, and
+// exact-only is 1 row of 12 (8.3%), never judged, at rank 4. The other shares become
+// 4/12 = 33.3 and 3/12 = 25.0.
+func TestSourcesExact(t *testing.T) {
+	db := openFixture(t, `
+		UPDATE search_results SET exact_rank = 1, exact_score = -3.0 WHERE search_id = 7 AND rank = 1;
+		INSERT INTO search_results (search_id, rank, chunk_id, entry_path, heading, exact_rank, exact_score, rrf_score)
+		VALUES (7, 4, 110, 'kb-toml.md', 'Keys', 1, -2.0, 0.016);`)
+	checkQuery(t, db, "sources", Filter{},
+		[]string{"source", "results", "share_pct", "judged", "useful", "useful_rate_pct", "avg_rank", "with_exact"},
+		[][]any{
+			{"both", int64(4), 33.3, int64(3), int64(1), 33.3, 1.0, int64(1)},
+			{"fts-only", int64(4), 33.3, int64(0), int64(0), nil, 1.75, int64(0)},
+			{"vec-only", int64(3), 25.0, int64(1), int64(1), 100.0, 2.67, int64(0)},
+			{"exact-only", int64(1), 8.3, int64(0), int64(0), nil, 4.0, int64(1)},
 		})
 }
 
@@ -383,11 +403,11 @@ func TestWholeSearchVerdict(t *testing.T) {
 		})
 
 	checkQuery(t, db, "sources", Filter{},
-		[]string{"source", "results", "share_pct", "judged", "useful", "useful_rate_pct", "avg_rank"},
+		[]string{"source", "results", "share_pct", "judged", "useful", "useful_rate_pct", "avg_rank", "with_exact"},
 		[][]any{
-			{"both", int64(4), 36.4, int64(3), int64(1), 33.3, 1.0},
-			{"fts-only", int64(4), 36.4, int64(0), int64(0), nil, 1.75},
-			{"vec-only", int64(3), 27.3, int64(1), int64(1), 100.0, 2.67},
+			{"both", int64(4), 36.4, int64(3), int64(1), 33.3, 1.0, int64(0)},
+			{"fts-only", int64(4), 36.4, int64(0), int64(0), nil, 1.75, int64(0)},
+			{"vec-only", int64(3), 27.3, int64(1), int64(1), 100.0, 2.67, int64(0)},
 		})
 
 	checkQuery(t, db, "trend", Filter{},
@@ -514,7 +534,8 @@ func TestSettingsEmpty(t *testing.T) {
 // one search_opens row, per mode, and a search with several opens still counts once.
 //
 // None opened (the base fixture): 0.0 in every mode. Some: opens on searches 1 (two entries) and 2
-// make hybrid 2/5 = 40.0, fts 0/2 = 0.0. All: every search opened, 100.0 everywhere.
+// (one path from this store and from another) make hybrid 2/5 = 40.0, fts 0/2 = 0.0. All: every
+// search opened (another store's entry), 100.0 everywhere.
 func TestOverviewOpenedPct(t *testing.T) {
 	pick := func(t *testing.T, db *DB) map[string]any {
 		t.Helper()
@@ -538,16 +559,17 @@ func TestOverviewOpenedPct(t *testing.T) {
 		}
 	})
 	t.Run("some", func(t *testing.T) {
-		got := pick(t, openFixture(t, `INSERT INTO search_opens VALUES
-			(1, 'postgres.md', '2026-09-07T09:10:00Z'), (1, 'droplet.md', '2026-09-07T09:11:00Z'),
-			(2, 'postgres.md', '2026-09-08T10:10:00Z');`))
+		got := pick(t, openFixture(t, `INSERT INTO search_opens (search_id, store, entry_path, ts) VALUES
+			(1, NULL, 'postgres.md', '2026-09-07T09:10:00Z'), (1, NULL, 'droplet.md', '2026-09-07T09:11:00Z'),
+			(2, NULL, 'postgres.md', '2026-09-08T10:10:00Z'),
+			(2, 'notes@/elsewhere', 'postgres.md', '2026-09-08T10:11:00Z');`))
 		if got["hybrid"] != 40.0 || got["fts"] != 0.0 {
 			t.Errorf("opened_pct = %v, want hybrid 40.0 and fts 0.0", got)
 		}
 	})
 	t.Run("all", func(t *testing.T) {
 		got := pick(t, openFixture(t, `INSERT INTO search_opens
-			SELECT id, 'x.md', ts FROM searches;`))
+			SELECT id, 'notes@/elsewhere', 'x.md', ts FROM searches;`))
 		for mode, v := range got {
 			if v != 100.0 {
 				t.Errorf("%s opened_pct = %v, want 100.0", mode, v)

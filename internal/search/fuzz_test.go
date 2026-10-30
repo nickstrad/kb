@@ -70,14 +70,14 @@ func FuzzFuse(f *testing.F) {
 		ftsIDs, vecIDs := rankedIDs(a), rankedIDs(b)
 		fts, vec := toFTS(ftsIDs), toVec(vecIDs)
 		p := fuseParams(rrfK, limit, wf, wv)
-		got := Fuse(fts, vec, p)
+		got := Fuse(fts, vec, nil, p)
 
 		// One list alone: the fused order is that list's order, cut at the limit, whatever the
 		// weight (with weight 0 every score ties and the rank decides).
-		if one := chunkIDs(Fuse(fts, nil, p)); !slices.Equal(one, ftsIDs[:min(len(ftsIDs), p.CandidateLimit)]) {
+		if one := chunkIDs(Fuse(fts, nil, nil, p)); !slices.Equal(one, ftsIDs[:min(len(ftsIDs), p.CandidateLimit)]) {
 			t.Fatalf("Fuse(fts, nil) = %v, want fts order %v", one, ftsIDs)
 		}
-		if one := chunkIDs(Fuse(nil, vec, p)); !slices.Equal(one, vecIDs[:min(len(vecIDs), p.CandidateLimit)]) {
+		if one := chunkIDs(Fuse(nil, vec, nil, p)); !slices.Equal(one, vecIDs[:min(len(vecIDs), p.CandidateLimit)]) {
 			t.Fatalf("Fuse(nil, vec) = %v, want vec order %v", one, vecIDs)
 		}
 
@@ -87,23 +87,48 @@ func FuzzFuse(f *testing.F) {
 			zero  func(*Params)
 			alone []Candidate
 		}{
-			{"vec weight 0", func(q *Params) { q.VecWeight = 0 }, Fuse(fts, nil, withLimit(p, 128))},
-			{"fts weight 0", func(q *Params) { q.FTSWeight = 0 }, Fuse(nil, vec, withLimit(p, 128))},
+			{"vec weight 0", func(q *Params) { q.VecWeight = 0 }, Fuse(fts, nil, nil, withLimit(p, 128))},
+			{"fts weight 0", func(q *Params) { q.FTSWeight = 0 }, Fuse(nil, vec, nil, withLimit(p, 128))},
 		} {
 			q := p
 			tc.zero(&q)
 			want := scores(tc.alone)
-			for _, c := range Fuse(fts, vec, q) {
+			for _, c := range Fuse(fts, vec, nil, q) {
 				if c.RRFScore != want[c.ChunkID] {
 					t.Fatalf("%s: chunk %d scores %v, the other list alone gives %v", tc.name, c.ChunkID, c.RRFScore, want[c.ChunkID])
 				}
 			}
 		}
 
+		// The exact list (here b reversed, with its own weight) is a third list like the others:
+		// alone it fuses in its own order; at weight 0 it adds chunks but no score; otherwise each
+		// chunk's score is its two-list score plus its exact term, summed in Fuse's order.
+		exactIDs := slices.Clone(vecIDs)
+		slices.Reverse(exactIDs)
+		exact := toFTS(exactIDs)
+		pe := withLimit(p, 192)
+		pe.ExactWeight = float64(wf^wv) / 8
+		if one := chunkIDs(Fuse(nil, nil, exact, p)); !slices.Equal(one, exactIDs[:min(len(exactIDs), p.CandidateLimit)]) {
+			t.Fatalf("Fuse(nil, nil, exact) = %v, want exact order %v", one, exactIDs)
+		}
+		two, third := scores(Fuse(fts, vec, nil, pe)), scores(Fuse(nil, nil, exact, pe))
+		for _, c := range Fuse(fts, vec, exact, pe) {
+			if want := two[c.ChunkID] + third[c.ChunkID]; c.RRFScore != want {
+				t.Fatalf("exact weight %v: chunk %d scores %v, want two-list %v + exact %v", pe.ExactWeight, c.ChunkID, c.RRFScore, two[c.ChunkID], third[c.ChunkID])
+			}
+		}
+		pz := pe
+		pz.ExactWeight = 0
+		for _, c := range Fuse(fts, vec, exact, pz) {
+			if c.RRFScore != two[c.ChunkID] {
+				t.Fatalf("exact weight 0: chunk %d scores %v, two lists give %v", c.ChunkID, c.RRFScore, two[c.ChunkID])
+			}
+		}
+
 		// Doubling both weights doubles every score and keeps the order.
 		q := p
 		q.FTSWeight, q.VecWeight = 2*p.FTSWeight, 2*p.VecWeight
-		doubled := Fuse(fts, vec, q)
+		doubled := Fuse(fts, vec, nil, q)
 		if !slices.Equal(chunkIDs(doubled), chunkIDs(got)) {
 			t.Fatalf("doubling the weights reordered %v to %v", chunkIDs(got), chunkIDs(doubled))
 		}
@@ -117,9 +142,9 @@ func FuzzFuse(f *testing.F) {
 		// anything.
 		if p.RRFK < config.MaxRRFK {
 			q := withLimit(p, 128)
-			before := scores(Fuse(fts, vec, q))
+			before := scores(Fuse(fts, vec, nil, q))
 			q.RRFK++
-			for _, c := range Fuse(fts, vec, q) {
+			for _, c := range Fuse(fts, vec, nil, q) {
 				if c.RRFScore > before[c.ChunkID] || (before[c.ChunkID] > 0 && c.RRFScore == before[c.ChunkID]) {
 					t.Fatalf("rrf_k %d→%d: chunk %d %v → %v", p.RRFK, q.RRFK, c.ChunkID, before[c.ChunkID], c.RRFScore)
 				}

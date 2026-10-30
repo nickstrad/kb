@@ -15,7 +15,8 @@ parameters (`bm25(chunks_fts, ?, ?, ?)`), which gives the same doubles as the ol
 config bounds: list_limit and vec_overfetch ≤ 4096 (sqlite-vec's `SQLITE_VEC_VEC0_K_MAX`; 4097 is a
 SQL error, pinned by `TestListLimitParamBoundary`), candidate_limit ≤ 8192, rrf_k ≤ 100000,
 weights ≤ 1000, so no config value can produce an Inf score (which would make `--json` exit 3).
-list_weights.exact/memory stay reserved: there is no such list yet.
+list_weights.exact and exact_list are wired (PLAN 4.5, exact-identifier-list.md); memory and
+phrase_boost (4.6) stay reserved.
 
 **Why it matters.** Anything that changes ranking must show up as a diff of the golden. The golden
 was written by the pre-2.1 code and passed unchanged after, and `TestSearchGoldenDefaults` also

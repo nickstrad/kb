@@ -1,0 +1,12 @@
+levels=[3 3 3] tokens=55
+[1] data/alpha.md › Logs · updated 2026-03-01
+Alpha › Logs
+Rotate with logrotate.
+
+[2] ops:data/beta.md › Run
+Beta › Run
+Restart the service.
+
+[3] data/alpha.md › Panes · updated 2026-03-01
+Alpha › Panes
+Split with %.

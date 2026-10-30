@@ -65,6 +65,10 @@ type Skipped struct {
 	Err  error
 }
 
+// OpSearchStores is the Op of the error SearchStores wraps an extra store's failure in, whose
+// message starts "store REF: ": a caller that names the store itself shows the wrapped cause.
+const OpSearchStores = "search.SearchStores"
+
 // SearchStores runs req on every part concurrently and merges the results. parts[0] is the
 // primary: its failure fails the whole search and cancels the others, because it is the store the
 // user is working in and the one that logs. An extra store that fails is reported in Skipped and
@@ -128,7 +132,7 @@ func fanOut(ctx context.Context, parts []Part, req Request) []PartResult {
 			out, err := p.Searcher.Search(ctx, preq)
 			if err != nil {
 				if p.Ref != "" {
-					err = errs.Wrap(err, errs.KindOf(err), "search.SearchStores", "store %s: %v", p.Ref, err).With("store", p.Ref)
+					err = errs.Wrap(err, errs.KindOf(err), OpSearchStores, "store %s: %v", p.Ref, err).With("store", p.Ref)
 				}
 				if i == 0 {
 					cancel()
@@ -165,7 +169,8 @@ type merged struct {
 
 // Merge merges the stores' fused lists (outs[i] is parts[i]'s outcome; nil for a store that
 // failed, never for the primary) into one Outcome, as the package doc describes. The primary's
-// outcome supplies the mode, settings, trace and k; NFTS and NVec are summed over the stores.
+// outcome supplies the mode, settings, trace and k; NFTS, NVec and NExact are summed over the
+// stores.
 // Every merged candidate carries the canonical ref of its store in Store ("" = primary) and the
 // merged score in RRFScore; its ranks and raw scores are that store's.
 func Merge(parts []Part, outs []*Outcome) *Outcome {
@@ -177,13 +182,13 @@ func Merge(parts []Part, outs []*Outcome) *Outcome {
 
 	byKey := map[mergeKey]*merged{}
 	var keys []*merged
-	nfts, nvec := 0, 0
+	nfts, nvec, nexact := 0, 0, 0
 	for pos, i := range order {
 		out := outs[i]
 		if out == nil {
 			continue
 		}
-		nfts, nvec = nfts+out.NFTS, nvec+out.NVec
+		nfts, nvec, nexact = nfts+out.NFTS, nvec+out.NVec, nexact+out.NExact
 		for r, c := range out.Candidates {
 			if c.EntryPath == "" { // no entry row (removed since): it cannot be shown or capped
 				continue
@@ -230,7 +235,7 @@ func Merge(parts []Part, outs []*Outcome) *Outcome {
 
 	out := *primary
 	out.Candidates, out.Returned = cands, returned
-	out.NFTS, out.NVec = nfts, nvec
+	out.NFTS, out.NVec, out.NExact = nfts, nvec, nexact
 	out.Result = resultOf(primary.Result.Query, primary.Mode, returned, func(ref string) string { return labelOf[ref] })
 	return &out
 }

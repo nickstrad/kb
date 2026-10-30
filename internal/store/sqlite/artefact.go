@@ -233,12 +233,13 @@ func schemaOf(ctx context.Context, db queryer) ([]string, error) {
 }
 
 // ownedTables names the tables a virtual table made for itself: those SQLite marks as shadow
-// tables, plus "<vtab>_…" tables of a virtual table that does not mark them (sqlite-vec's
-// chunks_vec_vector_chunks00). CREATE VIRTUAL TABLE recreates them, so schemas leave them out.
+// tables, plus ordinary "<vtab>_…" tables of a virtual table that does not mark them (sqlite-vec's
+// chunks_vec_vector_chunks00). CREATE VIRTUAL TABLE recreates them, so schemas leave them out. A
+// virtual table is never owned, even with such a name: chunks_exact_vocab is kb's own CREATE.
 func ownedTables(ctx context.Context, db queryer) (map[string]bool, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT t.name FROM pragma_table_list t WHERE t.schema = 'main' AND (t.type = 'shadow' OR EXISTS (
-		  SELECT 1 FROM pragma_table_list v WHERE v.schema = 'main' AND v.type = 'virtual' AND substr(t.name, 1, length(v.name) + 1) = v.name || '_'))`)
+		SELECT t.name FROM pragma_table_list t WHERE t.schema = 'main' AND (t.type = 'shadow' OR (t.type = 'table' AND EXISTS (
+		  SELECT 1 FROM pragma_table_list v WHERE v.schema = 'main' AND v.type = 'virtual' AND substr(t.name, 1, length(v.name) + 1) = v.name || '_')))`)
 	if err != nil {
 		return nil, err
 	}

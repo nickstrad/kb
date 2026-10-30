@@ -118,8 +118,8 @@ func TestArtefactVerify(t *testing.T) {
 			execAll(t, rawDB(t, path), "CREATE INDEX stray_idx ON entries(title)")
 		}, "unexpected: index stray_idx"},
 		{"missing table", func(t *testing.T, path string) {
-			execAll(t, rawDB(t, path), "DROP TABLE search_opens")
-		}, "missing or changed: table search_opens"},
+			execAll(t, rawDB(t, path), "DROP TABLE search_feedback")
+		}, "missing or changed: table search_feedback"},
 		{"changed column", func(t *testing.T, path string) {
 			execAll(t, rawDB(t, path), "ALTER TABLE searches ADD COLUMN extra TEXT")
 		}, "missing or changed: table searches"},

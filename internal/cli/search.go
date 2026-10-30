@@ -33,6 +33,7 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 		caller string
 		budget int
 		stores string
+		expand string
 	)
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -41,6 +42,11 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"rank fusion. Exit code 2 means the embedder was unavailable (for example the model\n" +
 			"is not downloaded: run kb model pull): hybrid falls back to FTS; vec fails without\n" +
 			"results. Search never downloads a model. Agents and scripts should parse --json.\n\n" +
+			"A query holding an identifier (foo_bar, pkg.Func, --flag, path/to, a:b, camelCase)\n" +
+			"also runs an exact-identifier list that matches it only as a whole token, so\n" +
+			"kb search reindex_test finds reindex_test, not \"reindex test\" (search.exact_list,\n" +
+			"weight search.list_weights.exact; kb explain shows it). Put a query that starts\n" +
+			"with - after the flags and --: kb search --json -- --embed-model.\n\n" +
 			"Output opens with \"search N · M hits\" (N is the search id, so it survives | head).\n" +
 			"Read a hit with kb show <path>; that read is recorded as an open of this search.\n" +
 			"Feedback is optional: kb feedback N <rank> --useful (or kb feedback N --none) judges\n" +
@@ -64,6 +70,7 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 				caller: caller,
 				budget: budget,
 				stores: stores,
+				expand: expand,
 				fanOut: cmd.Flags().Changed("stores"),
 			})
 		},
@@ -75,6 +82,7 @@ func newSearchCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&caller, "caller", "", "who is searching (default [agent] caller, else unknown)")
 	cmd.Flags().IntVar(&budget, "budget", 0, "cap the human output at about N tokens (ceil(chars/4)); 0 = unlimited (default [output] budget)")
 	cmd.Flags().StringVar(&stores, "stores", "", "also search these stores, comma-separated ('' = none, all = every store here; default [search] stores)")
+	cmd.Flags().StringVar(&expand, "expand", render.ExpandNone, "show each hit's whole section or entry instead of the chunk: none, section or entry (default [output] expand)")
 	return cmd
 }
 
@@ -88,6 +96,7 @@ type searchOpts struct {
 	caller string
 	budget int
 	stores string // --stores as typed
+	expand string // --expand as typed
 	fanOut bool   // --stores was given (else [search] stores applies)
 }
 
@@ -106,6 +115,11 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	}
 	if opts.budget < 0 {
 		return usageErr("invalid --budget %d (want 0 or more tokens)", opts.budget)
+	}
+	switch opts.expand {
+	case render.ExpandNone, render.ExpandSection, render.ExpandEntry:
+	default:
+		return usageErr("invalid --expand %q (want none, section or entry)", opts.expand)
 	}
 	ctx := cmd.Context()
 
@@ -148,9 +162,7 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	if err != nil {
 		return err
 	}
-	for _, s := range mo.Skipped {
-		fmt.Fprintf(stderr, "warning: skipping store %s: %s\n", s.Part.Label, s.Err)
-	}
+	d.warnSkipped(cmd, mo.Skipped)
 	for _, s := range mo.Degraded {
 		fmt.Fprintf(stderr, "warning: store %s searched with FTS only: %s\n", s.Part.Label, s.Err)
 	}
@@ -161,9 +173,13 @@ func runSearch(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts searc
 	if !cmd.Flags().Changed("budget") {
 		budget = cfg.Output.Budget
 	}
+	expand := opts.expand
+	if !cmd.Flags().Changed("expand") {
+		expand = cfg.Output.Expand
+	}
 	lookups := extras.lookups()
 	lookups[""] = st
-	if err := printResults(ctx, stdout, lookups, out.Result, opts.asJSON, logged, budget); err != nil {
+	if err := printResults(ctx, stdout, lookups, out.Result, opts.asJSON, logged, budget, expand); err != nil {
 		return err
 	}
 	if !logged {
@@ -212,14 +228,25 @@ func callerFor(flag string, cfg config.Config) string {
 // leaves in Result.SearchID. An encoding failure (a NaN or Inf score from a model) is returned
 // as an Internal error with nothing written.
 //
+// expand is none, section or entry (--expand): the human form shows each hit's section or whole
+// entry as its text, once per entry or section, and --json adds an "expanded" field per hit.
+//
 // lookups holds each store's entry lookup by the hit's Store tag ("" = the primary store).
-func printResults(ctx context.Context, stdout io.Writer, lookups map[string]entryLookup, result *search.Result, asJSON, logged bool, budget int) error {
+func printResults(ctx context.Context, stdout io.Writer, lookups map[string]entryLookup, result *search.Result, asJSON, logged bool, budget int, expand string) error {
 	if asJSON {
 		var searchID *int64
 		var feedback *feedbackCommands
 		if logged {
 			searchID = &result.SearchID
 			feedback = newFeedbackCommands(result.SearchID, len(result.Hits))
+		}
+		exp, err := expandHits(ctx, lookups, result.Hits, expand)
+		if err != nil {
+			return err
+		}
+		jhits := make([]jsonHit, len(result.Hits))
+		for i, h := range result.Hits {
+			jhits[i] = jsonHit{Hit: h, Expanded: exp[i].Text}
 		}
 		// An Encoder rather than json.MarshalIndent so <, > and & in hit text (entries quote things
 		// like <entry>) stay readable instead of becoming \u003c and friends. Decoded values are
@@ -233,8 +260,8 @@ func printResults(ctx context.Context, stdout io.Writer, lookups map[string]entr
 			Feedback *feedbackCommands `json:"feedback"`
 			Query    string            `json:"query"`
 			Mode     string            `json:"mode"`
-			Hits     []search.Hit      `json:"hits"`
-		}{searchID, feedback, result.Query, result.Mode, result.Hits}); err != nil {
+			Hits     []jsonHit         `json:"hits"`
+		}{searchID, feedback, result.Query, result.Mode, jhits}); err != nil {
 			// json rejects NaN and Inf floats, and a model can produce them.
 			return errs.Wrap(err, errs.Internal, "cli.search", "encode result: %v", err)
 		}
@@ -259,6 +286,18 @@ func printResults(ctx context.Context, stdout io.Writer, lookups map[string]entr
 		if err != nil {
 			return err
 		}
+		exp, err := expandHits(ctx, lookups, result.Hits, expand)
+		if err != nil {
+			return err
+		}
+		keys := make([]string, len(rendered))
+		for i := range rendered {
+			rendered[i].Expanded = exp[i].Text
+			keys[i] = exp[i].Key
+		}
+		if expand != render.ExpandNone {
+			rendered = render.Dedupe(rendered, keys)
+		}
 		if text := render.Render(rendered, budget).Text; text != "" {
 			fmt.Fprintln(stdout, text)
 		}
@@ -269,6 +308,32 @@ func printResults(ctx context.Context, stdout io.Writer, lookups map[string]entr
 	}
 	fmt.Fprintf(stdout, "search_id=%d\n", result.SearchID)
 	return nil
+}
+
+// jsonHit is a --json hit: the search's fields plus, with --expand, the hit's section or entry.
+type jsonHit struct {
+	search.Hit
+	Expanded string `json:"expanded,omitempty"`
+}
+
+// warnSkipped warns about the extra stores whose search failed. An Internal error is a kb bug and
+// goes through skipExtra (an incident, with its id in the warning); any other kind is one plain
+// line. The reason is the error without the "store REF: " prefix, since the warning names the store.
+func (d *deps) warnSkipped(cmd *cobra.Command, skipped []search.Skipped) {
+	for _, s := range skipped {
+		reason := errs.Wrap(s.Err, errs.KindOf(s.Err), "cli.search", "%s", skipReason(s))
+		d.skipExtra(cmd, s.Part.Label, reason)
+	}
+}
+
+// skipReason is why a store was skipped, without the "store REF: " wrap SearchStores adds (the
+// warning already names the store): the wrapped cause's message when the error is that wrap.
+func skipReason(s search.Skipped) string {
+	var e *errs.Error
+	if errors.As(s.Err, &e) && e.Op == search.OpSearchStores && e.Err != nil {
+		return e.Err.Error()
+	}
+	return s.Err.Error()
 }
 
 // feedbackCommands is the --json "feedback" object: the exact commands that judge one search.
@@ -293,12 +358,9 @@ type entryLookup interface {
 	EntriesByPath(ctx context.Context, paths []string) (map[string]store.EntryRow, error)
 }
 
-// renderHits adds each hit's entry summary and updated date (search.Hit carries neither), read
-// from the hit's own store (lookups by Store tag) with one EntriesByPath per store. An entry
-// missing from its index (the file was removed since), or a store with no lookup, leaves those two
-// fields empty: the hit still renders from what the search returned. Any other failure, a cancel or
-// a database error, is returned: it is not "no such entry".
-func renderHits(ctx context.Context, lookups map[string]entryLookup, hits []search.Hit) ([]render.Hit, error) {
+// entryRows reads the entry rows of the hits, one EntriesByPath per store (by Store tag). A store
+// with no lookup has no rows; any lookup failure is returned.
+func entryRows(ctx context.Context, lookups map[string]entryLookup, hits []search.Hit) (map[string]map[string]store.EntryRow, error) {
 	paths := map[string][]string{}
 	for _, h := range hits {
 		paths[h.Store] = append(paths[h.Store], h.Path)
@@ -314,6 +376,19 @@ func renderHits(ctx context.Context, lookups map[string]entryLookup, hits []sear
 			return nil, err // a cancel or a database error is not "no such entry"
 		}
 		rows[tag] = got
+	}
+	return rows, nil
+}
+
+// renderHits adds each hit's entry summary and updated date (search.Hit carries neither), read
+// from the hit's own store (lookups by Store tag) with one EntriesByPath per store. An entry
+// missing from its index (the file was removed since), or a store with no lookup, leaves those two
+// fields empty: the hit still renders from what the search returned. Any other failure, a cancel or
+// a database error, is returned: it is not "no such entry".
+func renderHits(ctx context.Context, lookups map[string]entryLookup, hits []search.Hit) ([]render.Hit, error) {
+	rows, err := entryRows(ctx, lookups, hits)
+	if err != nil {
+		return nil, err
 	}
 	out := make([]render.Hit, len(hits))
 	for i, h := range hits {

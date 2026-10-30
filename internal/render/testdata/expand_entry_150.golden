@@ -1,0 +1,20 @@
+levels=[3 3] tokens=65
+[1] data/alpha.md › Logs · updated 2026-03-01 · also [3]
+Alpha: tmux notes
+
+Tmux keeps sessions alive.
+
+## Logs
+Rotate with logrotate.
+
+Set copytruncate.
+
+## Panes
+Split with %.
+
+## Logs
+Other file.
+
+[2] ops:data/beta.md › Run
+Beta › Run
+Restart the service.

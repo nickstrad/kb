@@ -37,9 +37,7 @@ type JudgedSearch struct {
 	None     bool      // a whole-search --none is on record
 	Opens    []string  // this store's entry paths read with kb show after the search, sorted
 	// OtherOpens are opens of other stores' entries (kb show REF:path), sorted by store, then
-	// path. search_opens has no store column (Q82), so an open's store is inferred from what the
-	// search returned at that path: this store's hit when there is one, else the other store's
-	// (the smallest ref when several other stores returned it).
+	// path. One path can be opened from this store and from another: it is then in both lists.
 	OtherOpens []StorePath
 }
 

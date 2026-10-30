@@ -9,4 +9,5 @@
 - **Coverage today:** `TestBatchSizeBoundary`, reuse tests in reindex; the cache acceptance test makes 0 model calls on the second embed.
 - **Next checks:** a benchmark (`go test -bench`, model tag) for 1k/10k chunks cold, warm and cached; transaction granularity (one per entry vs batched) against concurrent readers; progress output and resumability after an interruption.
 - **W7 (3.3b, 1.5):** the machine-wide cache is wired into every embedding command (`withEmbedCache`), so a second store or a re-created store reuses vectors by text; in-place sources (1.5) can multiply chunk counts by whole repositories. Still unmeasured.
-- **Last reviewed:** 2026-10-30 · W7 wave-end pass
+- **W9 wave-end pass:** indexing adds one `chunks_exact` insert per chunk (a second tokenizer pass over the same text); negligible next to ~33 ms/chunk of embedding, unmeasured on FTS-only stores where it may be most of the non-embedding cost.
+- **Last reviewed:** 2026-10-30 · W9 wave-end pass

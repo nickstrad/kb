@@ -96,7 +96,10 @@ const (
 // backend quotes and sanitises each one. Tag, when set, keeps only entries carrying it. Weights
 // are the per-column relevance weights; nil means DefaultBM25(). ChunkIDs, when non-nil, restricts
 // the query to those chunks (an empty non-nil slice matches nothing), so a caller can re-score a
-// known candidate set.
+// known candidate set. Exact runs the query against the identifier index instead of the main one:
+// it does not stem or fold diacritics and keeps `_ - . : /` inside a token, so `foo_bar`,
+// `pkg.Func`, `--flag` and `path/to` each match only themselves. It has no title column, so
+// Weights.Title is ignored there (chunk text starts with the title anyway).
 type FTSQuery struct {
 	Terms    []string
 	Op       FTSOp
@@ -104,6 +107,7 @@ type FTSQuery struct {
 	Limit    int
 	Weights  *BM25Weights
 	ChunkIDs []int64
+	Exact    bool
 }
 
 // BM25Weights are the column weights of the full-text score: chunk text, heading and entry
@@ -196,7 +200,7 @@ type SearchRecord struct {
 }
 
 // LoggedHit is one result or candidate row. A nil rank or score means the chunk was not in
-// that list. Store is "" for a hit of the store that logs the search and otherwise the canonical
+// that list (ExactRank/ExactScore: the identifier list, FTSQuery.Exact). Store is "" for a hit of the store that logs the search and otherwise the canonical
 // ref NAME@ABSROOT of the store that returned it (a cross-store search); ChunkID is that store's,
 // so a hit is identified by (Store, ChunkID).
 type LoggedHit struct {
@@ -208,6 +212,8 @@ type LoggedHit struct {
 	FTSScore    *float64
 	VecRank     *int
 	VecDistance *float64
+	ExactRank   *int
+	ExactScore  *float64
 	RRFScore    float64
 }
 

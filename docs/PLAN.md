@@ -704,6 +704,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **2.4 Baselines and variants**
 - Carried from W8 pass: `kb eval` replays the primary store only; gold on other stores' hits of a cross-store search is counted in `Report.OtherStore` (Q77) and never scored. A baseline should record `other_store` so `--compare` can warn when it changed; `--stores` for eval (replay with fan-out, scoring each store's gold against its own index) is a separate decision, not part of 2.4. `--set` applies before `NewSettings`, as explain does.
 - Model: Sonnet (baseline I/O plus sign test); review: Opus via testing-standards-pass (stats check)
+- Status: done (W9). 2.6 builds in-memory `Baseline`s and reuses `eval.Compare`/`SignTest`.
 - Files: `internal/eval/baseline.go`, `cli/eval.go`.
 - Steps:
   1. `--save-baseline [name]` writes `.kb/eval/<name>.json` (settings JSON, embed model, entry count, kb version, per-query first-gold rank, metrics).
@@ -726,6 +727,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **2.6 `kb eval --sweep`**
+- Carried from W9 pass: build each variant as an in-memory `eval.Baseline` and reuse `eval.Compare` (paired by normalised query, k must match) and `SignTest`; the variant's `--set` applies before `search.NewSettings`, as `runEval` does. Compare's `Warnings` are data: the CLI prints them on stderr (CODING_STYLE §9), never in the stdout table. `search.exact_list` and `search.list_weights.exact` are sweepable keys (`kb eval --set search.exact_list=false --compare` is the tested two-point case, `TestEvalCompareExactListOff`).
 - Model: Opus (holdout split, overfitting guards, vector reuse); review: Sonnet via testing-standards-pass
 - Files: `internal/eval/sweep.go`.
 - Steps:
@@ -825,6 +827,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Carried from W8 pass: a cross-store hit's chunks live in its own store; read them through that store (the `lookups` map by hit `Store` tag in `cli/search.go`, as `renderHits` does), never the primary's, and expand nothing for a hit whose store has no lookup.
 - Carried from W7 pass: one entry's chunks can appear as several hits, and a hit header repeats the chunk's own context line ("› (intro)" then "Alpha › (intro)"); dedupe per entry and drop the repeated context line when expanding.
 - Model: Sonnet (bounded rendering feature)
+- Status: done (W9)
 - Files: `render/expand.go`; `Index.Chunks`; `ChunkMeta` gains entry_id/ord/source_file.
 - Steps:
   1. `section`: the hit chunk plus ord±1 chunks of the same `source_file`, merged in ord order, skipping chunk 0.
@@ -837,6 +840,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **4.3 `kb context "<task>"`**
+- Carried from W9 pass: reuse `expandHits` (cli/expand.go: per-hit store lookup, `Index.Chunks` cached per entry, dedupe keys) and `render.Section`/`Entry`/`Dedupe`; expansion happens before the budget cut, so `context_budget` (reserved, `output.context_budget`) is the only limit on expanded text. Wire `output.context_budget` by the doc.go rule (move it to the wired list, a boundary row).
 - Model: Haiku (thin command composing 4.1/4.2, golden test); review: Sonnet via testing-standards-pass
 - Files: `cli/context.go`.
 - Steps:
@@ -863,6 +867,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **4.5 Identifier-aware exact list**
 - Carried from W8 pass (Q82): v6 should also `ALTER TABLE search_opens ADD COLUMN store TEXT` (NULL = this store) and have `RecordOpen` write `o.Store`; today `sqlite.Judged` infers an open's store from the search's results at that path (this store's hit wins, else the smallest other ref), and the `(search_id, entry_path)` key keeps one open per path, so `kb show notes:x.md` after `kb show x.md` is dropped. Widen the key to `(search_id, store, entry_path)` (a table rebuild) or document the ambiguity; update `Judged`, storetest `judgedLog` and stats' `opened_pct` join.
 - Model: Opus (backfilled migration, three write paths, third rank list); review: Opus via testing-standards-pass
+- Status: done (W9). 4.6 can plug phrase and NEAR tiers into the shared `lexicalList`.
 - Files: migration 5→6; `sqlite/entries.go` (maintain `chunks_exact` alongside `chunks_fts` in `ReplaceEntry`, `clearChunks`, `ResetIndex`); `sqlite/retrieve.go` (`FTSQuery.Exact`); `search` (third list when the query contains an identifier-like token matching `[_./:-]|[a-z][A-Z]|\d[a-z]`); logs `exact_rank/exact_score`; `explain` shows it.
 - Steps:
   1. The main table keeps `porter unicode61`, so `draw-visual` phrase matching (`SanitizeFTS` doc) is unchanged.
@@ -873,6 +878,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: tokenchars `-` makes `set -e` a single token `-e`. That is fine because this is a separate list.
 
 **4.6 Phrase/NEAR tier**
+- Carried from W9 pass: plug the phrase and NEAR tiers into `Searcher.lexicalList` (search.go), which already runs the main and the exact list with the AND→OR retry; `store.FTSQuery` has `Exact` for the identifier index (no title column, `Weights.Title` ignored there). Each tier is another RRF list: add its rank/score to `Candidate`, `fusedBefore` (after exact rank, before chunk id), `assertFused`, `loggedHits` (a v8+ log column, so it waits for a migration slot) and explain, as 4.5 did for exact. `search.phrase_boost` is still reserved.
 - Model: Sonnet (FTS tier assembly from precise spec); review: Opus via testing-standards-pass (ranking)
 - Files: `search/search.go` (FTS list assembly).
 - Steps:
@@ -900,6 +906,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: the front-matter parser is hand-rolled, so keep list syntax to the two forms it already supports.
 
 **5.2 Schema: edges, entry_tags, aliases**
+- Carried from W9 pass: the index now has five tables that move together (`chunks_exact` since v6): any new chunk write or delete path, and `ResetIndex`, must keep `chunks_exact` in step (`assertRowSets` checks chunks/fts/exact/vec; storetest's model checks exact rows through `FTS{Exact: true}`). v7 follows `index-v6.sql`; `search_opens` was rebuilt in v6 with a `store` column and the unique index `search_opens_key`, so v7 must not assume the old PRIMARY KEY.
 - Carried from W4 pass: `links.Extract` does not extract reference-style links (`[t][ref]` + `[ref]: path`) or `[[]](x.md)` (CommonMark makes the latter a link); decide whether edges need them before backfilling. `links.resolve` now asserts its target is a clean relative path (L1); FuzzExtract adds two metamorphic properties (leading blank line shifts lines; a fenced body yields nothing).
 - Carried from 5.1: inline front-matter lists split on every comma, so paths or aliases containing commas need the block form. Front-matter paths resolve against the entry file's own directory (`related: [x.md]` in `data/droplet/README.md` means `data/droplet/x.md`); document this. Use `links.Dedupe` before writing edges. A body link may resolve to a directory (`data/other`); decide whether that matches a directory entry.
 - Model: Opus (backfilled migration, reindex reset, tag semantics change); review: Opus via testing-standards-pass
@@ -927,6 +934,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **5.5 Synonyms**
+- Carried from W9 pass: expanded synonyms should go to the main FTS list only, not the exact-identifier list (`ExactTerms` takes the raw query; an identifier like `foo_bar` matches only itself by design). If a synonym is itself an identifier, decide whether it joins the exact terms (a DEFAULTS row).
 - Model: Sonnet (query expansion from clear spec)
 - Files: `search/synonyms.go`, `cli/search.go`.
 - Steps:
@@ -939,8 +947,9 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **5.6 `kb synonyms suggest` + spell correction**
+- Carried from W9 pass: `chunks_exact_vocab` (fts5vocab `row` over `chunks_exact`) already exists since v6 (moved from v7, §6.5), so 5.6 needs no migration for it: read it through a new `sqlite/vocab.go`. Its terms are unstemmed and case-folded but keep `_-.:/` inside a token (`kb.toml.` at a sentence end is its own term), so spell candidates should strip trailing `.`/`:` as `search.trimIdentifier` does.
 - Model: Opus (spell heuristics and log mining, threshold logic); review: Sonnet via testing-standards-pass
-- Files: `cli/synonyms.go`, `search/spell.go`, an fts5vocab table in migration 6→7 (`CREATE VIRTUAL TABLE chunks_exact_vocab USING fts5vocab(chunks_exact, 'row')`).
+- Files: `cli/synonyms.go`, `search/spell.go`, `sqlite/vocab.go` (reads `chunks_exact_vocab`, created by migration v6).
 - Steps:
   1. Suggest: pairs of searches by the same caller within 5 min where the first had no useful/open and the second did. Diff their token sets and count the pairs. Also list `gaps` query terms absent from the vocab. Print paste-ready lines; never write.
   2. Spell: when `search.spell` is on and the FTS rows are < 3, each term with doc-frequency 0 is replaced by the vocab term at Damerau-Levenshtein ≤1 (≤2 for len ≥8) with the highest doc frequency. Rerun once and print `did you mean: …` on stderr. The rewrite is logged in `fts_query`.
@@ -954,6 +963,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 **6.1 Prior model (pure) ∥**
 - Carried from W8 pass: the primary's log holds verdicts on other stores' hits (`store.Verdict.Store`, `JudgedSearch.OtherOpens`); a prior keyed on `(entry_path, heading)` must use only `Store == ""` rows, or key on the store too. Verdict times are now the caller's clock (`Feedback(..., at)`), so half-life tests can place verdicts exactly.
 - Model: Sonnet (pure formula given in full); review: Opus via testing-standards-pass (math)
+- Status: done (W9). 6.2 maps `store.Verdict` and opens to `prior.Event` (it needs SearchID and At from `JudgedSearch`); the inactive message comes from `Judged()` and `MinJudged`.
 - Files: new `internal/prior/prior.go` and its test.
 - Steps:
   1. For a key `(entry_path, heading)`:
@@ -970,6 +980,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 - Risk: none.
 
 **6.2 Wire the prior into search**
+- Carried from W9 pass (6.1 API vs 6.2): `prior.Event` needs `SearchID` and `At`, but `store.Verdict` has neither and `JudgedSearch.Opens` is bare paths: map `SearchID` from `JudgedSearch.ID`, and for `At` either parse `JudgedSearch.TS` (the search time; simplest, and what "events before asOf" means for eval replay) or extend the read to carry the feedback/open timestamps (`search_feedback.ts`, `search_opens.ts`) — decide before writing the mapping (a DEFAULTS row). Keep `Store != ""` events out (prior.Build drops them). `prior.Validate` accepts every `[prior]` value `config.Validate` accepts (max_boost in [0, 1], half_life ≥ 1 in config), so a Build error after config validation is a bug: wrap it `errs.Internal`; `prior` returns plain `fmt.Errorf` + `ErrBadParams` today. Wire `[prior]` by the doc.go rule (move it to the wired list, boundary rows, the settings-hash row).
 - Model: Sonnet (gated wiring plus additive migration); review: Opus via testing-standards-pass
 - Files: `search/search.go` (multiply the fused RRF before the cap), migration 7→8 (`prior` columns), `cli/search.go` (`--no-prior`), explain.
 - Gate: `prior.enabled` AND judged searches (≥1 verdict or open) ≥ `prior.min_judged`; otherwise a no-op that logs NULL. Settings JSON includes the prior params.
@@ -998,6 +1009,7 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
 ---
 
 **T1 Test infrastructure: per-test deps, typed CLI outcomes, shared fault seams** (from .agent/testability #4–#9)
+- Carried from W9 pass: recount 92 `testDeps` swaps, 54 `t.Chdir`, 68 `useRoot`, 397 text checks vs 26 kind checks in internal/cli tests. File-fault rows waiting on a shared seam: eval baseline write/chmod/close (Q91); timing rows for `fts_ms` (Q89).
 - Carried from W8 pass: `openRows` (show_open_test.go) now reads through `store.JudgedLog`, and the stats fixture places searches with `Searcher.Now` (no `UPDATE searches SET ts`). Left for step 5: `feedbackRows` (checks notes and raw row counts, which `Judged` collapses), `disableSearchLog`, `settings_log_test`, `index_hooks_test`, `report_test`, `edit_regression_test`, `fanout_test` (`openRaw`), `search_test.dbOf`, `reindex_test.countRows`. Rows a scan or `rows.Err` fails mid-iteration are untestable without a row-level fault in the shared driver (judged.go, `entriesByPath` survivors).
 - Model: Sonnet (mechanical test refactor); review: Opus via testability-check
 - Status: planned. Schedule: its own wave after W8 (it touches every cli test file).
@@ -1009,6 +1021,133 @@ Item format: **Goal / Files / Steps / Tests / Accept / Deps / Risk**. ∥ means 
   5. Add a `sqlitetest` helper plus a `failingLog` wrapper to replace raw `.DB()` SQL in non-sqlite tests.
   6. Harness: a `--debug` progress line to wait on instead of sleeps (H23), and a `harnessfake` build tag with a `fake:<dim>` model (DEFAULTS #189), enabling H2, H14 and H18.
 - Accept: `go test -race ./internal/cli/` passes with `t.Parallel` in the CLI tests; no `.DB()` outside the sqlite packages' own tests; the harness runs vector scenarios with the fake model.
+
+---
+
+### Phase 7: End-to-end journeys (E2E)
+
+**What E2E is for.** A journey is a realistic user flow across several commands, run against the real binary in a hermetic temp world. The transcript shows each command, its output and its exit code, and the files it leaves behind. It owns one kind of claim: **the commands work together as the README and `kb help` say they do**. Examples: `kb show` after `kb search` counts as an open in `kb stats`; `kb migrate up` turns a refused store into a working one; a `--stores` hit can be read with `kb show REF:path`. Transcripts double as living documentation. docs/TESTING.md §2 (layer L7) and §11 hold the rules.
+
+**What E2E must not do** (docs/TESTING.md §2.1, §11.4):
+- Re-test unit logic: ranking order, clamps, config validation tables, metric arithmetic. A journey may *show* a ranking, but a wrong rank is a bug in `search`, and its regression test goes there.
+- Hostile, malformed or edge inputs (the harness: `hostile-queries`, `front-matter-hostile`, `path-traversal`, `corrupt-db`, `newer-schema`).
+- Concurrency, signals and interruption (`concurrent-fresh-db`, `sigint-mid-reindex`, `migrate-*` interrupts).
+- Performance and timing. No journey asserts a duration.
+- Downloads. No journey ever fetches a model; real `kb model pull` stays in the nightly `model` job.
+
+**Framework (decided; DEFAULTS candidate).** A small in-repo runner, standard library only. It reads **cram-style transcripts** in a txtar-like file (`internal/e2e/testdata/journeys/<name>.txt`):
+
+```
+first-run: a new project, from kb init to kb stats.        <- unindented lines are prose
+Deps: 1.4, 0.7, 2.5, 4.1.
+
+  $ kb init --model fake:8                                  <- a command (two-space indent, "$ ")
+  created location $WORK/proj/.kb                           <- expected stdout (indented)
+  created store "default" in $WORK/proj (model fake:8)
+
+  $ kb add $WORK/notes/tmux.md
+  added data/tmux.md (2 chunks)
+  [stderr] warning: tmux.md: front matter has no 'updated' date
+
+  $ kb search "tmux logout" --mode vec --store nope
+  [stderr] kb search: ...                                   <- "..." line = any lines; "~ RE" = one regexp line
+  [exit 1]                                                  <- only non-zero exits are written
+
+  $ exists .kb/stores/default/kb.sqlite                     <- runner builtins: cd, env, write, rm, exists,
+                                                               ! exists, grep, mkfixture
+-- notes/tmux.md --                                         <- files extracted into $WORK before the run
+---
+title: Tmux logout
+...
+```
+
+- **Output.** stdout lines verbatim, then stderr lines prefixed `[stderr] `, then `[exit N]` when N ≠ 0. Splitting the streams keeps each journey deterministic, and the transcript still shows which stream a line went to (CODING_STYLE: warnings never go into stdout).
+- **Normalisers** (a fixed, documented list, applied to the actual output before comparing): the journey's temp dir becomes `$WORK` (after `filepath.EvalSymlinks`, since macOS temp dirs are under `/private`); `kb v…` becomes `kb (version)`; RFC3339 stamps become `(time)`; backup suffixes `.bak-vN-<time>` become `.bak-vN-(time)`; sizes `N.N KiB|MiB|B` become `(size)`; `"…_ms": N` JSON fields and `Nms` become `(ms)`; incident ids become `(id)`. Normalising does not re-align tables. A human table with volatile numbers is asserted through `--json` instead.
+- **Update.** `go test -tags fts5,e2e ./internal/e2e -run 'TestJourneys/<name>' -update` rewrites the expected output in place. It keeps the prose, the commands and `...`/`~` lines that still match. Review the diff like code. Never run `-update` to make an unexplained failure pass.
+- **Hermetic env** per journey: `$WORK = t.TempDir()`; `HOME=$WORK/home` (so the global location is `$WORK/home/.local/share/kb` and the model and embed caches are under `$WORK/home/Library/Caches/kb`); `TMPDIR`, `REMBED_CACHE` and `HF_HOME` under `$WORK`; dead `HTTP(S)_PROXY`/`ALL_PROXY` (as the harness does); an empty `PATH` (kb needs no host tool); stdin `/dev/null`; no `XDG_DATA_HOME` unless a journey sets one. `EDITOR` points at the e2e test binary itself in an editor helper mode (`E2E_EDITOR_APPEND=<text>`), so `kb edit` needs no host tool. After each journey a guard fails it if any model weights (`*.safetensors`, `*.onnx`) appeared under `$WORK`.
+- **Binary.** `TestMain` builds kb once per run with `go build -tags fts5,harnessfake` (GOWORK=off, GOPROXY=off) into a temp dir. `-kb PATH` uses a prebuilt binary instead. Journeys use the deterministic `fake:<dim>` model (DEFAULTS #189) or `none`. They run with `t.Parallel`.
+- **Clock.** `deps.now` covers search and open stamps, but a black-box test cannot reach it. E1 adds a harnessfake-only env var `KB_HARNESS_NOW` (RFC3339). In a harnessfake build, `productionDeps` takes its clock from it. Release builds never read it (D4 holds). The journey `env` builtin moves time forward between commands (open window, `--since`, `kb stale`). The other wall-clock stamps (`sqlite.nowUTC`, migrate backup names, incident time) are normalised, not pinned (testability `binary-clock-not-pinnable`).
+
+**Rejected frameworks.**
+- `rogpeppe/go-internal/testscript` (BSD-3, maintained, v1.14.1 Feb 2025; it handles cgo through `testscript.Main` and isolates HOME/TMPDIR). Rejected for three reasons. (1) Its expected output lives in separate `-- file --` sections, compared by `cmp stdout x`, so a script reads less like a transcript. (2) `-update` (`UpdateScripts`) works only with `cmp`, not `cmpenv`, so every path-bearing output would need a custom normalise-to-file step before `cmp`. (3) It is a new go.mod dependency (a hotspot, and an owner call). It is the fallback if the runner grows past about 800 lines.
+- Plain Go tests driving the binary: asserting output in code is unreadable as documentation, and it duplicates the harness's style without its purpose.
+
+**E1 E2E runner, clock seam, first journeys**
+- Model: Sonnet (spec above; bounded); review: Opus via testing-standards-pass
+- Files: `internal/e2e/` (new): `doc.go`, `transcript.go` (parse/format), `normalise.go`, `runner.go` (env, exec, builtins, diff), `transcript_test.go`, `normalise_test.go`, `fuzz_test.go`, `journeys_test.go` (`//go:build e2e`), `testdata/journeys/*.txt`; `internal/cli/harnessfake.go` (clock env); `internal/cli/root.go` (one line: `productionDeps` takes `harnessNow` when set; the orchestrator applies it, rule 1); `Makefile` (`e2e`, `e2e-update`); `.github/workflows/ci.yml` (one step).
+- Steps:
+  1. Transcript parser and formatter, plus normalisers. Only the journeys file carries the `e2e` tag, so the runner's own tests run in every `go test`.
+  2. Runner: hermetic env, builtins (`cd`, `env K=V`, `write PATH` from an archive section, `rm`, `exists`/`! exists` with globs, `grep RE PATH`, `mkfixture <artefact>-v<N> PATH`, which loads `internal/store/sqlite/testdata/migrations/*.sql` through database/sql), the no-download guard and the `EDITOR` helper mode.
+  3. `KB_HARNESS_NOW` in `harnessfake.go`, with a `harnessfake_test.go` row (set means pinned; unset or garbage means the wall clock plus a stderr warning).
+  4. Journeys J1 first-run, J2 offline first run, J9 agent workflow (without `kb context` until 4.3), J10 entry lifecycle (catalogue below).
+  5. `make e2e` (`go test -tags fts5,e2e ./internal/e2e/`), `make e2e-update`, and a CI step.
+- Tests: L2 tables for parse (indent, blank lines inside output, `...`, `~`, `[exit N]`, archive sections), normalise (one row per normaliser, plus "no change" rows) and the elision matcher; L3 `FuzzTranscript` (`Parse(Format(t)) == t`; the matcher never panics); the journeys themselves.
+- Accept: `make e2e` passes 3 times in a row with `-count=1 -shuffle=on` in under 60 s warm; `-update` on an unchanged tree changes nothing; deleting one output line from a transcript fails with a readable diff naming the journey and command.
+- Deps: none beyond landed work (DEFAULTS #189). It does not need T1: journeys assert user-visible text by design, which is right at this layer.
+- Risk: transcript churn while W10–W13 change output. Mitigated by `-update` plus review; the alternative is retrofitting at the end.
+
+**E2 Store, source and tuning-loop journeys**
+- Model: Sonnet; review: Sonnet via testing-standards-pass
+- Files: `internal/e2e/testdata/journeys/{in-place-sources,named-stores,global-store,model-and-cache,tuning-loop}.txt`.
+- Steps: journeys J3, J4, J5, J11, and J6 on the landed eval/explain features. J6 guards `cli/eval.go` while 2.6 changes it.
+- Accept: `kb stores`, `kb init --name/--source`, `--store`, `--stores`, `kb show REF:path`, `kb model list/path/cache`, `kb explain`, `kb eval --save-baseline/--compare` and `kb config --set` each appear in at least one journey.
+- Deps: E1.
+- Risk: none.
+
+**E3 Quality loop and later-feature journeys**
+- Model: Sonnet; review: Opus via testing-standards-pass (it spans eval, explain, synonyms and prior)
+- Files: `internal/e2e/testdata/journeys/{lexical-quality,links-and-stale,prior}.txt`, plus extensions to `tuning-loop.txt` (J16) and J9 (`kb context`).
+- Steps: J13, J14, J16, J17, J18. Fold `kb context` into J9. Each W10–W13 item already added its own journey (TESTING §10 step 7), so E3 adds only the *cross-feature* flows: tune with synonyms and prior on, eval-compare, then sweep.
+- Accept: `kb eval --sweep`, `kb related`, `kb stale`, `kb synonyms`, `kb context` and `prior.enabled` appear in a journey; the tuning loop shows a baseline written, then a compare.
+- Deps: E1, 2.6, 4.3, 4.6, 5.3–5.6, 6.2–6.4.
+- Risk: eval numbers come from a fixed seed and the fake embedder. If a metric changes, read the diff: it is a ranking change, owned by a unit test.
+
+**E4 Migration and recovery journeys**
+- Model: Sonnet; review: Sonnet via testing-standards-pass
+- Files: `internal/e2e/testdata/journeys/{upgrade,config-recovery}.txt`.
+- Steps: J7, J8. Re-run J7 with the newest pre-target fixture whenever a migration lands (v7 in W10, v8 in W12): a one-line `mkfixture` change, done by the item that adds the step (TESTING §10 step 7).
+- Accept: the upgrade journey shows refusal, then status (exit 1), dry run (file unchanged), up (a backup exists), verify, status (exit 0), and search working with the fixture's log rows kept.
+- Deps: E1, 1.8b.
+- Risk: none.
+
+**E5 Journey audit and README cross-check**
+- Model: Haiku (mechanical); review: Sonnet
+- Files: `internal/e2e/readme_test.go` (`//go:build e2e`), README example markers.
+- Steps:
+  1. A command-coverage check: every leaf command from `kb help` (walked through `kb <cmd> --help`) appears in at least one journey, or in an explicit allow-list (`completion`, `help`, `version`).
+  2. README examples marked `<!-- e2e: <journey>#<n> -->` must match that journey's n-th command and output, with `$WORK` and the normalised tokens shown as written in README. This verifies the README; it does not generate it, because the README is prose the owner edits.
+- Accept: removing a command from every journey fails (1); editing a marked README block so it disagrees with its journey fails (2).
+- Deps: E2, E3, E4.
+- Risk: README markers are noise if overused: mark only the examples a reader copies (Searching, Upgrading, Using kb from an agent).
+
+**Journey catalogue** (priority P1 first; files are `internal/e2e/testdata/journeys/<slug>.txt`)
+
+| # | Journey (slug) | Commands | Key checks | Deps | Item |
+|---|---|---|---|---|---|
+| J1 | First run (`first-run`) P1 | `init --model fake:8` → `add` (copy in) → `add --dir` → `list` → `search` → `search --json` → `show` → `show --chunks` → `feedback N R --useful` → `feedback --last … --caller` → `stats overview --json` → `doctor` | `.kb/kb.toml`, `stores/default/{config.toml,kb.sqlite}` and `data/<file>` exist; search ids count up; `--json` carries the `feedback` commands; stats shows the open and the verdict (judged 1, opened_pct > 0); doctor reports 0 failed | landed | E1 |
+| J2 | Offline first run (`offline-first-run`) P1 | `init` (default model, no network) → `add` → `search` → `model list` → `model path` → write `model = "none"` → `reindex --all` → `search` | init exits 2 with "store is created" and the `kb model pull` hint; search exits 2 with the fts-fallback warning and still lists hits; after switching to none, exit 0; no weights downloaded | landed | E1 |
+| J3 | In-place sources (`in-place-sources`) P1 | sample repo `docs/**/*.md` + `exclude` → `init --source` → `reindex --all` → `search` (file without front matter) → change a file → `reindex` → delete a file → `reindex --all` → `add` (refused) → `rm` (refused) | title fallback shown; excluded file never found; edits picked up; a deleted file drops out; add and rm refusals name the reason (exit 1) | 1.5 | E2 |
+| J4 | Named stores and fan-out (`named-stores`) P1 | `init` → `init --name adr` → `--store adr add` → `stores` → alias in `kb.toml` → `search --stores adr,notes` → `show adr:data-adr/x.md` → `feedback` on the other store's hit → `stats overview --json` → `--stores all` → `--stores ''` → `--stores nope` | REF:path hits; show REF:path records an open in the primary log; a missing store is skipped with a stderr warning (exit 0); `--stores ''` searches the primary store only | 1.7b, 3.1, 3.2 | E2 |
+| J5 | Global store (`global-store`) P2 | `--global init` → `--global add` → from a project, `search --stores global` → from a dir with no location, `search` (error + hint) → `--global search` → global alias used from a project | the global location lives under `$WORK/home/.local/share/kb`; outside any location the error names `kb init` / `--global` (exit 1) | 1.7b, 3.1 | E2 |
+| J6 | Tuning loop (`tuning-loop`) P1 | corpus of ~6 entries + ~8 judged searches → `config --set search.rrf_k=20 --json` → `explain` (human + `--json`) → `eval` → `eval --save-baseline` → `eval --set search.bm25.title=5 --compare` → `stats settings` | the hash changes with `--set`; explain and eval do not log (the next search id continues the sequence); `eval/default.json` exists; compare prints deltas and the small-sample note; the settings row count | 2.2–2.5 | E2 (J16 extends it in E3) |
+| J7 | Upgrade (`upgrade`) P1 | `mkfixture index-v5` → `search` (refused) → `doctor` → `migrate status` → `migrate up --dry-run` → `migrate up` → `migrate verify` → `migrate status` → `search` → `stats overview --json` | refusal says "Run: kb migrate up" (exit 1); status exits 1 then 0; the dry run leaves the file unchanged; `kb.sqlite.bak-v5-*` exists; "needs: kb reindex" when an effect step ran; the fixture's searches are still counted | 1.8b | E4 |
+| J8 | Config recovery (`config-recovery`) P2 | broken `kb.toml` → `search` → `doctor` → fix → `doctor`; unknown key in `config.toml` → `config` → fix; `--store nope`; `search` with no location | one error line naming the file or key (exit 1); doctor FAILs, then is ok after the fix; one failure per family, never the validation table | 1.3, 1.7b | E4 |
+| J9 | Agent workflow (`agent-workflow`) P1 | the README paste block: `search … --caller claude --json` → `show <path>` → `feedback --last 1 --useful --caller claude` → `search --expand section` → `search --budget 60` → `search --json -- --flag-like` → identifier query → `context "<q>"` (after 4.3) | everything the README block promises works as written; the budget cut is visible; the identifier hit carries `exact_rank` | 4.1, 4.2, 4.5, (4.3) | E1 (+E3) |
+| J10 | Entry lifecycle (`entry-lifecycle`) P2 | `add` → `edit` (EDITOR helper) → `show` → `list --tag` → `rm` → `rm <dir>` without and with `--yes` → `reindex --all` → `index` | the edit is reindexed; a directory rm needs `--yes` (exit 1, then 0); `index.md` is written | landed | E1 |
+| J11 | Model and cache (`model-and-cache`) P2 | two stores, same `fake:8` → `reindex` both → `model cache` → `model cache --clear` → `reindex --all` → `model list` | the second store's embeds hit the shared cache; clear empties it; `fake:*` is not listed (test-only) | 3.3 | E2 |
+| J13 | Synonyms and spell (`lexical-quality`) | `synonyms.txt` → `search` via a synonym → `synonyms suggest` → a typo query (spell note on stderr) | synonym hit found; spell fires only below 3 FTS rows and says so | 5.5, 5.6 | W10 item, then E3 |
+| J14 | Links, related, stale (`links-and-stale`) | linked entries → `reindex` → `related` → a superseded entry → `search` → `env KB_HARNESS_NOW=+200d` → `stale` | related lists the edges; the superseded entry is marked; stale lists by days | 5.2–5.4 | W10–W11 items, then E3 |
+| J16 | Sweep (`tuning-loop` part 2) | `eval --sweep` below `min_judged` → judge more → `eval --sweep` | refused with the threshold, then a table | 2.6 | E3 |
+| J17 | Prior (`prior`) | judged log → `eval --set prior.enabled=true --compare` → `explain --set prior.enabled=true` | off by default; explain shows the prior term | 6.2–6.4 | E3 |
+| J18 | Phrase tier | `search '"exact phrase"'` → `explain` | the phrase tier appears in explain | 4.6 | W13 item, then E3 |
+
+Not journeys, on purpose: interrupted reindex or migrate (harness `sigint-*`, `migrate-*`); concurrent writers; corrupt or newer-schema stores; hostile queries and paths; a real `kb model pull` (nightly `model` job).
+
+**Wave placement and why.** E1 runs as a **W10 lane**. It touches only new files plus `harnessfake.go`; the one-line `root.go` change goes through the orchestrator. Its journeys cover only features that have landed. Starting early means W10–W13, which rewrite `search.go`, `cli/search.go` and eval, run under journeys. It also means each new command can ship its journey in its own item (TESTING §10 step 7), instead of being retrofitted. E2 → E4 run as one **W11 lane** (landed features, journey files only). **W14** is the final E2E wave the owner asked for: E3 (cross-feature quality journeys, once W12–W13 land), then E5 (audit and README cross-check). If the owner wants everything strictly at the end, E1, E2 and E4 move into W14 ahead of E3. Nothing else changes.
+
+**CI.** `ci.yml` `test` job: one step after the unit tests, `go test -tags fts5,e2e -count=1 ./internal/e2e/` (`timeout-minutes: 5` on the step). Budget: under 90 s warm. The binary build reuses the job's build cache, and the journeys take about 20 s for ~15 journeys × ~15 processes. The nightly job adds `-count=3 -shuffle=on` to catch order dependence. If the step grows past 3 min, journeys move to nightly, and `make e2e` joins the wave-end green check (rule 6) instead. Wave-end green (rule 6) runs `make e2e` from E1 on.
+
+**Docs and skill (done at planning time, 2026-10-30).** docs/TESTING.md has the E2E layer (L7, §8 tags, §10 step 7, §11). ADVERSARIAL_TESTING.md has the harness vs E2E split. The `testing-standards-pass` skill has an E2E check (#14). E1 updates TESTING §11 from "planned" to "built" and fills in the final file names.
 
 ## 4. Breaking changes / migration notes
 
@@ -1106,8 +1245,13 @@ Who builds each item, what runs at the same time, and in what order. Model choic
 | 6.2 | Wire prior | Sonnet | 6.1, 2.5, (v7 landed) | **mig v8**, search/search.go, cli/search.go, sqlite/log.go, explain | W12 (lane, then 6.3) |
 | 6.3 | Query memory list | Sonnet | 6.1 | search/search.go, search/memory.go | W12 (after 6.2) |
 | 6.4 | Validate prior with eval | Opus | 6.2, 6.3, 2.6 | eval/replay.go | W13 |
+| E1 | E2E runner, clock seam, first journeys | Sonnet | — | internal/e2e/ (new), cli/harnessfake.go, root.go (one line, via orchestrator), Makefile, ci.yml | W10 (lane) |
+| E2 | Store, source, tuning-loop journeys | Sonnet | E1 | e2e/testdata/journeys (new files) | W11 (lane, then E4) |
+| E3 | Quality loop + later-feature journeys | Sonnet | E1, 2.6, 4.3, 4.6, 5.3–5.6, 6.2–6.4 | e2e/testdata/journeys | W14 |
+| E4 | Migration and recovery journeys | Sonnet | E1, 1.8b | e2e/testdata/journeys (new files) | W11 (after E2) |
+| E5 | Journey audit + README cross-check | Haiku | E2, E3, E4 | e2e/readme_test.go, README markers | W14 (after E3) |
 
-Counts: Opus 14, Sonnet 24, Haiku 4 (42 items).
+Counts: Opus 14, Sonnet 28, Haiku 5 (47 items; E1–E5 added 2026-10-30).
 
 ### 6.2 Waves
 A wave starts when every item of the previous wave is merged and its review passes are clean. Every wave ends with the wave-end standards pass (6.4 rule 4): `testing-standards-pass` and `error-handling-pass` over the wave's diff, then fixes, before the next wave starts. A "lane" is one agent; an arrow inside a lane means the items run one after the other in that lane.
@@ -1139,7 +1283,7 @@ A wave starts when every item of the previous wave is merged and its review pass
   - 4.1: render/ new, cli/search.go.
   - 3.3b: setup.go wiring.
 - **W8 (done):** 3.2 (mig v5, sqlite/log.go, store/types.go, cli/search.go, search/multi.go) ∥ 2.3 (eval/, cli/eval.go, new `sqlite/judged.go` + `store/judged.go` to stay out of log.go/types.go).
-- **W9:**
+- **W9 (done):**
   - 4.5: mig v6, sqlite/entries.go, retrieve.go, log.go, search.go, explain.
   - 4.2: render/, cli/search.go.
   - 2.4: eval/, cli/eval.go.
@@ -1149,9 +1293,11 @@ A wave starts when every item of the previous wave is merged and its review pass
   - lane 5.5 → 5.6: search.go, synonyms.go, spell.go, cli/search.go, cli/synonyms.go, new sqlite/vocab.go.
   - 2.6: eval/sweep.go, cli/eval.go.
   - 4.3: cli/context.go.
-- **W11:** 5.3 (search.go, render, sqlite Related in a new file, cli/related.go) ∥ 5.4 (cli/stale.go).
+  - E1: internal/e2e/ (new), cli/harnessfake.go; the one-line root.go clock hook is applied by the orchestrator. From here on, an item that adds a user-facing command or flow adds or extends its journey (TESTING §10 step 7).
+- **W11:** 5.3 (search.go, render, sqlite Related in a new file, cli/related.go) ∥ 5.4 (cli/stale.go) ∥ lane E2 → E4 (journey files only).
 - **W12:** lane 6.2 → 6.3: mig v8, search.go, memory.go, cli/search.go, sqlite/log.go.
 - **W13:** 4.6 (search.go, retrieve.go) ∥ 6.4 (eval/replay.go).
+- **W14 (end-to-end):** lane E3 → E5. Journey files, `e2e/readme_test.go` and README markers only; README is a hotspot, so E5 owns it this wave. The wave-end pass also checks that every leaf command appears in a journey (E5's audit) and that the E2E step stays inside its CI budget (§3 Phase 7).
 
 **Why the later waves are narrow.** Two chains force serial work:
 - Migrations must land in number order (v4 → v8).
@@ -1198,7 +1344,7 @@ A wave starts when every item of the previous wave is merged and its review pass
 
    The orchestrator records the pass result (counts per severity, what was fixed or deferred, and the adversarial verdict) in the wave's state log and folds lasting lessons into `.agent/knowledge/`. Model for the pass: Opus for waves that contain Opus items, Sonnet otherwise.
 5. **Judgment calls** that deviate from or fill gaps in this plan go in `DEFAULTS.md`, with the item id.
-6. **Green before merge.** `go vet -tags fts5 ./...` and `go test -tags fts5 ./...` pass before merge. Items that touch embedding also run `-tags model`.
+6. **Green before merge.** `go vet -tags fts5 ./...` and `go test -tags fts5 ./...` pass before merge. Items that touch embedding also run `-tags model`. From E1 on, `make e2e` (the journeys) is green too.
 7. **Commit per wave (D7).** After the wave-end pass, when everything is green, the orchestrator scans for secrets, commits once with a summary of the wave's items, and pushes `main`. `docs/DEFAULTS.md`, state logs and sandboxes are never committed.
 
 ### 6.5 Proposed reorders and splits (not yet applied to §3)

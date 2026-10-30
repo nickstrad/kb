@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nickstrad/kb/internal/assert"
 	"github.com/nickstrad/kb/internal/chunk"
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/entry"
@@ -72,10 +73,9 @@ func (d *deps) showTarget(cmd *cobra.Command, ws *workspace.Workspace, cfg confi
 	if !ok || path == "" || (prefix != workspace.GlobalName && workspace.ValidName(prefix) != nil) {
 		return here, arg, nil
 	}
-	ref, err := workspace.ParseRef(prefix)
-	if err != nil {
-		return here, arg, nil
-	}
+	// The prefix passed ValidName (or is "global"), so it always parses as a ref.
+	ref, perr := workspace.ParseRef(prefix)
+	assert.Invariant(perr == nil, "show prefix %q passed ValidName but ParseRef failed: %v", prefix, perr)
 	rr, err := d.resolveFanOutRef(cmd, ref)
 	if err != nil {
 		if _, perr := entry.Resolve(ws.Root, cfg.Sources, arg); errors.Is(err, workspace.ErrUnknownRef) && perr == nil {

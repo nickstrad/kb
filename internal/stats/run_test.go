@@ -38,11 +38,11 @@ func TestFilterSinceReachesChildTables(t *testing.T) {
 		t.Errorf("SearchesMatching = %d, want 4 (searches 6-9; the bound is inclusive)", n)
 	}
 	checkQuery(t, db, "sources", f,
-		[]string{"source", "results", "share_pct", "judged", "useful", "useful_rate_pct", "avg_rank"},
+		[]string{"source", "results", "share_pct", "judged", "useful", "useful_rate_pct", "avg_rank", "with_exact"},
 		[][]any{
-			{"both", int64(2), 50.0, int64(1), int64(0), 0.0, 1.0},
-			{"fts-only", int64(1), 25.0, int64(0), int64(0), nil, 2.0},
-			{"vec-only", int64(1), 25.0, int64(0), int64(0), nil, 3.0},
+			{"both", int64(2), 50.0, int64(1), int64(0), 0.0, 1.0, int64(0)},
+			{"fts-only", int64(1), 25.0, int64(0), int64(0), nil, 2.0, int64(0)},
+			{"vec-only", int64(1), 25.0, int64(0), int64(0), nil, 3.0, int64(0)},
 		})
 }
 

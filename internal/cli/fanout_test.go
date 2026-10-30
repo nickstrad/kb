@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/nickstrad/kb/internal/store"
+	"github.com/nickstrad/kb/internal/workspace"
+	"github.com/spf13/cobra"
 	"os"
 	"path/filepath"
 	"slices"
@@ -375,5 +378,88 @@ func TestFanOutSkipAndKeepDecisions(t *testing.T) {
 	}
 	if _, stderr, code := run(t, "show", "--no-log", "adr:data/wal.md"); code != 1 || !strings.Contains(stderr, "config.toml") {
 		t.Errorf("show adr:… with a broken adr config = %d %q", code, stderr)
+	}
+}
+
+// TestSkipExtraDecisions: an extra store's failure is skipped with one warning whatever its kind
+// (DEFAULTS 175/206); an Internal one is also an incident named in the warning (a kb bug is not a
+// store problem), and --debug adds the chain.
+func TestSkipExtraDecisions(t *testing.T) {
+	cache := t.TempDir()
+	orig := testDeps.userCacheDir
+	t.Cleanup(func() { testDeps.userCacheDir = orig })
+	testDeps.userCacheDir = func() (string, error) { return cache, nil }
+	for _, tc := range []struct {
+		name     string
+		err      error
+		debug    bool
+		incident bool
+	}{
+		{"usage", errs.New(errs.Usage, "t", "bad config"), false, false},
+		{"unavailable", errs.New(errs.Unavailable, "t", "no embedder"), true, false},
+		{"internal", errs.New(errs.Internal, "t", "boom"), false, true},
+		{"internal under debug", errs.New(errs.Internal, "t", "boom"), true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_ = os.Remove(filepath.Join(cache, "kb", "kb.log"))
+			cmd := &cobra.Command{Use: "search"}
+			cmd.Flags().Bool("debug", tc.debug, "")
+			var buf strings.Builder
+			cmd.SetErr(&buf)
+			testDeps.skipExtra(cmd, "adr", tc.err)
+			got := buf.String()
+			if !strings.HasPrefix(got, "warning: skipping store adr: ") || strings.Count(got, "warning: skipping store") != 1 {
+				t.Fatalf("stderr %q: want one skip warning naming adr", got)
+			}
+			incs := readIncidents(t, filepath.Join(cache, "kb", "kb.log"))
+			if tc.incident {
+				if len(incs) != 1 || incs[0].Kind != "internal" || !strings.Contains(got, "kb bug: id "+incs[0].ID) {
+					t.Errorf("incidents %+v, stderr %q: want one internal incident named in the warning", incs, got)
+				}
+			} else if len(incs) != 0 || strings.Contains(got, "kb bug") {
+				t.Errorf("a %s skip left an incident or a bug note: %+v %q", tc.name, incs, got)
+			}
+			if lines := strings.Count(strings.TrimSpace(got), "\n") + 1; tc.debug && tc.incident && lines < 2 {
+				t.Errorf("--debug printed no chain: %q", got)
+			}
+			if !tc.debug && strings.Count(got, "\n") != 1 {
+				t.Errorf("without --debug exactly one line, got %q", got)
+			}
+		})
+	}
+}
+
+// TestFanOutHardErrors: a store list that cannot be read, a malformed ref and a hard open failure of
+// an extra store (not a schema Conflict) fail the search; none is skipped.
+func TestFanOutHardErrors(t *testing.T) {
+	w := newFanOutWorld(t)
+	if _, stderr, code := run(t, "search", "zebracorn", "--stores", "Bad"); code != 1 || !strings.Contains(stderr, "Bad") {
+		t.Errorf("malformed ref = %d %q", code, stderr)
+	}
+	orig := testDeps.openStore
+	t.Cleanup(func() { testDeps.openStore = orig })
+	testDeps.openStore = func(ctx context.Context, path string, ro bool) (store.Store, error) {
+		if strings.Contains(path, filepath.Join("stores", "adr")) {
+			return nil, errs.New(errs.Internal, "test", "adr exploded")
+		}
+		return orig(ctx, path, ro)
+	}
+	if _, stderr, code := run(t, "search", "zebracorn", "--stores", "adr"); code != 3 || strings.Contains(stderr, "skipping store adr") {
+		t.Errorf("hard open error of an extra store = %d %q, want exit 3 and no skip", code, stderr)
+	}
+	testDeps.openStore = orig
+
+	// expandAll: the stores directory cannot be listed.
+	loc, err := workspace.ResolveLocation(w.loc, false, workspace.Env{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := loc.StoresDir()
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if _, err := expandAll(loc, []string{allStores}); err == nil {
+		t.Error("expandAll with an unreadable stores dir returned no error")
 	}
 }

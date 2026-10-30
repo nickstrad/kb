@@ -8,10 +8,12 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/eval"
@@ -20,11 +22,12 @@ import (
 )
 
 // newEvalCmd builds
-// `kb eval [--mode hybrid|fts|vec] [-k 8] [--since 30d] [--caller c] [--per-query] [--json]`.
+// `kb eval [--mode hybrid|fts|vec] [-k 8] [--since 30d] [--caller c] [--per-query] [--json]
+// [--set key=value]... [--save-baseline|--compare [NAME]]`.
 func newEvalCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	var opts evalOpts
 	cmd := &cobra.Command{
-		Use:   "eval",
+		Use:   "eval [NAME]",
 		Short: "Score search quality against the feedback in the search log",
 		Long: "Replays every judged query from the search log with the current settings and scores\n" +
 			"the ranking: hit@k (a gold hit in the top k), MRR (1/rank of the first gold hit) and\n" +
@@ -40,15 +43,31 @@ func newEvalCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"counted as \"gold not in index\". kb eval replays this store only: gold on another\n" +
 			"store's hit of a cross-store search (kb search --stores) is counted, not scored. Below [eval] min_judged queries the report says the\n" +
 			"sample is small: differences inside the interval are noise.\n\n" +
-			"kb eval reads the log and never writes it.",
+			"Baselines: --save-baseline [NAME] stores this run in the store's eval/ directory (default\n" +
+			"name \"default\"); --compare [NAME] runs again and prints, for each metric, the baseline and\n" +
+			"new means, the delta with a paired 95% bootstrap interval, the queries that won, lost or tied,\n" +
+			"and a two-sided exact sign-test p-value over the wins and losses. Queries are paired by\n" +
+			"normalised text; a query scored on one side only is counted and left out. --set key=value\n" +
+			"(repeatable) tries a setting for this run without writing it, so\n" +
+			"kb eval --set search.rrf_k=20 --compare shows what that setting would change. A baseline\n" +
+			"of another file-format version, or at another k, is refused.\n" +
+			"Only the log is read; baselines are the only files kb eval writes.",
 		Example: "  kb eval\n" +
 			"  kb eval --mode fts --since 30d --per-query\n" +
-			"  kb eval --caller claude --json",
-		Args:          cobra.NoArgs,
+			"  kb eval --caller claude --json\n" +
+			"  kb eval --save-baseline && kb eval --set search.rrf_k=20 --compare",
+		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.kChanged = cmd.Flags().Changed("k")
+			opts.name = eval.DefaultBaseline
+			if len(args) == 1 {
+				opts.name = args[0]
+				if !opts.save && !opts.compare {
+					return usageErr("a baseline NAME needs --save-baseline or --compare")
+				}
+			}
 			return runEval(cmd, d, stdout, stderr, opts)
 		},
 	}
@@ -58,6 +77,9 @@ func newEvalCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&opts.caller, "caller", "", "only searches by this caller")
 	cmd.Flags().BoolVar(&opts.perQuery, "per-query", false, "print one line per query")
 	cmd.Flags().BoolVar(&opts.asJSON, "json", false, "machine-readable output (always includes per_query)")
+	cmd.Flags().StringArrayVar(&opts.sets, "set", nil, "try a setting for this run: section.key=value (repeatable)")
+	cmd.Flags().BoolVar(&opts.save, "save-baseline", false, "save this run as baseline NAME (default \"default\"), replacing it")
+	cmd.Flags().BoolVar(&opts.compare, "compare", false, "compare this run with baseline NAME (default \"default\")")
 	return cmd
 }
 
@@ -69,6 +91,10 @@ type evalOpts struct {
 	caller   string
 	perQuery bool
 	asJSON   bool
+	sets     []string
+	save     bool
+	compare  bool
+	name     string // the baseline NAME argument
 }
 
 // runEval reads the log read-only, loads the embedder only when there is something to replay,
@@ -81,6 +107,12 @@ func runEval(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOpt
 	default:
 		return usageErr("invalid --mode %q (want hybrid, fts or vec)", opts.mode)
 	}
+	if opts.save && opts.compare {
+		return usageErr("--save-baseline and --compare are exclusive: compare first, then save")
+	}
+	if (opts.save || opts.compare) && !eval.ValidBaselineName(opts.name) {
+		return usageErr("invalid baseline name %q (lowercase letters, digits, '.', '_' or '-', at most 64)", opts.name)
+	}
 	since, err := parseSince(opts.since, d.clock())
 	if err != nil {
 		return usageErr("%s", err)
@@ -90,10 +122,32 @@ func runEval(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOpt
 	if err != nil {
 		return err
 	}
+	// --set before NewSettings (as explain does): the replays, the hash and the baseline all
+	// carry the variant.
+	for _, s := range opts.sets {
+		if cfg, err = config.Apply(cfg, s); err != nil {
+			return err
+		}
+	}
+	if len(opts.sets) > 0 {
+		if err := cfg.CheckModel("--set", knownModel); err != nil {
+			return err
+		}
+	}
+	evalDir := filepath.Join(ws.StoreDir, "eval")
+	var base *eval.Baseline
+	if opts.compare {
+		// Fail before the replays when there is nothing to compare with.
+		if base, err = eval.LoadBaseline(evalDir, opts.name); err != nil {
+			return err
+		}
+	}
 	if _, err := os.Stat(ws.DBPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return errs.Wrap(err, errs.NotFound, op, "no index at %s; run kb reindex --all", ws.DBPath)
 		}
+		// Driver-only: an unreadable database file whose directory (and config.toml) is still
+		// readable; a test cannot take one without the other (Q86).
 		return errs.Wrap(err, errs.Usage, op, "cannot read the index %s: check the file and its permissions", ws.DBPath).With("path", ws.DBPath)
 	}
 	st, err := d.openStore(ctx, ws.DBPath, true)
@@ -119,7 +173,7 @@ func runEval(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOpt
 		}
 	}
 	settings, err := search.NewSettings(cfg)
-	if err != nil {
+	if err != nil { // unreachable: Internal from encoding a config that validation already accepted (Q86)
 		return err
 	}
 	// No Log: replays must not write the log they are scored against.
@@ -133,23 +187,116 @@ func runEval(cmd *cobra.Command, d *deps, stdout, stderr io.Writer, opts evalOpt
 	if err != nil {
 		return err
 	}
-	if opts.asJSON {
-		var buf strings.Builder
-		enc := json.NewEncoder(&buf)
-		enc.SetEscapeHTML(false)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(rep); err != nil {
-			return errs.Wrap(err, errs.Internal, op, "encode the report: %v", err)
+	cur := &eval.Baseline{
+		Name: opts.name, KBVersion: Version, CreatedAt: d.clock().UTC(), EmbedModel: cfg.Embed.Model,
+		Settings: settings.JSON, SettingsHash: settings.Hash, Report: *rep,
+	}
+	if c, ok := st.(entryCounter); ok {
+		if cur.EntryCount, err = c.EntryCount(ctx); err != nil {
+			return err
 		}
-		fmt.Fprint(stdout, buf.String())
-	} else {
+	}
+	var cmp *eval.Comparison
+	if base != nil {
+		if cmp, err = eval.Compare(base, cur); err != nil {
+			return err
+		}
+	}
+
+	switch {
+	case opts.asJSON && cmp != nil:
+		err = writeJSON(stdout, struct {
+			Comparison *eval.Comparison `json:"comparison"`
+			Report     *eval.Report     `json:"report"`
+		}{cmp, rep})
+	case opts.asJSON:
+		err = writeJSON(stdout, rep)
+	case cmp != nil:
+		fmt.Fprint(stdout, renderCompare(cmp, rep, opts.perQuery))
+	default:
 		fmt.Fprint(stdout, renderEval(rep, opts.perQuery))
+	}
+	if err != nil { // unreachable: a report of plain values always encodes (Q86)
+		return err
+	}
+	if cmp != nil { // warnings go to stderr (CODING_STYLE §9); --json also carries them
+		for _, w := range cmp.Warnings {
+			fmt.Fprintf(stderr, "warning: %s\n", w)
+		}
 	}
 	if rep.FallbackQueries > 0 {
 		fmt.Fprintf(stderr, "warning: %s; %d of the replays ran --mode fts instead\n", rep.FallbackReason, rep.FallbackQueries)
+		if opts.save {
+			fmt.Fprintf(stderr, "warning: baseline %q not saved: a fallback run is not a fair reference\n", opts.name)
+		}
 		return exitSilently(ExitEmbedder)
 	}
+	if opts.save {
+		if err := eval.SaveBaseline(evalDir, *cur); err != nil {
+			return err
+		}
+		if !opts.asJSON {
+			fmt.Fprintf(stdout, "saved baseline %q (%d queries, settings %s) to %s\n", opts.name, rep.Chunk.Queries, shortHash(settings.Hash),
+				filepath.Join(evalDir, opts.name+".json"))
+		}
+	}
 	return nil
+}
+
+// writeJSON prints v as indented JSON without HTML escaping.
+func writeJSON(w io.Writer, v any) error {
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil { // unreachable: v holds only strings, ints and finite floats
+		return errs.Wrap(err, errs.Internal, "cli.eval", "encode the report: %v", err)
+	}
+	fmt.Fprint(w, buf.String())
+	return nil
+}
+
+// renderCompare is the human form of a comparison: the sides, one table per scored variant and the
+// reading rules. The warnings are not part of it: runEval prints them on stderr.
+func renderCompare(c *eval.Comparison, r *eval.Report, perQuery bool) string {
+	var b strings.Builder
+	bs, cs := c.Baseline, c.Current
+	fmt.Fprintf(&b, "compare · baseline %q (%s · kb %s · mode %s · settings %s · %s · %d entries)\n",
+		bs.Name, bs.CreatedAt, bs.KBVersion, bs.Mode, shortHash(bs.SettingsHash), bs.EmbedModel, bs.EntryCount)
+	fmt.Fprintf(&b, "        now (mode %s · settings %s · %s · %d entries) · k %d\n",
+		cs.Mode, shortHash(cs.SettingsHash), cs.EmbedModel, cs.EntryCount, cs.K)
+	metricName := map[string]string{"hit_at_k": fmt.Sprintf("hit@%d", cs.K), "mrr": "mrr", "ndcg_at_k": fmt.Sprintf("ndcg@%d", cs.K)}
+	for _, v := range []struct {
+		label string
+		d     eval.VariantDiff
+	}{{"chunk", c.Chunk}, {"entry", c.Entry}, {"opens", c.Opens}} {
+		if v.d.Paired+v.d.OnlyBase+v.d.OnlyCur == 0 {
+			if v.label == "chunk" {
+				b.WriteString("chunk: no scored queries on either side; mark hits with kb feedback <search-id> <rank> --useful\n")
+			}
+			continue
+		}
+		fmt.Fprintf(&b, "\n%s: %d paired queries (%d only in the baseline, %d only now)\n", v.label, v.d.Paired, v.d.OnlyBase, v.d.OnlyCur)
+		if len(v.d.Metrics) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "  %-9s %8s %8s %8s  %-18s %-9s %s\n", "metric", "baseline", "now", "delta", "95% CI of delta", "w/l/t", "sign-test p")
+		for _, m := range v.d.Metrics {
+			fmt.Fprintf(&b, "  %-9s %8.3f %8.3f %+8.3f  [%+.3f, %+.3f]  %-9s %.3f\n", metricName[m.Name], m.Baseline, m.Current, m.Delta, m.Lo, m.Hi,
+				fmt.Sprintf("%d/%d/%d", m.Wins, m.Losses, m.Ties), m.P)
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString("p: two-sided exact sign test over the queries that won or lost (ties dropped); w/l/t counts now against the baseline.\n")
+	b.WriteString("A delta whose interval spans 0 is noise; across several metrics a lone p under 0.05 is weak evidence.\n")
+	if c.SmallSample {
+		fmt.Fprintf(&b, "small sample: %d paired queries < eval.min_judged %d; read these as hints, not results\n", c.Chunk.Paired, c.MinJudged)
+	}
+	if perQuery {
+		b.WriteString("\n")
+		b.WriteString(renderEval(r, true))
+	}
+	return b.String()
 }
 
 // renderEval is the human form of a report.

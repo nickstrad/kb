@@ -31,6 +31,7 @@ func TestDefaultParamsMatchConstants(t *testing.T) {
 	want := Params{
 		ListLimit: ListLimit, CandidateLimit: CandidateLimit, PerEntryCap: PerEntryCap, RRFK: RRFConstant,
 		VecOverFetch: vecOverFetch, BM25: store.DefaultBM25(), FTSWeight: 1, VecWeight: 1,
+		ExactWeight: 1, ExactList: true,
 	}
 	if got := DefaultParams(); got != want {
 		t.Errorf("DefaultParams = %+v, want %+v", got, want)
@@ -45,10 +46,12 @@ func TestParamsFromMapsEveryKey(t *testing.T) {
 	s := config.Search{
 		ListLimit: 11, CandidateLimit: 12, PerEntryCap: 13, RRFK: 14, VecOverfetch: 15,
 		BM25:        config.BM25{Text: 1.5, Heading: 2.5, Title: 3.5},
-		ListWeights: config.ListWeights{FTS: 0.25, Vec: 0.75, Exact: 9, Memory: 9},
+		ListWeights: config.ListWeights{FTS: 0.25, Vec: 0.75, Exact: 0.5, Memory: 9},
+		ExactList:   true,
 	}
 	want := Params{ListLimit: 11, CandidateLimit: 12, PerEntryCap: 13, RRFK: 14, VecOverFetch: 15,
-		BM25: store.BM25Weights{Text: 1.5, Heading: 2.5, Title: 3.5}, FTSWeight: 0.25, VecWeight: 0.75}
+		BM25: store.BM25Weights{Text: 1.5, Heading: 2.5, Title: 3.5}, FTSWeight: 0.25, VecWeight: 0.75,
+		ExactWeight: 0.5, ExactList: true}
 	if got := ParamsFrom(s); got != want {
 		t.Errorf("ParamsFrom = %+v, want %+v", got, want)
 	}

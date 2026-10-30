@@ -69,7 +69,7 @@ var scenarios = []scenario{
 	{"stores-alias", "store refs: alias, NAME@LOC, path, global, shadowing warns once, an alias with --root is refused, unknown words suggest names, hostile alias targets and refs exit 1 and never 3, kb stores lists a broken alias", scStoresAlias},
 	{"cache-two-stores", "the shared embedding cache (H19): processes on two stores open one cache file at once without locking errors; a garbage or newer cache file warns and falls back, is left alone, and kb model cache --clear removes it; --stats and --clear on a missing cache exit 0", scCacheTwoStores},
 	{"explain-hostile", "kb explain on hostile queries is valid JSON, --set overrides apply and bad ones exit 1, and it never writes the search log", scExplain},
-	{"eval-basic", "kb eval on an empty log, a judged search, hostile flags and an index with deleted gold: exit 0/1 only, valid JSON, and it never writes the search log", scEval},
+	{"eval-basic", "kb eval on an empty log, a judged search, baselines (save, compare, --set, hostile baseline files) and an index with deleted gold: exit 0/1 only, valid JSON, and it never writes the search log", scEval},
 }
 
 // scWorkspaceDiscovery attacks "kb finds the right store, or none, and never creates one by
@@ -303,6 +303,10 @@ func scRoundTrip(h *H) {
 	if h.expect(r, 0) && !json.Valid([]byte(r.Stdout)) {
 		h.fail("search --json is not valid JSON:\n%s", r)
 	}
+	for _, mode := range []string{"section", "entry"} {
+		h.expect(h.kb(withNone("search", "zebracorn", "--expand", mode, "--budget", "40")...), 0)
+	}
+	h.expect(h.kb(withNone("search", "zebracorn", "--expand", "page")...), 1)
 	h.expect(h.kb(withNone("show", "data/alpha-entry.md")...), 0)
 	h.expect(h.kb(withNone("show", "--chunks", "data/alpha-entry.md")...), 0)
 	h.expect(h.kb(withNone("list")...), 0)
@@ -1030,12 +1034,42 @@ func scEval(h *H) {
 	}
 	h.expect(h.kb("eval", "--mode", "vec"), 1) // vec needs an embedder; none is configured
 
+	// Baselines: save, compare with itself (all ties), a --set variant, JSON, then hostile uses.
+	evalDir := filepath.Join(h.root, ".kb", "stores", "default", "eval")
+	if r := h.kb("eval", "--save-baseline"); h.expect(r, 0) && !strings.Contains(r.Stdout, `saved baseline "default"`) {
+		h.fail("save-baseline did not say so:\n%s", r)
+	}
+	if r := h.kb("eval", "--compare"); h.expect(r, 0) && (!strings.Contains(r.Stdout, "chunk: 1 paired queries") || !strings.Contains(r.Stdout, "0/0/1")) {
+		h.fail("comparing a baseline with itself is not one tie:\n%s", r)
+	}
+	// The 4.5 x 2.4 use: the exact list switched off as a variant.
+	if r := h.kb("eval", "--set", "search.exact_list=false", "--compare"); h.expect(r, 0) && (!strings.Contains(r.Stdout, "compare ·") || strings.Contains(r.Stderr, "same settings")) {
+		h.fail("eval --set search.exact_list=false --compare:\n%s", r)
+	}
+	if r := h.kb("eval", "--set", "search.rrf_k=20", "--set", "search.bm25.title=5", "--compare", "--json"); h.expect(r, 0) && !json.Valid([]byte(r.Stdout)) {
+		h.fail("eval --set --compare --json is not valid JSON:\n%s", r)
+	}
+	for _, bad := range [][]string{{"--compare", "nope"}, {"--compare", "../x"}, {"--save-baseline", "Bad Name"}, {"--save-baseline", "--compare"},
+		{"--set", "search.nope=1", "--compare"}, {"--set", "search.rrf_k=-3", "--compare"}, {"--set", "novalue", "--compare"},
+		{"-k", "3", "--compare"}, {"--compare", "a", "b"}, {"--set", "embed.model=zzz", "--compare"}, {"--set", "search.k=0", "--save-baseline", "v"}} {
+		h.expect(h.kb(append([]string{"eval"}, bad...)...), 1)
+	}
+	for name, body := range map[string]string{"garbage": "\x00\xff not json", "future": `{"version": 99}`, "empty": "", "wrongtype": `{"version": 1, "report": []}`} {
+		h.write(filepath.Join(evalDir, name+".json"), body)
+		if r := h.kb("eval", "--compare", name); h.expect(r, 1) && !strings.Contains(r.Stderr, "kb eval --save-baseline "+name) {
+			h.fail("hostile baseline %q gives no way out:\n%s", name, r)
+		}
+	}
+
 	// Delete the gold entry: eval drops it and says so.
 	h.must(os.Remove(filepath.Join(h.root, "data", "eval-a.md")) == nil, "remove eval-a.md")
 	h.must(os.Remove(filepath.Join(h.root, "data", "eval-b.md")) == nil, "remove eval-b.md")
 	h.must(h.kb(withNone("reindex", "--all")...).Code == 0, "reindex after deleting the entries")
 	if r := h.kb("eval"); h.expect(r, 0) && !strings.Contains(r.Stdout, "gold not in index: 1 chunks (1 queries dropped) · 1 entries") {
 		h.fail("deleted gold is not reported as not in the index:\n%s", r)
+	}
+	if r := h.kb("eval", "--compare"); h.expect(r, 0) && (!strings.Contains(r.Stdout, "chunk: 0 paired queries (1 only in the baseline, 0 only now)") || !strings.Contains(r.Stderr, "warning: entry count differs") || strings.Contains(r.Stdout, "warning")) {
+		h.fail("compare after deleting the gold:\n%s", r)
 	}
 	if r := h.kb("search", "pulsarword", "--mode", "fts"); h.expect(r, 0) && !strings.HasPrefix(r.Stdout, "search 2 ·") {
 		h.fail("eval wrote the search log (the next real search is not search 2):\n%s", r)

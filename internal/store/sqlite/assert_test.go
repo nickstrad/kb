@@ -22,8 +22,8 @@ func mustViolate(t *testing.T, kind string, f func()) {
 	f()
 }
 
-// TestRowSetInvariantFires: inside a transaction, a chunk row without its FTS row, or without its
-// vector row, trips the invariant ReplaceEntry checks before commit.
+// TestRowSetInvariantFires: inside a transaction, a chunk row without its FTS row, its exact-index
+// row or its vector row trips the invariant ReplaceEntry checks before commit.
 func TestRowSetInvariantFires(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -33,9 +33,13 @@ func TestRowSetInvariantFires(t *testing.T) {
 	}{
 		{"chunk without fts row", 0, []string{
 			"INSERT INTO chunks (id, entry_id, ord, source_file, heading, text, text_hash) VALUES (7, 1, 0, 'a', '', 't', 'h')"}},
-		{"chunk without vec row", 4, []string{
+		{"chunk without exact row", 0, []string{
 			"INSERT INTO chunks (id, entry_id, ord, source_file, heading, text, text_hash) VALUES (7, 1, 0, 'a', '', 't', 'h')",
 			"INSERT INTO chunks_fts (rowid, text, heading, title) VALUES (7, 't', '', 'T')"}},
+		{"chunk without vec row", 4, []string{
+			"INSERT INTO chunks (id, entry_id, ord, source_file, heading, text, text_hash) VALUES (7, 1, 0, 'a', '', 't', 'h')",
+			"INSERT INTO chunks_fts (rowid, text, heading, title) VALUES (7, 't', '', 'T')",
+			"INSERT INTO chunks_exact (rowid, text, heading) VALUES (7, 't', '')"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := openFaulty(t, tc.dim)

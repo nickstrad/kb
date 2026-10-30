@@ -16,10 +16,11 @@ import (
 	"github.com/nickstrad/kb/internal/store"
 )
 
-// FTS runs one MATCH over chunks_fts, scored with bm25 and q.Weights (text, heading, title; nil
-// is store.DefaultBM25) and returns at most q.Limit rows, best first (bm25 is negative, lower is
-// better). Each term is quoted as one phrase (MatchExpr); a query whose terms all sanitise away
-// runs nothing. A tag filter joins out to entries inside the query, so the LIMIT stays full;
+// FTS runs one MATCH over chunks_fts (q.Exact: chunks_exact), scored with bm25 and q.Weights
+// (text, heading, title; nil is store.DefaultBM25; chunks_exact has no title column) and returns
+// at most q.Limit rows, best first (bm25 is negative, lower is better). Each term is quoted as one
+// phrase (MatchExpr), which the table's own tokenizer splits; a query whose terms all sanitise
+// away runs nothing. A tag filter joins out to entries inside the query, so the LIMIT stays full;
 // q.ChunkIDs, when non-nil, restricts the rows to those chunk ids.
 func (s *Store) FTS(ctx context.Context, q store.FTSQuery) (store.FTSResult, error) {
 	assert.Pre(q.Limit > 0, "FTS: limit=%d must be positive", q.Limit)
@@ -52,16 +53,21 @@ func (s *Store) FTS(ctx context.Context, q store.FTSQuery) (store.FTSResult, err
 	return res, nil
 }
 
-// ftsSQL builds the FTS statement and its arguments. Only the optional clauses vary; every value
-// is a bound parameter.
+// ftsSQL builds the FTS statement and its arguments. Only the optional clauses and the table (one
+// of two fixed names) vary; every value is a bound parameter.
 func ftsSQL(match string, w store.BM25Weights, q store.FTSQuery) (string, []any) {
 	var b strings.Builder
-	b.WriteString(`SELECT f.rowid, bm25(chunks_fts, ?, ?, ?) AS s FROM chunks_fts f`)
+	table := "chunks_fts"
 	args := []any{w.Text, w.Heading, w.Title}
+	if q.Exact {
+		table = "chunks_exact" // columns text, heading
+		args = args[:2]
+	}
+	b.WriteString(`SELECT f.rowid, bm25(` + table + `, ` + placeholders(len(args)) + `) AS s FROM ` + table + ` f`)
 	if q.Tag != "" {
 		b.WriteString(` JOIN chunks c ON c.id = f.rowid JOIN entries e ON e.id = c.entry_id`)
 	}
-	b.WriteString(` WHERE chunks_fts MATCH ?`)
+	b.WriteString(` WHERE ` + table + ` MATCH ?`)
 	args = append(args, match)
 	if q.Tag != "" {
 		b.WriteString(` AND e.tags LIKE ? ESCAPE '\'`)

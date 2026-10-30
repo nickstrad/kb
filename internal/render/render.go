@@ -18,6 +18,9 @@
 // fit, the largest prefix of headers that fits is shown. If not even one header plus the tail fits,
 // the output is empty.
 //
+// Expansion (expand.go): a hit may carry Expanded text (its whole section or entry), which replaces
+// the chunk text as the level-3 body, uncapped; it competes for the budget like any level-3 text.
+//
 // Guarantees (asserted): the output is at most the budget in estimated tokens when the budget is
 // positive, and a larger budget never lowers any hit's level or the number of hits shown.
 package render
@@ -40,6 +43,10 @@ type Hit struct {
 	Updated string // the entry's front-matter date, shown verbatim
 	Summary string // the entry's front-matter summary
 	Text    string // the chunk text
+	// Expanded, when set, is the level-3 body in place of Text: the hit's section or whole entry,
+	// shown whole (no TextLimit). Also lists the ranks of hits merged into this one.
+	Expanded string
+	Also     []int
 }
 
 const (
@@ -215,6 +222,13 @@ func header(h Hit) string {
 	if h.Updated != "" {
 		s += " · updated " + h.Updated
 	}
+	if len(h.Also) > 0 {
+		ranks := make([]string, len(h.Also))
+		for i, r := range h.Also {
+			ranks[i] = fmt.Sprintf("[%d]", r)
+		}
+		s += " · also " + strings.Join(ranks, " ")
+	}
 	return s
 }
 
@@ -233,7 +247,10 @@ func block(h Hit, level int) string {
 		return l2
 	}
 	l3 := head
-	if h.Text != "" {
+	switch {
+	case h.Expanded != "":
+		l3 += "\n" + h.Expanded
+	case h.Text != "":
 		l3 += "\n" + Trim(h.Text, TextLimit)
 	}
 	if utf8.RuneCountInString(l3) < utf8.RuneCountInString(l2) {

@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -27,6 +28,18 @@ var updateExplain = flag.Bool("update-explain", false, "rewrite testdata/golden/
 // corpus has the PLAN accept case: "tmux logout" hits an entry titled "Tmux Notes".
 func newExplainRepo(t *testing.T) string {
 	t.Helper()
+	return newExplainRepoWith(t, explainEntries)
+}
+
+// explainEntry is one fixture entry of an explain repo: its chunks as (heading, text) pairs.
+type explainEntry struct {
+	path, title string
+	chunks      [][2]string
+}
+
+// newExplainRepoWith indexes entries with the fixture model into a fresh search test repo.
+func newExplainRepoWith(t *testing.T, entries []explainEntry) string {
+	t.Helper()
 	root := newSearchTestRepo(t, testModel768, testDim768)
 	ctx := context.Background()
 	st, err := sqlite.Open(ctx, testDBPath(root), sqlite.Options{})
@@ -35,19 +48,6 @@ func newExplainRepo(t *testing.T) string {
 	}
 	defer st.Close()
 	emb := fake.New(testModel768, testDim768)
-	entries := []struct {
-		path, title string
-		chunks      [][2]string // heading, text
-	}{
-		{"tmux.md", "Tmux Notes", [][2]string{
-			{"", "Tmux Notes: sessions survive a logout when the server keeps running"},
-			{"Detach", "press the prefix then d to detach, and the session stays alive after logout"},
-		}},
-		{"ssh.md", "SSH Config", [][2]string{{"", "SSH Config: keepalive settings stop a logout from dropping the link"}}},
-		{"git.md", "Git Tips", [][2]string{{"", "Git Tips: rebase onto main before opening a pull request"}}},
-		{"docker.md", "Docker Volumes", [][2]string{{"", "Docker Volumes: named volumes outlive their container"}}},
-		{"cache.md", "Build Cache", [][2]string{{"", "Build Cache: layers are reused when the inputs are unchanged"}}},
-	}
 	for _, e := range entries {
 		texts := make([]string, len(e.chunks))
 		for i, c := range e.chunks {
@@ -69,6 +69,18 @@ func newExplainRepo(t *testing.T) string {
 		}
 	}
 	return root
+}
+
+// explainEntries are newExplainRepo's five entries.
+var explainEntries = []explainEntry{
+	{"tmux.md", "Tmux Notes", [][2]string{
+		{"", "Tmux Notes: sessions survive a logout when the server keeps running"},
+		{"Detach", "press the prefix then d to detach, and the session stays alive after logout"},
+	}},
+	{"ssh.md", "SSH Config", [][2]string{{"", "SSH Config: keepalive settings stop a logout from dropping the link"}}},
+	{"git.md", "Git Tips", [][2]string{{"", "Git Tips: rebase onto main before opening a pull request"}}},
+	{"docker.md", "Docker Volumes", [][2]string{{"", "Docker Volumes: named volumes outlive their container"}}},
+	{"cache.md", "Build Cache", [][2]string{{"", "Build Cache: layers are reused when the inputs are unchanged"}}},
 }
 
 // withFixtureEmbedder makes the CLI embed with a fake of the fixture's model and width.
@@ -147,11 +159,14 @@ func TestExplainJSONShape(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &top); err != nil {
 		t.Fatalf("json: %v\n%s", err, stdout)
 	}
-	wantKeys(t, "top", top, "candidates", "fts", "k", "mode", "n_fts", "n_vec", "query", "settings", "settings_hash")
+	wantKeys(t, "top", top, "candidates", "exact", "fts", "k", "mode", "n_exact", "n_fts", "n_vec", "query", "settings", "settings_hash")
+	if string(top["exact"]) != "null" {
+		t.Errorf("exact = %s, want null: widget holds no identifier, so no exact list ran", top["exact"])
+	}
 	var settings map[string]json.RawMessage
 	_ = json.Unmarshal(top["settings"], &settings)
-	wantKeys(t, "settings", settings, "bm25_heading", "bm25_text", "bm25_title", "candidate_limit", "fts_weight",
-		"list_limit", "per_entry_cap", "rrf_k", "vec_weight")
+	wantKeys(t, "settings", settings, "bm25_heading", "bm25_text", "bm25_title", "candidate_limit", "exact_list",
+		"exact_weight", "fts_weight", "list_limit", "per_entry_cap", "rrf_k", "vec_weight")
 	var fts map[string]json.RawMessage
 	_ = json.Unmarshal(top["fts"], &fts)
 	wantKeys(t, "fts", fts, "match", "op", "or_fallback")
@@ -161,7 +176,7 @@ func TestExplainJSONShape(t *testing.T) {
 		t.Fatalf("candidates: %v %s", err, top["candidates"])
 	}
 	for _, c := range cands {
-		wantKeys(t, "candidate", c, "chunk_id", "columns", "fts", "heading", "path", "rank", "returned_rank",
+		wantKeys(t, "candidate", c, "chunk_id", "columns", "exact", "fts", "heading", "path", "rank", "returned_rank",
 			"rrf_score", "rrf_terms", "status", "vec")
 		var f, v, col map[string]json.RawMessage
 		_ = json.Unmarshal(c["fts"], &f)
@@ -277,6 +292,76 @@ func TestExplainFormatHelpers(t *testing.T) {
 	} {
 		if tc.got != tc.want {
 			t.Errorf("got %q, want %q", tc.got, tc.want)
+		}
+	}
+}
+
+// identEntries are explainEntries plus three entries naming Go identifiers, two of them with the
+// identifier's words split apart (which the main FTS list also matches).
+var identEntries = append(slices.Clone(explainEntries),
+	explainEntry{"store.md", "Store Notes", [][2]string{
+		{"", "Store Notes: how the index records its model"},
+		{"Embed meta", "EnsureEmbedMeta records the model and dim on a fresh index; reindex_test covers it"},
+	}},
+	explainEntry{"meta.md", "Meta Notes", [][2]string{{"", "Meta Notes: ensure embed meta is recorded before a reindex test"}}},
+	explainEntry{"flags.md", "Flags", [][2]string{{"", "Flags: pass --embed-model to choose the model; see kb.toml"}}},
+)
+
+// TestExplainExactList is the PLAN 4.5 accept case: kb explain "EnsureEmbedMeta" shows the chunk
+// holding it at exact rank 1, with an exact RRF term; a query whose identifier's words are split
+// in other chunks ranks the verbatim chunk first; exact_list=false removes the list.
+func TestExplainExactList(t *testing.T) {
+	useRoot(t, newExplainRepoWith(t, identEntries))
+	withFixtureEmbedder(t)
+	stdout, stderr, exit := runKB(t, []string{"explain", "EnsureEmbedMeta"})
+	if exit != 0 || stderr != "" {
+		t.Fatalf("exit %d stderr %q", exit, stderr)
+	}
+	checkExplainGolden(t, "explain_exact.golden", stdout)
+	for _, want := range []string{`exact: match "EnsureEmbedMeta" · AND · weight 1`, "exact rank 1  bm25", "exact 1/(60+1)="} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("no %q in:\n%s", want, stdout)
+		}
+	}
+
+	for _, tc := range []struct {
+		args []string
+		want string // path of the top candidate
+		ran  bool   // an exact list ran
+	}{
+		{[]string{"explain", "reindex_test", "--mode", "fts", "--json"}, "store.md", true},
+		{[]string{"explain", "--mode", "fts", "--json", "--", "--embed-model"}, "flags.md", true}, // -- ends the flags
+		{[]string{"explain", "kb.toml", "--json"}, "flags.md", true},
+		{[]string{"explain", "reindex_test", "--mode", "fts", "--json", "--set", "search.exact_list=false"}, "", false},
+		{[]string{"explain", "reindex_test", "--mode", "vec", "--json"}, "", false},
+	} {
+		stdout, stderr, exit := runKB(t, tc.args)
+		if exit != 0 {
+			t.Fatalf("%v: exit %d %s", tc.args, exit, stderr)
+		}
+		var ex struct {
+			Exact      *struct{ Match string }
+			Candidates []struct {
+				Path  string
+				Exact *struct{ Rank int }
+			}
+		}
+		if err := json.Unmarshal([]byte(stdout), &ex); err != nil {
+			t.Fatalf("%v: %v", tc.args, err)
+		}
+		if (ex.Exact != nil) != tc.ran {
+			t.Errorf("%v: exact = %+v, want ran=%v", tc.args, ex.Exact, tc.ran)
+		}
+		if !tc.ran {
+			for _, c := range ex.Candidates {
+				if c.Exact != nil {
+					t.Errorf("%v: %s has an exact rank with no exact list", tc.args, c.Path)
+				}
+			}
+			continue
+		}
+		if len(ex.Candidates) == 0 || ex.Candidates[0].Path != tc.want || ex.Candidates[0].Exact == nil || ex.Candidates[0].Exact.Rank != 1 {
+			t.Errorf("%v: top candidate %+v, want %s at exact rank 1", tc.args, ex.Candidates, tc.want)
 		}
 	}
 }

@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -17,6 +18,7 @@ type faultyRetriever struct {
 	store.Retriever
 	failOn  string // "HasVectors", "FTS", "FTS#2", "KNN", "ChunkMeta"
 	ftsOps  []store.FTSOp
+	exact   []bool         // FTSQuery.Exact of each FTS call
 	ftsRows []store.FTSRow // when non-nil, FTS returns these instead of asking the store
 	match   string
 }
@@ -32,6 +34,7 @@ func (f *faultyRetriever) HasVectors(ctx context.Context) (bool, error) {
 
 func (f *faultyRetriever) FTS(ctx context.Context, q store.FTSQuery) (store.FTSResult, error) {
 	f.ftsOps = append(f.ftsOps, q.Op)
+	f.exact = append(f.exact, q.Exact)
 	if f.failOn == "FTS" || (f.failOn == "FTS#2" && len(f.ftsOps) == 2) {
 		return store.FTSResult{}, errDriver
 	}
@@ -65,9 +68,10 @@ func TestSearchStoreErrors(t *testing.T) {
 		{"KNN", "quokka", ModeHybrid},
 		{"FTS", "quokka", ModeFTS},
 		{"FTS#2", "quokka fluffernutter", ModeFTS}, // the OR retry
+		{"FTS#2", "quokka_widget", ModeFTS},        // the exact list (the main AND matched)
 		{"ChunkMeta", "quokka", ModeFTS},
 	} {
-		t.Run(tc.failOn, func(t *testing.T) {
+		t.Run(tc.failOn+" "+tc.query, func(t *testing.T) {
 			s, _ := testSearcher(t)
 			s.Store = &faultyRetriever{Retriever: s.Store, failOn: tc.failOn}
 			out, err := s.Search(context.Background(), Request{Query: tc.query, Mode: tc.mode, K: 8})
@@ -81,7 +85,7 @@ func TestSearchStoreErrors(t *testing.T) {
 	}
 }
 
-// TestFTSListRetryDecision: ftsList retries with OR only when the AND query ran (Match != ""),
+// TestFTSListRetryDecision: lexicalList (both lists) retries with OR only when the AND query ran (Match != ""),
 // found nothing, and had more than one term, and reports the retry exactly then.
 func TestFTSListRetryDecision(t *testing.T) {
 	one := []store.FTSRow{{ChunkID: 1}}
@@ -97,25 +101,32 @@ func TestFTSListRetryDecision(t *testing.T) {
 		{"nothing ran (all terms sanitised away): no retry", []string{"a", "b"}, []store.FTSRow{}, "", []store.FTSOp{store.OpAnd}},
 		{"AND matched: no retry", []string{"a", "b"}, one, "m", []store.FTSOp{store.OpAnd}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := &faultyRetriever{ftsRows: tc.rows, match: tc.match}
-			s := &Searcher{Store: f}
-			_, retried, err := s.ftsList(context.Background(), tc.terms, "", DefaultParams())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if want := len(tc.want) == 2; retried != want {
-				t.Fatalf("retried = %v, want %v", retried, want)
-			}
-			if len(f.ftsOps) != len(tc.want) {
-				t.Fatalf("FTS ops = %v, want %v", f.ftsOps, tc.want)
-			}
-			for i := range tc.want {
-				if f.ftsOps[i] != tc.want[i] {
+		for _, exact := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s exact=%v", tc.name, exact), func(t *testing.T) {
+				f := &faultyRetriever{ftsRows: tc.rows, match: tc.match}
+				s := &Searcher{Store: f}
+				_, retried, err := s.lexicalList(context.Background(), tc.terms, "", DefaultParams(), exact)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i, e := range f.exact {
+					if e != exact {
+						t.Fatalf("FTS call %d has Exact=%v, want %v", i, e, exact)
+					}
+				}
+				if want := len(tc.want) == 2; retried != want {
+					t.Fatalf("retried = %v, want %v", retried, want)
+				}
+				if len(f.ftsOps) != len(tc.want) {
 					t.Fatalf("FTS ops = %v, want %v", f.ftsOps, tc.want)
 				}
-			}
-		})
+				for i := range tc.want {
+					if f.ftsOps[i] != tc.want[i] {
+						t.Fatalf("FTS ops = %v, want %v", f.ftsOps, tc.want)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -132,7 +143,9 @@ func TestFusedBeforeTotalOrder(t *testing.T) {
 		{"tie: better fts rank first", Candidate{ChunkID: 9, RRFScore: 0.1, FTSRank: r(1)}, Candidate{ChunkID: 1, RRFScore: 0.1, FTSRank: r(2)}},
 		{"tie: an fts rank beats none", Candidate{ChunkID: 9, RRFScore: 0.1, FTSRank: r(5)}, Candidate{ChunkID: 1, RRFScore: 0.1, VecRank: r(1)}},
 		{"tie on fts: better vec rank first", Candidate{ChunkID: 9, RRFScore: 0.1, VecRank: r(1)}, Candidate{ChunkID: 1, RRFScore: 0.1, VecRank: r(2)}},
-		{"tie on both ranks: lower chunk id first", Candidate{ChunkID: 1, RRFScore: 0.1, VecRank: r(1)}, Candidate{ChunkID: 2, RRFScore: 0.1, VecRank: r(1)}},
+		{"tie on fts and vec: better exact rank first", Candidate{ChunkID: 9, RRFScore: 0.1, VecRank: r(1), ExactRank: r(1)}, Candidate{ChunkID: 1, RRFScore: 0.1, VecRank: r(1), ExactRank: r(2)}},
+		{"tie on fts and vec: an exact rank beats none", Candidate{ChunkID: 9, RRFScore: 0.1, ExactRank: r(7)}, Candidate{ChunkID: 1, RRFScore: 0.1}},
+		{"tie on every rank: lower chunk id first", Candidate{ChunkID: 1, RRFScore: 0.1, VecRank: r(1), ExactRank: r(1)}, Candidate{ChunkID: 2, RRFScore: 0.1, VecRank: r(1), ExactRank: r(1)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if !fusedBefore(tc.a, tc.b) {

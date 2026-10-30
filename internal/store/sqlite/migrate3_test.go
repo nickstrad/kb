@@ -150,7 +150,7 @@ func TestMigration3(t *testing.T) {
 			v2.Close()
 
 			s := openAtVersion(t, path, 3) // the upgrade under test is v2 to v3
-			defer s.Close()
+			defer func() { s.Close() }()   // s is reopened at the latest version below
 			ctx := context.Background()
 
 			if n := countRows(t, s, "PRAGMA user_version"); n != 3 {
@@ -188,7 +188,11 @@ func TestMigration3(t *testing.T) {
 				}
 			}
 
-			// The reindex path: record the new model, which creates chunks_vec at its width.
+			// The reindex path runs on today's schema (the write paths fill every later index, such
+			// as v6's chunks_exact): upgrade the rest of the way, then record the new model, which
+			// creates chunks_vec at its width.
+			s.Close()
+			s = openAtVersion(t, path, SchemaVersion())
 			if err := s.EnsureEmbedMeta(context.Background(), store.EmbedMeta{Model: "BAAI/bge-small-en-v1.5", Dim: 384}); err != nil {
 				t.Fatalf("EnsureEmbedMeta(384) after the upgrade: %v", err)
 			}
@@ -225,7 +229,8 @@ func TestMigration3DeleteBeforeReindex(t *testing.T) {
 	seedV2(t, v2, "with vectors")
 	v2.Close()
 
-	s := openAtVersion(t, path, 3) // the upgrade under test is v2 to v3
+	openAtVersion(t, path, 3).Close() // the upgrade under test is v2 to v3
+	s := openAtVersion(t, path, SchemaVersion())
 	defer s.Close()
 	if err := s.DeleteEntry(context.Background(), "alpha.md"); err != nil {
 		t.Fatalf("DeleteEntry before reindex: %v", err)

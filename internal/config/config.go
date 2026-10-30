@@ -64,8 +64,9 @@ type Source struct {
 	Exclude []string `toml:"exclude"`
 }
 
-// Search is [search]: retrieval settings. K, the limits, rrf_k, vec_overfetch, bm25 and the fts
-// and vec list weights drive kb search; the other keys are reserved (see the package doc).
+// Search is [search]: retrieval settings. K, the limits, rrf_k, vec_overfetch, bm25, the fts, vec
+// and exact list weights and exact_list drive kb search; the other keys are reserved (see the
+// package doc).
 type Search struct {
 	K                int         `toml:"k" json:"k"`
 	ListLimit        int         `toml:"list_limit" json:"list_limit"`
@@ -98,7 +99,7 @@ type ListWeights struct {
 	Memory float64 `toml:"memory" json:"memory"`
 }
 
-// Output is [output]. Budget is read by kb search; ContextBudget and Expand are reserved.
+// Output is [output]. Budget and Expand are read by kb search; ContextBudget is reserved.
 type Output struct {
 	Budget        int    `toml:"budget"`         // tokens for kb search; 0 = unlimited
 	ContextBudget int    `toml:"context_budget"` // default for kb context

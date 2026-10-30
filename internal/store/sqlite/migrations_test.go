@@ -49,6 +49,7 @@ func TestIndexSteps(t *testing.T) {
 		{"index/0003-vec-width", migrate.EffectReembed},
 		{"index/0004-search-settings", migrate.EffectNone},
 		{"index/0005-hit-store", migrate.EffectNone},
+		{"index/0006-exact-list", migrate.EffectNone},
 	}
 	if len(indexSteps) != len(want) {
 		t.Fatalf("%d steps, the effect table lists %d: add the new step's (ID, Effect) row", len(indexSteps), len(want))
@@ -196,6 +197,60 @@ func TestStepEffects(t *testing.T) {
 				t.Error("the fixture has no searches: the preservation check would be vacuous")
 			}
 		},
+		"index/0006-exact-list": func(t *testing.T, db *sql.DB) {
+			// Backfilled: every chunk is in chunks_exact, and an identifier the main tokenizer
+			// splits is one token there (the v5 fixture's chunks are alpha.md's).
+			if got, want := count(t, db, "SELECT count(*) FROM chunks_exact"), count(t, db, "SELECT count(*) FROM chunks"); got != want || want == 0 {
+				t.Errorf("chunks_exact has %d rows, chunks %d: want equal and non-zero", got, want)
+			}
+			if n := count(t, db, "SELECT count(*) FROM chunks_exact WHERE chunks_exact MATCH 'checkpoint'"); n != 1 {
+				t.Errorf("exact MATCH checkpoint = %d after the backfill, want 1", n)
+			}
+			if n := count(t, db, `SELECT count(*) FROM chunks c JOIN chunks_exact x ON x.rowid = c.id WHERE chunks_exact MATCH 'starvation'`); n != 1 {
+				t.Errorf("exact rowids do not join chunks: %d", n)
+			}
+			if n := count(t, db, "SELECT count(*) FROM chunks_exact_vocab WHERE term = 'checkpoint'"); n != 1 {
+				t.Errorf("chunks_exact_vocab has %d rows for checkpoint, want 1", n)
+			}
+			for _, table := range []string{"search_results", "search_candidates"} {
+				for col, typ := range map[string]string{"exact_rank": "INTEGER", "exact_score": "REAL"} {
+					if n := count(t, db, "SELECT count(*) FROM pragma_table_info('"+table+"') WHERE name = '"+col+"' AND type = '"+typ+"' AND \"notnull\" = 0"); n != 1 {
+						t.Errorf("%s.%s: want one nullable %s column, found %d", table, col, typ, n)
+					}
+					// No search before v6 ran an exact list: NULL, never 0.
+					if n := count(t, db, "SELECT count(*) FROM "+table+" WHERE "+col+" IS NOT NULL"); n != 0 {
+						t.Errorf("%d old %s rows have a %s; want NULL", n, table, col)
+					}
+				}
+			}
+			// The open of search 4 was of the other store's hit (only it returned notes/wal.md):
+			// the inferred store is now on the row.
+			var st sql.NullString
+			if err := db.QueryRow("SELECT store FROM search_opens WHERE search_id = 4").Scan(&st); err != nil {
+				t.Fatal(err)
+			}
+			if st.String != "notes@/Users/someone/knowledge" {
+				t.Errorf("search 4's open store = %v, want the ref that returned the path", st)
+			}
+			var primary sql.NullString
+			if err := db.QueryRow("SELECT store FROM search_opens WHERE search_id = 1").Scan(&primary); err != nil {
+				t.Fatal(err)
+			}
+			if primary.Valid {
+				t.Errorf("search 1's open store = %q, want NULL (this store returned it)", primary.String)
+			}
+			// The key is (search_id, store, entry_path): the same path from another store is a
+			// second open, the same open again is ignored.
+			if _, err := db.Exec("INSERT OR IGNORE INTO search_opens (search_id, store, entry_path, ts) VALUES (1, 'x@/r', 'alpha.md', 't'), (1, NULL, 'alpha.md', 't')"); err != nil {
+				t.Fatal(err)
+			}
+			if n := count(t, db, "SELECT count(*) FROM search_opens WHERE search_id = 1"); n != 2 {
+				t.Errorf("search 1 has %d opens after adding another store's and a duplicate, want 2", n)
+			}
+			if _, err := db.Exec("DELETE FROM search_opens WHERE store = 'x@/r'"); err != nil {
+				t.Fatal(err)
+			}
+		},
 		"index/0005-hit-store": func(t *testing.T, db *sql.DB) {
 			for _, table := range []string{"search_results", "search_candidates"} {
 				if n := count(t, db, "SELECT count(*) FROM pragma_table_info('"+table+"') WHERE name = 'store' AND type = 'TEXT' AND \"notnull\" = 0"); n != 1 {
@@ -277,6 +332,7 @@ var fixtureSeeds = map[int]func(t *testing.T, s *Store){
 	3: seedV3,
 	4: seedV4,
 	5: seedV5,
+	6: seedV6,
 }
 
 func seedV1(t *testing.T, s *Store) {
@@ -371,6 +427,40 @@ func seedV5(t *testing.T, s *Store) {
 		VALUES (4, 1, 2, 'alpha.md', 'Body', 1, -2.5, 1, 0.25, 0.0328, 1, NULL),
 		       (4, 2, 7, 'notes/wal.md', 'WAL', 1, -1.5, NULL, NULL, 0.0164, 1, 'notes@/Users/someone/knowledge');
 		INSERT INTO search_opens (search_id, entry_path, ts) VALUES (4, 'notes/wal.md', '2026-10-04T09:02:00Z');`)
+}
+
+// seedV6 is a v6 store: the v5 data with the open of search 4 carrying its store, plus a search
+// whose hits carry exact-list ranks, an entry whose chunks hold identifiers (written to
+// chunks_exact by ReplaceEntry) and one path opened from two stores of one search (the widened
+// search_opens key).
+func seedV6(t *testing.T, s *Store) {
+	t.Helper()
+	seedV5(t, s)
+	ctx := context.Background()
+	chunks := []store.ChunkInput{
+		{Ord: 0, SourceFile: "beta.md", Text: "Beta: config notes", TextHash: "h3", Embedding: []float32{0, 0, 1, 0}},
+		{Ord: 1, SourceFile: "beta.md", Heading: "Flags", Text: "set --embed-model in kb.toml; see foo_bar and a/b:c", TextHash: "h4", Embedding: []float32{0, 0, 0, 1}},
+	}
+	if _, err := s.ReplaceEntry(ctx, store.EntryInput{Path: "beta.md", Kind: "file", Title: "Beta", Summary: "config notes", BodyHash: "hash-b"}, chunks); err != nil {
+		t.Fatal(err)
+	}
+	execAll(t, s.DB(), `
+		UPDATE search_opens SET store = 'notes@/Users/someone/knowledge' WHERE search_id = 4;
+		INSERT INTO searches (id, ts, query, mode, k, n_returned, caller, corpus_rev, kb_version, settings, settings_hash, fts_query)
+		VALUES (5, '2026-10-05T09:00:00Z', 'foo_bar', 'hybrid', 8, 2, 'claude', NULL, 'v0.5.0',
+		        '{"embed":{"batch":16,"dim":0,"int8":false,"model":"BAAI/bge-small-en-v1.5","workers":0},"search":{"exact_list":true,"k":8,"rrf_k":60}}',
+		        '5c3e0b7a9d1f2e4c6a8b0d2f4e6c8a0b1d3f5e7c9a1b3d5f7e9c1a3b5d7f9e1c', '"foo_bar"');
+		INSERT INTO search_results (search_id, rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, store)
+		VALUES (5, 1, 4, 'beta.md', 'Flags', 1, -2.25, 3, 0.5, 1, -3.5, 0.0484, NULL),
+		       (5, 2, 7, 'beta.md', 'Flags', NULL, NULL, NULL, NULL, 1, -1.25, 0.0164, 'notes@/Users/someone/knowledge');
+		INSERT INTO search_candidates (search_id, fused_rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, returned, store)
+		VALUES (5, 1, 4, 'beta.md', 'Flags', 1, -2.25, 3, 0.5, 1, -3.5, 0.0484, 1, NULL),
+		       (5, 2, 7, 'beta.md', 'Flags', NULL, NULL, NULL, NULL, 1, -1.25, 0.0164, 1, 'notes@/Users/someone/knowledge'),
+		       (5, 3, 3, 'beta.md', '', NULL, NULL, 1, 0.25, NULL, NULL, 0.0164, 0, NULL);
+		INSERT INTO search_feedback (search_id, rank, useful, note, ts) VALUES (5, 1, 1, NULL, '2026-10-05T09:01:00Z');
+		INSERT INTO search_opens (search_id, store, entry_path, ts)
+		VALUES (5, NULL, 'beta.md', '2026-10-05T09:02:00Z'),
+		       (5, 'notes@/Users/someone/knowledge', 'beta.md', '2026-10-05T09:03:00Z');`)
 }
 
 // dumpFixture renders the database at path as the SQL text that rebuilds it: the version, every

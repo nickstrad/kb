@@ -31,7 +31,7 @@ func TestFuseCandidateLimitBoundary(t *testing.T) {
 					vec = append(vec, VecRow{ChunkID: int64(i + 1)})
 				}
 			}
-			if got := Fuse(fts, vec, DefaultParams()); len(got) != tc.want {
+			if got := Fuse(fts, vec, nil, DefaultParams()); len(got) != tc.want {
 				t.Fatalf("len(Fuse) = %d, want %d", len(got), tc.want)
 			}
 		})

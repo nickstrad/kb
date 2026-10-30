@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,7 @@ func Run(t *testing.T, newStore Factory) {
 			t.Run("wrong-dimension vector is a Conflict, previous version intact", func(t *testing.T) { badVectors(t, newStore(t, dim), dim) })
 			t.Run("embed_meta: same is ok, mismatch is a Conflict", func(t *testing.T) { embedMeta(t, newStore(t, dim), dim) })
 			t.Run("FTS: AND/OR ops, tag filter, unmatched terms", func(t *testing.T) { fts(t, newStore(t, dim), dim) })
+			t.Run("FTS Exact: identifiers are whole tokens", func(t *testing.T) { exactFTS(t, newStore(t, dim), dim) })
 			t.Run("KNN: top-k ordered by distance, tag filter", func(t *testing.T) { knn(t, newStore(t, dim), dim) })
 			t.Run("ResetIndex empties the index, keeps the log", func(t *testing.T) { reset(t, newStore(t, dim), dim) })
 			t.Run("SearchLog: log, feedback, LastSearch, RecordOpen", func(t *testing.T) { searchLog(t, newStore(t, dim), dim) })
@@ -100,9 +102,20 @@ func mustReplace(t testing.TB, st store.Store, e store.EntryInput, cs []store.Ch
 
 func ftsIDs(t testing.TB, st store.Store, op store.FTSOp, tag string, terms ...string) []int64 {
 	t.Helper()
-	res, err := st.FTS(ctx, store.FTSQuery{Terms: terms, Op: op, Tag: tag, Limit: 20})
+	return queryIDs(t, st, store.FTSQuery{Terms: terms, Op: op, Tag: tag, Limit: 20})
+}
+
+// exactIDs is ftsIDs over the identifier index (FTSQuery.Exact).
+func exactIDs(t testing.TB, st store.Store, terms ...string) []int64 {
+	t.Helper()
+	return queryIDs(t, st, store.FTSQuery{Terms: terms, Limit: 20, Exact: true})
+}
+
+func queryIDs(t testing.TB, st store.Store, q store.FTSQuery) []int64 {
+	t.Helper()
+	res, err := st.FTS(ctx, q)
 	if err != nil {
-		t.Fatalf("FTS %v: %v", terms, err)
+		t.Fatalf("FTS %+v: %v", q, err)
 	}
 	ids := make([]int64, len(res.Rows))
 	for i, r := range res.Rows {
@@ -138,6 +151,9 @@ func replaceWrites(t *testing.T, st store.Store, dim int) {
 	}
 	if got := ftsIDs(t, st, store.OpAnd, "", "zebracorn"); !slices.Equal(got, chunkIDs(t, st, id)) {
 		t.Errorf("FTS ids %v, want the entry's chunks", got)
+	}
+	if got := exactIDs(t, st, "zebracorn"); !slices.Equal(got, chunkIDs(t, st, id)) {
+		t.Errorf("exact ids %v, want the entry's chunks", got)
 	}
 	meta, err := st.ChunkMeta(ctx, append(chunkIDs(t, st, id), 999999))
 	want := store.ChunkMeta{EntryPath: "a.md", Heading: "h1", Text: "beta zebracorn", EntryID: id, Ord: 1, SourceFile: "f.md"}
@@ -184,6 +200,12 @@ func replaceReplaces(t *testing.T, st store.Store, dim int) {
 	if got := ftsIDs(t, st, store.OpAnd, "", "oldword"); len(got) != 0 {
 		t.Errorf("stale FTS rows %v", got)
 	}
+	if got := exactIDs(t, st, "oldword"); len(got) != 0 {
+		t.Errorf("stale exact rows %v", got)
+	}
+	if got := exactIDs(t, st, "newword"); !slices.Equal(got, chunkIDs(t, st, id2)) {
+		t.Errorf("exact rows %v, want the new chunk", got)
+	}
 	if got := chunkIDs(t, st, id2); len(got) != 1 {
 		t.Errorf("chunks = %v, want 1", got)
 	}
@@ -210,6 +232,12 @@ func deleteRemoves(t *testing.T, st store.Store, dim int) {
 	}
 	if got := ftsIDs(t, st, store.OpAnd, "", "gone"); len(got) != 0 {
 		t.Errorf("FTS rows left: %v", got)
+	}
+	if got := exactIDs(t, st, "gone"); len(got) != 0 {
+		t.Errorf("exact rows left: %v", got)
+	}
+	if got := exactIDs(t, st, "kept"); len(got) != 1 {
+		t.Errorf("the other entry lost its exact rows: %v", got)
 	}
 	if got := ftsIDs(t, st, store.OpAnd, "", "kept"); len(got) != 1 {
 		t.Errorf("the other entry lost its rows: %v", got)
@@ -244,6 +272,12 @@ func badVectors(t *testing.T, st store.Store, dim int) {
 	}
 	if got := ftsIDs(t, st, store.OpAnd, "", "replacement"); len(got) != 0 {
 		t.Errorf("refused chunks written: %v", got)
+	}
+	if got := exactIDs(t, st, "replacement"); len(got) != 0 {
+		t.Errorf("refused chunks written to the exact index: %v", got)
+	}
+	if got := exactIDs(t, st, "original"); !slices.Equal(got, chunkIDs(t, st, id)) {
+		t.Errorf("previous version damaged: exact %v", got)
 	}
 }
 
@@ -292,6 +326,47 @@ func fts(t *testing.T, st store.Store, dim int) {
 	}
 	ftsChunkIDs(t, st, aIDs)
 	ftsWeights(t, st)
+	commonTerm(t, st, dim)
+}
+
+// commonTerm: a term in all but one of N chunks has an idf near zero (FTS5 clamps it to a tiny
+// positive value), so its bm25 scores are about -1e-6, but every matching chunk is still a row:
+// a common term is ranked low, never dropped. Both indexes, one entry and one entry per chunk.
+func commonTerm(t *testing.T, st store.Store, dim int) {
+	for n := 2; n <= 5; n++ {
+		for _, spread := range []bool{false, true} {
+			if err := st.ResetIndex(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.EnsureEmbedMeta(ctx, Meta(dim)); err != nil {
+				t.Fatal(err)
+			}
+			texts := make([]string, n)
+			for i := range texts {
+				texts[i] = fmt.Sprintf("Notes › S%d\n\ncommonterm chunk %d", i, i)
+			}
+			texts[n-1] = "Notes › Other\n\nnothing here"
+			var want []int64
+			if spread {
+				for i, text := range texts {
+					id := mustReplace(t, st, entryIn(fmt.Sprintf("e%d.md", i)), chunks(dim, text))
+					if i < n-1 {
+						want = append(want, chunkIDs(t, st, id)...)
+					}
+				}
+			} else {
+				id := mustReplace(t, st, entryIn("a.md"), chunks(dim, texts...))
+				want = chunkIDs(t, st, id)[:n-1]
+			}
+			slices.Sort(want)
+			if got := ftsIDs(t, st, store.OpAnd, "", "commonterm"); !slices.Equal(got, want) {
+				t.Errorf("n=%d spread=%v: FTS commonterm = %v, want all %d matching chunks %v", n, spread, got, n-1, want)
+			}
+			if got := exactIDs(t, st, "commonterm"); !slices.Equal(got, want) {
+				t.Errorf("n=%d spread=%v: exact commonterm = %v, want %v", n, spread, got, want)
+			}
+		}
+	}
 }
 
 // ftsChunkIDs: a non-nil ChunkIDs restricts the rows to those ids (with or without a tag); an
@@ -411,6 +486,98 @@ func reset(t *testing.T, st store.Store, dim int) {
 	if got := ftsIDs(t, st, store.OpAnd, "", "resetword"); len(got) != 0 {
 		t.Errorf("FTS rows survived reset: %v", got)
 	}
+	if got := exactIDs(t, st, "resetword"); len(got) != 0 {
+		t.Errorf("exact rows survived reset: %v", got)
+	}
+}
+
+// exactFTS: the identifier index keeps `_ - . : /` inside a token, does not stem and does not fold
+// diacritics (it does fold case), so an identifier matches only itself, never its words split
+// apart or a longer identifier that contains it. The main index, for contrast, matches the split
+// words as a phrase.
+func exactFTS(t *testing.T, st store.Store, dim int) {
+	long := strings.Repeat("x", 400) + "_tail"
+	docs := []string{
+		"use foo_bar here",                    // 0
+		"pass --embed-model to kb",            // 1
+		"edit kb.toml now",                    // 2
+		"path a/b:c done",                     // 3
+		"café naïve straße",                   // 4
+		"the " + long + " token",              // 5
+		"foo bar kb toml embed model a b c",   // 6: the same words, split
+		"run reindex_test and pkg.Func calls", // 7
+	}
+	id := mustReplace(t, st, entryIn("a.md", "go"), chunks(dim, docs...))
+	other := mustReplace(t, st, entryIn("b.md"), chunks(dim, "foo_bar elsewhere"))
+	ids := chunkIDs(t, st, id)
+	only := func(i ...int) []int64 {
+		out := make([]int64, len(i))
+		for j, k := range i {
+			out[j] = ids[k]
+		}
+		slices.Sort(out)
+		return out
+	}
+	for _, tc := range []struct {
+		name  string
+		terms []string
+		want  []int64
+	}{
+		{"snake_case", []string{"foo_bar"}, append(only(0), chunkIDs(t, st, other)...)},
+		{"case folds", []string{"FOO_BAR"}, append(only(0), chunkIDs(t, st, other)...)},
+		{"a word of a snake_case identifier is not a token", []string{"foo"}, only(6)},
+		{"--flag", []string{"--embed-model"}, only(1)},
+		{"flag without its dashes is another token", []string{"embed-model"}, nil},
+		{"dotted file name", []string{"kb.toml"}, only(2)},
+		{"pkg.Func", []string{"pkg.Func"}, only(7)},
+		{"underscore test name", []string{"reindex_test"}, only(7)},
+		{"path with colon", []string{"a/b:c"}, only(3)},
+		{"a prefix of a path is not a token", []string{"a/b"}, nil},
+		{"diacritics kept", []string{"café"}, only(4)},
+		{"diacritics not folded", []string{"cafe"}, nil},
+		{"no stemming", []string{"calls"}, only(7)},
+		{"no stemming: stem", []string{"call"}, nil},
+		{"very long token", []string{long}, only(5)},
+		{"surrounding punctuation is not part of the token", []string{"(kb.toml),"}, only(2)},
+		{"two identifiers AND", []string{"reindex_test", "pkg.Func"}, only(7)},
+	} {
+		if got := exactIDs(t, st, tc.terms...); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: exact %v = %v, want %v", tc.name, tc.terms, got, tc.want)
+		}
+	}
+	// The main index splits identifiers into words and matches them as a phrase.
+	if got := ftsIDs(t, st, store.OpAnd, "", "foo_bar"); !slices.Contains(got, ids[6]) || !slices.Contains(got, ids[0]) {
+		t.Errorf("main FTS foo_bar = %v, want the split words (chunk %d) as well as %d", got, ids[6], ids[0])
+	}
+	if got := ftsIDs(t, st, store.OpAnd, "", "cafe"); !slices.Equal(got, only(4)) {
+		t.Errorf("main FTS cafe = %v, want the folded café", got)
+	}
+	// Tag filter, chunk restriction and weights work as on the main index.
+	if got := queryIDs(t, st, store.FTSQuery{Terms: []string{"foo_bar"}, Tag: "go", Limit: 20, Exact: true}); !slices.Equal(got, only(0)) {
+		t.Errorf("exact foo_bar tag go = %v, want only a.md's chunk", got)
+	}
+	if got := queryIDs(t, st, store.FTSQuery{Terms: []string{"foo_bar"}, Limit: 20, Exact: true, ChunkIDs: chunkIDs(t, st, other)}); !slices.Equal(got, chunkIDs(t, st, other)) {
+		t.Errorf("exact foo_bar restricted to b.md = %v", got)
+	}
+	res, err := st.FTS(ctx, store.FTSQuery{Terms: []string{"foo_bar"}, Limit: 1, Exact: true, Weights: &store.BM25Weights{Title: 5}})
+	if err != nil || len(res.Rows) != 1 || res.Rows[0].Score != 0 || res.Match == "" {
+		t.Errorf("exact with only a title weight = %+v, %v; want one row scoring 0 (no title column)", res, err)
+	}
+	// The heading is the exact index's second column: its weight alone scores a heading-only
+	// term, the text weight alone does not. chunks() names chunk 1's heading "h1".
+	for _, tc := range []struct {
+		w        store.BM25Weights
+		wantZero bool
+	}{{store.BM25Weights{Heading: 1}, false}, {store.BM25Weights{Text: 1, Title: 1}, true}} {
+		res, err := st.FTS(ctx, store.FTSQuery{Terms: []string{"h1"}, Limit: 1, Exact: true, Weights: &tc.w, ChunkIDs: only(1)})
+		if err != nil || len(res.Rows) != 1 || (res.Rows[0].Score == 0) != tc.wantZero {
+			t.Errorf("exact heading term with %+v = %+v, %v; want zero=%v", tc.w, res.Rows, err, tc.wantZero)
+		}
+	}
+	res, err = st.FTS(ctx, store.FTSQuery{Terms: []string{"&&"}, Limit: 5, Exact: true})
+	if err != nil || res.Match != "" || len(res.Rows) != 0 {
+		t.Errorf("unmatchable exact terms = %+v, %v; want no query run", res, err)
+	}
 }
 
 func searchLog(t *testing.T, st store.Store, dim int) {
@@ -521,14 +688,57 @@ func searchLogRoundTrip(t *testing.T, st store.Store) {
 	if got, want := fmt.Sprint(tab.Rows), fmt.Sprint([][]any{{int64(1), nil, int64(7), int64(1)}, {int64(2), other, int64(7), int64(1)}, {int64(3), other, int64(8), int64(0)}}); got != want {
 		t.Errorf("search_candidates = %s, want %s", got, want)
 	}
-	// An open of the other store's a.md attaches to this search; so does this store's own a.md
-	// (one row per path: the second is already on record).
+	// An open of the other store's a.md attaches to this search; so does this store's own a.md:
+	// one row per (store, path), with the store (NULL = this one). A repeat is already on record.
 	now := at.Add(time.Minute)
-	if got, err := st.RecordOpen(ctx, store.OpenRecord{Store: other, EntryPath: "a.md", At: now, Window: openWindow}); err != nil || !got {
-		t.Errorf("RecordOpen(%s a.md) = %v, %v; want recorded", other, got, err)
+	for _, tc := range []struct {
+		store, path string
+		want        bool
+	}{
+		{other, "a.md", true},
+		{"", "a.md", true},
+		{other, "a.md", false},
+		{"", "a.md", false},
+		{other, "b.md", false}, // only a candidate
+	} {
+		if got, err := st.RecordOpen(ctx, store.OpenRecord{Store: tc.store, EntryPath: tc.path, At: now, Window: openWindow}); err != nil || got != tc.want {
+			t.Errorf("RecordOpen(%q %s) = %v, %v; want %v", tc.store, tc.path, got, err, tc.want)
+		}
 	}
-	if got, err := st.RecordOpen(ctx, store.OpenRecord{Store: other, EntryPath: "b.md", At: now, Window: openWindow}); err != nil || got {
-		t.Errorf("RecordOpen(%s b.md) = %v, %v; want false (only a candidate)", other, got, err)
+	tab, err = st.QueryLog(ctx, "SELECT store, entry_path FROM search_opens WHERE search_id = ? ORDER BY rowid", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := fmt.Sprint(tab.Rows), fmt.Sprint([][]any{{other, "a.md"}, {nil, "a.md"}}); got != want {
+		t.Errorf("search_opens = %s, want %s", got, want)
+	}
+	exactRoundTrip(t, st, at)
+}
+
+// exactRoundTrip: a hit's place in the exact list is logged with it, NULL when it was not there.
+func exactRoundTrip(t *testing.T, st store.Store, at time.Time) {
+	rank, score := 1, -2.5
+	hit := store.LoggedHit{ChunkID: 3, EntryPath: "x.md", RRFScore: 0.02, ExactRank: &rank, ExactScore: &score}
+	plain := store.LoggedHit{ChunkID: 4, EntryPath: "y.md", RRFScore: 0.01}
+	id, err := st.LogSearch(ctx, store.SearchRecord{TS: at, Query: "foo_bar", Mode: "fts", K: 5, Caller: "c",
+		Results: []store.LoggedHit{hit}, Candidates: []store.LoggedHit{hit, plain}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []struct {
+		sql  string
+		want [][]any
+	}{
+		{"SELECT exact_rank, exact_score FROM search_results WHERE search_id = ? ORDER BY rank", [][]any{{int64(1), -2.5}}},
+		{"SELECT exact_rank, exact_score FROM search_candidates WHERE search_id = ? ORDER BY fused_rank", [][]any{{int64(1), -2.5}, {nil, nil}}},
+	} {
+		tab, err := st.QueryLog(ctx, q.sql, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := fmt.Sprint(tab.Rows), fmt.Sprint(q.want); got != want {
+			t.Errorf("%s = %s, want %s", q.sql, got, want)
+		}
 	}
 }
 
@@ -556,9 +766,9 @@ func entriesByPath(t *testing.T, st store.Store, dim int) {
 }
 
 // judgedLog is the read side of the log (kb eval), for a backend that has one. A cross-store
-// search logs other stores' hits: each verdict carries its hit's store, and opens are split by the
-// store inferred from the search's results at that path (this store's hit first, else the smallest
-// other ref; Q77, Q82). Since is inclusive at the log's one-second resolution.
+// search logs other stores' hits: each verdict carries its hit's store, and each open the store it
+// was recorded with, so one path opened from two stores is in Opens and OtherOpens (Q77, Q82).
+// Since is inclusive at the log's one-second resolution.
 func judgedLog(t *testing.T, st store.Store) {
 	jl, ok := st.(store.JudgedLog)
 	if !ok {
@@ -581,8 +791,9 @@ func judgedLog(t *testing.T, st store.Store) {
 		t.Fatal(err)
 	}
 	for _, o := range []store.OpenRecord{
-		{Store: notes, EntryPath: "a.md"}, // ambiguous: this store returned a.md too
-		{Store: notes, EntryPath: "n.md"}, // ambiguous between notes and adr: the smallest ref
+		{Store: notes, EntryPath: "a.md"}, // this store returned a.md too: both opens count
+		{EntryPath: "a.md"},
+		{Store: adr, EntryPath: "n.md"}, // notes returned n.md too, but adr's was opened
 		{Store: notes, EntryPath: "only.md"},
 	} {
 		o.At, o.Window = at, time.Hour
@@ -600,7 +811,7 @@ func judgedLog(t *testing.T, st store.Store) {
 			{Rank: 5, Store: notes, EntryPath: "only.md", Heading: "H"},
 		},
 		Opens:      []string{"a.md"},
-		OtherOpens: []store.StorePath{{Store: adr, Path: "n.md"}, {Store: notes, Path: "only.md"}},
+		OtherOpens: []store.StorePath{{Store: adr, Path: "n.md"}, {Store: notes, Path: "a.md"}, {Store: notes, Path: "only.md"}},
 	}}
 	if fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", want) {
 		t.Errorf("Judged:\n got %+v\nwant %+v", got, want)

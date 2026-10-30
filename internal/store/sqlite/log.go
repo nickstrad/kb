@@ -72,15 +72,16 @@ func insertResults(ctx context.Context, tx *sql.Tx, searchID int64, results []st
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO search_results
 			(search_id, rank, store, chunk_id, entry_path, heading,
-			 fts_rank, fts_score, vec_rank, vec_distance, rrf_score)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			 fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare search_results: %w", err)
 	}
 	defer stmt.Close()
 	for i, c := range results {
 		if _, err := stmt.ExecContext(ctx, searchID, i+1, nullString(c.Store), c.ChunkID, c.EntryPath, c.Heading,
-			nullInt(c.FTSRank), nullFloat(c.FTSScore), nullInt(c.VecRank), nullFloat(c.VecDistance), c.RRFScore); err != nil {
+			nullInt(c.FTSRank), nullFloat(c.FTSScore), nullInt(c.VecRank), nullFloat(c.VecDistance),
+			nullInt(c.ExactRank), nullFloat(c.ExactScore), c.RRFScore); err != nil {
 			return fmt.Errorf("insert search_results rank %d: %w", i+1, err)
 		}
 	}
@@ -106,8 +107,8 @@ func insertCandidates(ctx context.Context, tx *sql.Tx, searchID int64, candidate
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO search_candidates
 			(search_id, fused_rank, store, chunk_id, entry_path, heading,
-			 fts_rank, fts_score, vec_rank, vec_distance, rrf_score, returned)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			 fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, returned)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare search_candidates: %w", err)
 	}
@@ -118,7 +119,8 @@ func insertCandidates(ctx context.Context, tx *sql.Tx, searchID int64, candidate
 			flag = 1
 		}
 		if _, err := stmt.ExecContext(ctx, searchID, i+1, nullString(c.Store), c.ChunkID, c.EntryPath, c.Heading,
-			nullInt(c.FTSRank), nullFloat(c.FTSScore), nullInt(c.VecRank), nullFloat(c.VecDistance), c.RRFScore, flag); err != nil {
+			nullInt(c.FTSRank), nullFloat(c.FTSScore), nullInt(c.VecRank), nullFloat(c.VecDistance),
+			nullInt(c.ExactRank), nullFloat(c.ExactScore), c.RRFScore, flag); err != nil {
 			return fmt.Errorf("insert search_candidates rank %d: %w", i+1, err)
 		}
 	}
@@ -221,13 +223,14 @@ func (s *Store) feedbackNone(ctx context.Context, searchID int64, note string, a
 // attaches the open to the newest search by id at most o.Window old (inclusive, at the log's
 // one-second resolution) that returned that entry of that store (store IS NULL for this store's
 // own entries, so a same-named path of another store never matches), and writes at most one row
-// for it. Only returned results count: the reader never saw the candidates.
+// per (search, store, path), with the store (NULL = this one). Only returned results count: the
+// reader never saw the candidates.
 func (s *Store) RecordOpen(ctx context.Context, o store.OpenRecord) (bool, error) {
 	entryPath := o.EntryPath
 	now := o.At.UTC()
 	res, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO search_opens (search_id, entry_path, ts)
-		SELECT s.id, ?1, ?2 FROM searches AS s
+		INSERT OR IGNORE INTO search_opens (search_id, store, entry_path, ts)
+		SELECT s.id, ?4, ?1, ?2 FROM searches AS s
 		WHERE s.ts >= ?3
 		  AND EXISTS (SELECT 1 FROM search_results AS r WHERE r.search_id = s.id AND r.entry_path = ?1 AND r.store IS ?4)
 		ORDER BY s.id DESC

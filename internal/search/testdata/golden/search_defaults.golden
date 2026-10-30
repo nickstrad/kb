@@ -333,7 +333,7 @@ hit 18 gen/03.md|section 2 rrf=0.014492753623188406
 hit 19 gen/11.md|section 2 rrf=0.0136986301369863
 hit 20 gen/06.md|section 3 rrf=0.013513513513513514
 == query="draw-visual widget" mode=hybrid k=5 tag=""
-ran=hybrid n_fts=20 n_vec=20
+ran=hybrid n_fts=20 n_vec=20 exact="draw-visual" n_exact=0
 cand  1 chunk=13 gen/00.md| fts=1/-1.8613075300831162e-06 vec=10/0.9774197340011597 rrf=0.030679156908665108
 cand  2 chunk=58 gen/11.md|section 1 fts=11/-1.5528876009107846e-06 vec=7/0.9774197340011597 rrf=0.02900988017658188
 cand  3 chunk=39 gen/06.md|section 2 fts=10/-1.5528876009107846e-06 vec=8/0.9774197340011597 rrf=0.028991596638655463

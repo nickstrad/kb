@@ -61,8 +61,10 @@ var Queries = []Query{
 			"search with no useful result, which includes every --none search); both are NULL when\n" +
 			"nothing in the mode was judged.\n" +
 			"opened_pct is the share of all searches followed by at least one kb show of a returned\n" +
-			"entry, an implicit signal that needs no feedback. It stays apart from hit_rate_pct:\n" +
-			"reading a hit does not mean it answered the question.\n" +
+			"entry, of this store or of another store the search reached (kb show REF:path), an\n" +
+			"implicit signal that needs no feedback; a search counts once however many entries were\n" +
+			"opened. It stays apart from hit_rate_pct: reading a hit does not mean it answered the\n" +
+			"question.\n" +
 			"zero_result_pct is the share of all searches that returned nothing — that one needs no\n" +
 			"feedback, so it is the most trustworthy column when coverage is low. p50_ms and p95_ms\n" +
 			"are continuous quantiles of total_ms, and avg_embed_ms is the mean embedding time, NULL\n" +
@@ -106,18 +108,21 @@ ORDER BY searches DESC, mode`,
 	},
 	{
 		Name:    "sources",
-		Summary: "Where returned hits came from (both lists, FTS only, vector only) and how they rated.",
+		Summary: "Where returned hits came from (both lists, FTS only, vector only, exact only) and how they rated.",
 		Help: "One row per provenance of a result that was actually shown, over hybrid and fts-fallback\n" +
 			"searches only — the two modes where both lists could have contributed. source is 'both'\n" +
 			"when the chunk carried an fts_rank and a vec_rank, 'fts-only' or 'vec-only' when it\n" +
-			"carried just one. results counts result rows (not searches) and share_pct is that share\n" +
+			"carried just one, and 'exact-only' when only the exact-identifier list (a query with an\n" +
+			"identifier such as foo_bar or kb.toml) returned it. with_exact counts the source's rows\n" +
+			"that were also in the exact list, so a 'both' row may be exact too. results counts result rows (not searches) and share_pct is that share\n" +
 			"of every in-scope result row. judged is how many of those rows have a verdict, useful how\n" +
 			"many were marked useful, and useful_rate_pct is useful/judged — NULL when that source was\n" +
 			"never judged, which is the usual reading for fts-only rows nobody bothered to rate. A\n" +
 			"whole-search --none verdict names no result, so it is not counted here.\n" +
 			"avg_rank is the mean display rank of the source's rows, so a high useful_rate_pct at a\n" +
 			"deep avg_rank means the fusion is burying good hits.\n" +
-			"Decision: is the vector list earning its cost; should RRF weighting or vecOverFetch change.",
+			"Decision: is the vector list earning its cost; is the exact list (with_exact, exact-only)\n" +
+			"earning its place; should RRF weighting or vecOverFetch change.",
 		SQL: filterCTE + `,
 in_scope AS (
     -- fts-fallback is a hybrid search whose vector list died: the control group for hybrid
@@ -130,8 +135,10 @@ res AS (
             WHEN r.fts_rank IS NOT NULL AND r.vec_rank IS NOT NULL THEN 'both'
             WHEN r.fts_rank IS NOT NULL THEN 'fts-only'
             WHEN r.vec_rank IS NOT NULL THEN 'vec-only'
+            WHEN r.exact_rank IS NOT NULL THEN 'exact-only'
             ELSE 'unknown'
         END AS source,
+        r.exact_rank IS NOT NULL AS in_exact,
         r.rank AS result_rank,
         (SELECT max(f.useful) FROM search_feedback AS f
           WHERE f.search_id = r.search_id AND f.rank = r.rank) AS useful_verdict
@@ -146,10 +153,11 @@ SELECT
     count(*) FILTER (WHERE useful_verdict) AS useful,
     round(100.0 * count(*) FILTER (WHERE useful_verdict)
           / nullif(count(useful_verdict), 0) * 10) / 10 AS useful_rate_pct,
-    round(avg(result_rank) * 100) / 100 AS avg_rank
+    round(avg(result_rank) * 100) / 100 AS avg_rank,
+    count(*) FILTER (WHERE in_exact) AS with_exact
 FROM res
 GROUP BY source
-ORDER BY CASE source WHEN 'both' THEN 1 WHEN 'fts-only' THEN 2 WHEN 'vec-only' THEN 3 ELSE 4 END,
+ORDER BY CASE source WHEN 'both' THEN 1 WHEN 'fts-only' THEN 2 WHEN 'vec-only' THEN 3 WHEN 'exact-only' THEN 4 ELSE 5 END,
          source`,
 	},
 	{

@@ -1,15 +1,18 @@
-// The store.Index implementation. Everything here keeps four tables consistent:
+// The store.Index implementation. Everything here keeps five tables consistent:
 //
 //	entries      one row per knowledge entry
 //	chunks       the indexed pieces of that entry
 //	chunks_fts   the FTS5 index over chunks (rowid = chunks.id)
+//	chunks_exact the identifier FTS5 index over chunks (rowid = chunks.id; schema v6)
 //	chunks_vec   the sqlite-vec index over chunks (chunk_id = chunks.id)
 //
-// chunks_fts is CONTENTLESS (content='', contentless_delete=1): it keeps only the inverted index,
-// so its columns are write-only and readers join chunks on rowid. title is there only to carry the
-// bm25 weight. chunks_vec exists only when embed_meta records dim > 0 (vec0-width-is-lazy.md).
-// Nothing maintains either index automatically, so every insert into chunks is paired with an
-// insert into both, and every delete with a delete from both, in the same transaction.
+// chunks_fts and chunks_exact are CONTENTLESS (content='', contentless_delete=1): they keep only
+// the inverted index, so their columns are write-only and readers join chunks on rowid. title is in
+// chunks_fts only to carry the bm25 weight. chunks_exact differs only in its tokenizer, which keeps
+// identifiers whole. chunks_vec exists only when embed_meta records dim > 0
+// (vec0-width-is-lazy.md). Nothing maintains any index automatically, so every insert into chunks
+// is paired with an insert into each, and every delete with a delete from each, in the same
+// transaction.
 
 package sqlite
 
@@ -149,9 +152,10 @@ func vecTableExists(ctx context.Context, q queryRower) (bool, error) {
 	return n > 0, nil
 }
 
-// ResetIndex empties the derived index for `kb reindex --all`: entries (chunks cascade), FTS rows,
-// embed_meta and the chunks_vec table, dropped because the next model may have another width. The
-// search log tables are left alone: they are the only data here not rebuildable from Markdown.
+// ResetIndex empties the derived index for `kb reindex --all`: entries (chunks cascade), both FTS
+// indexes, embed_meta and the chunks_vec table, dropped because the next model may have another
+// width. The search log tables are left alone: they are the only data here not rebuildable from
+// Markdown.
 func (s *Store) ResetIndex(ctx context.Context) error {
 	if err := s.resetIndex(ctx); err != nil {
 		return wrap(ctx, err, s.path, "sqlite.ResetIndex", "could not reset the index")
@@ -168,6 +172,7 @@ func (s *Store) resetIndex(ctx context.Context) error {
 	// 'delete-all' empties a contentless index in one statement.
 	for _, stmt := range []string{
 		"INSERT INTO chunks_fts(chunks_fts) VALUES ('delete-all')",
+		"INSERT INTO chunks_exact(chunks_exact) VALUES ('delete-all')",
 		"DROP TABLE IF EXISTS chunks_vec",
 		"DELETE FROM chunks",
 		"DELETE FROM entries",
@@ -324,8 +329,9 @@ func (s *Store) embeddings(ctx context.Context, entryID int64) (map[string][]flo
 
 // ReplaceEntry writes an entry and its complete chunk set in one transaction: the entry row is
 // upserted by path, its old chunks and their FTS and vector rows are removed, and the new chunks go
-// into chunks, chunks_fts and chunks_vec together. Every chunk must carry an embedding of exactly
-// the recorded dim (none on an FTS-only index); a wrong one is a Conflict and nothing is written.
+// into chunks, chunks_fts, chunks_exact and chunks_vec together. Every chunk must carry an
+// embedding of exactly the recorded dim (none on an FTS-only index); a wrong one is a Conflict and
+// nothing is written.
 // embed_meta must be recorded first (EnsureEmbedMeta).
 func (s *Store) ReplaceEntry(ctx context.Context, e store.EntryInput, chunks []store.ChunkInput) (int64, error) {
 	id, err := s.replaceEntry(ctx, e, chunks)
@@ -411,6 +417,11 @@ func (s *Store) replaceEntry(ctx context.Context, e store.EntryInput, chunks []s
 		return 0, fmt.Errorf("prepare fts insert: %w", err)
 	}
 	defer insertFTS.Close()
+	insertExact, err := tx.PrepareContext(ctx, `INSERT INTO chunks_exact (rowid, text, heading) VALUES (?, ?, ?)`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare exact insert: %w", err)
+	}
+	defer insertExact.Close()
 	var insertVec *sql.Stmt
 	if dim > 0 {
 		hasVec, err := vecTableExists(ctx, tx)
@@ -435,6 +446,9 @@ func (s *Store) replaceEntry(ctx context.Context, e store.EntryInput, chunks []s
 		if _, err := insertFTS.ExecContext(ctx, chunkID, c.Text, c.Heading, e.Title); err != nil {
 			return 0, fmt.Errorf("index chunk %d of %s for FTS: %w", c.Ord, e.Path, err)
 		}
+		if _, err := insertExact.ExecContext(ctx, chunkID, c.Text, c.Heading); err != nil {
+			return 0, fmt.Errorf("index chunk %d of %s for identifier search: %w", c.Ord, e.Path, err)
+		}
 		if dim == 0 {
 			continue
 		}
@@ -457,7 +471,7 @@ func (s *Store) replaceEntry(ctx context.Context, e store.EntryInput, chunks []s
 }
 
 // assertRowSets checks, inside the transaction that just wrote them, that the entry's chunk ids
-// are the same set in chunks, chunks_fts and (for dim > 0) chunks_vec. The rows were written by
+// are the same set in chunks, chunks_fts, chunks_exact and (for dim > 0) chunks_vec. The rows were written by
 // this transaction, so a mismatch is a kb bug, not bad data.
 func assertRowSets(ctx context.Context, tx *sql.Tx, entryID int64, n, dim int) {
 	failed := false
@@ -484,6 +498,7 @@ func assertRowSets(ctx context.Context, tx *sql.Tx, entryID int64, n, dim int) {
 	const sub = "(SELECT id FROM chunks WHERE entry_id = ?)"
 	chunkIDs := ids("SELECT id FROM chunks WHERE entry_id = ? ORDER BY id")
 	ftsIDs := ids("SELECT rowid FROM chunks_fts WHERE rowid IN " + sub + " ORDER BY rowid")
+	exactIDs := ids("SELECT rowid FROM chunks_exact WHERE rowid IN " + sub + " ORDER BY rowid")
 	var vecIDs []int64
 	if dim > 0 {
 		vecIDs = ids("SELECT chunk_id FROM chunks_vec WHERE chunk_id IN " + sub + " ORDER BY chunk_id")
@@ -493,12 +508,13 @@ func assertRowSets(ctx context.Context, tx *sql.Tx, entryID int64, n, dim int) {
 	}
 	assert.Invariant(len(chunkIDs) == n, "ReplaceEntry: entry %d has %d chunk rows, wrote %d", entryID, len(chunkIDs), n)
 	assert.Invariant(slices.Equal(ftsIDs, chunkIDs), "ReplaceEntry: entry %d chunks_fts ids %v != chunks ids %v", entryID, ftsIDs, chunkIDs)
+	assert.Invariant(slices.Equal(exactIDs, chunkIDs), "ReplaceEntry: entry %d chunks_exact ids %v != chunks ids %v", entryID, exactIDs, chunkIDs)
 	if dim > 0 {
 		assert.Invariant(slices.Equal(vecIDs, chunkIDs), "ReplaceEntry: entry %d chunks_vec ids %v != chunks ids %v", entryID, vecIDs, chunkIDs)
 	}
 }
 
-// DeleteEntry removes an entry, its chunks and both indexes. A missing entry is not an error:
+// DeleteEntry removes an entry, its chunks and every index of them. A missing entry is not an error:
 // `kb rm` deletes the file first and must still succeed on a stale index.
 func (s *Store) DeleteEntry(ctx context.Context, path string) error {
 	if err := s.deleteEntry(ctx, path); err != nil {
@@ -530,8 +546,8 @@ func (s *Store) deleteEntry(ctx context.Context, path string) error {
 	return nil
 }
 
-// clearChunks removes every chunk of an entry from chunks, chunks_fts and chunks_vec (when it
-// exists). contentless_delete=1 lets the FTS row go with a plain DELETE by rowid.
+// clearChunks removes every chunk of an entry from chunks, chunks_fts, chunks_exact and chunks_vec
+// (when it exists). contentless_delete=1 lets an FTS row go with a plain DELETE by rowid.
 func clearChunks(ctx context.Context, tx *sql.Tx, e *store.EntryRow) error {
 	ids, err := chunkIDsOf(ctx, tx, e.ID)
 	if err != nil {
@@ -547,6 +563,9 @@ func clearChunks(ctx context.Context, tx *sql.Tx, e *store.EntryRow) error {
 	for _, id := range ids {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM chunks_fts WHERE rowid = ?", id); err != nil {
 			return fmt.Errorf("un-index chunk %d of %s: %w", id, e.Path, err)
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM chunks_exact WHERE rowid = ?", id); err != nil {
+			return fmt.Errorf("un-index chunk %d of %s for identifier search: %w", id, e.Path, err)
 		}
 		if !hasVec {
 			continue

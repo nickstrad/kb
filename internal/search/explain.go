@@ -19,7 +19,8 @@ const (
 // Explanation is one search laid open: the settings it ran with, the FTS expression, and every
 // fused candidate (not only the returned hits) with the numbers that placed it. The JSON tags are
 // the `kb explain --json` contract. FTS is nil when no FTS list ran (vec mode, or a query that
-// sanitises to no terms); FallbackReason is "" unless the mode is fts-fallback.
+// sanitises to no terms); Exact is nil when no exact-identifier list ran (no identifier in the
+// query, search.exact_list off, or vec mode); FallbackReason is "" unless the mode is fts-fallback.
 type Explanation struct {
 	Query          string        `json:"query"`
 	Mode           string        `json:"mode"`
@@ -27,9 +28,11 @@ type Explanation struct {
 	SettingsHash   string        `json:"settings_hash"`
 	Settings       ExplainParams `json:"settings"`
 	FTS            *ExplainMatch `json:"fts"`
+	Exact          *ExplainMatch `json:"exact"`
 	FallbackReason string        `json:"fallback_reason,omitempty"`
 	NFTS           int           `json:"n_fts"`
 	NVec           int           `json:"n_vec"`
+	NExact         int           `json:"n_exact"`
 	Candidates     []ExplainHit  `json:"candidates"`
 }
 
@@ -38,6 +41,8 @@ type ExplainParams struct {
 	RRFK           int     `json:"rrf_k"`
 	FTSWeight      float64 `json:"fts_weight"`
 	VecWeight      float64 `json:"vec_weight"`
+	ExactWeight    float64 `json:"exact_weight"`
+	ExactList      bool    `json:"exact_list"`
 	BM25Text       float64 `json:"bm25_text"`
 	BM25Heading    float64 `json:"bm25_heading"`
 	BM25Title      float64 `json:"bm25_title"`
@@ -46,8 +51,8 @@ type ExplainParams struct {
 	PerEntryCap    int     `json:"per_entry_cap"`
 }
 
-// ExplainMatch is the FTS expression that produced the FTS list and whether it is the OR retry
-// (the AND query matched nothing).
+// ExplainMatch is the expression that produced a lexical list (FTS or exact) and whether it is the
+// OR retry (the AND query matched nothing).
 type ExplainMatch struct {
 	Match      string `json:"match"`
 	Op         string `json:"op"` // "AND" or "OR"
@@ -67,19 +72,20 @@ type ExplainHit struct {
 	RRF          []ExplainTerm  `json:"rrf_terms"`
 	FTS          *ExplainFTS    `json:"fts"`
 	Vec          *ExplainVec    `json:"vec"`
+	Exact        *ExplainFTS    `json:"exact"`
 	Columns      *ExplainColumn `json:"columns"`
 }
 
 // ExplainTerm is one list's addend of the RRF score: Weight/(RRFK+Rank).
 type ExplainTerm struct {
-	List   string  `json:"list"` // "fts" or "vec"
+	List   string  `json:"list"` // "fts", "vec" or "exact"
 	Weight float64 `json:"weight"`
 	Rank   int     `json:"rank"`
 	Term   float64 `json:"term"`
 }
 
-// ExplainFTS is the chunk's place in the FTS list; BM25 is the backend score (negative, lower is
-// better).
+// ExplainFTS is the chunk's place in the FTS list or the exact-identifier list; BM25 is the
+// backend score (negative, lower is better).
 type ExplainFTS struct {
 	Rank int     `json:"rank"`
 	BM25 float64 `json:"bm25"`
@@ -120,12 +126,13 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 		K:            out.K,
 		SettingsHash: out.Settings.Hash,
 		Settings: ExplainParams{
-			RRFK: p.RRFK, FTSWeight: p.FTSWeight, VecWeight: p.VecWeight,
+			RRFK: p.RRFK, FTSWeight: p.FTSWeight, VecWeight: p.VecWeight, ExactWeight: p.ExactWeight, ExactList: p.ExactList,
 			BM25Text: p.BM25.Text, BM25Heading: p.BM25.Heading, BM25Title: p.BM25.Title,
 			ListLimit: p.ListLimit, CandidateLimit: p.CandidateLimit, PerEntryCap: p.PerEntryCap,
 		},
 		NFTS:       out.NFTS,
 		NVec:       out.NVec,
+		NExact:     out.NExact,
 		Candidates: make([]ExplainHit, 0, len(out.Candidates)),
 	}
 	if out.FallbackErr != nil {
@@ -138,6 +145,13 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 			op, name = store.OpOr, "OR"
 		}
 		ex.FTS = &ExplainMatch{Match: out.FTSMatch, Op: name, OrFallback: out.FTSFallbackToOr}
+	}
+	if out.ExactMatch != "" {
+		name := "AND"
+		if out.ExactFallbackToOr {
+			name = "OR"
+		}
+		ex.Exact = &ExplainMatch{Match: out.ExactMatch, Op: name, OrFallback: out.ExactFallbackToOr}
 	}
 
 	var cols map[int64]*ExplainColumn
@@ -174,6 +188,11 @@ func (s *Searcher) Explain(ctx context.Context, req Request) (*Explanation, erro
 			h.Vec = &ExplainVec{Rank: *c.VecRank, Distance: *c.VecDistance}
 			h.RRF = append(h.RRF, ExplainTerm{List: "vec", Weight: p.VecWeight, Rank: *c.VecRank,
 				Term: p.VecWeight / float64(p.RRFK+*c.VecRank)})
+		}
+		if c.ExactRank != nil {
+			h.Exact = &ExplainFTS{Rank: *c.ExactRank, BM25: *c.ExactScore}
+			h.RRF = append(h.RRF, ExplainTerm{List: "exact", Weight: p.ExactWeight, Rank: *c.ExactRank,
+				Term: p.ExactWeight / float64(p.RRFK+*c.ExactRank)})
 		}
 		ex.Candidates = append(ex.Candidates, h)
 	}

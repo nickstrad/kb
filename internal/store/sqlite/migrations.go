@@ -86,6 +86,50 @@ var indexSteps = migrate.Steps[execer]{
 			return err
 		},
 	},
+	// PLAN 4.5. chunks_exact is a second contentless FTS index over chunks whose tokenizer keeps
+	// identifiers whole (`foo_bar`, `pkg.Func`, `--flag`, `path/to`, `a:b`: no porter, no
+	// diacritic folding), backfilled from chunks, so no reindex is needed. chunks_exact_vocab
+	// exposes its terms (PLAN 5.6). The log gains each hit's place in the exact list. search_opens
+	// gains the store of the opened entry and its key widens to (search_id, store, entry_path), a
+	// table rebuild: an open recorded before v6 gets the store the reader inferred until now (this
+	// store when the search returned the path from it, else the smallest other ref).
+	{
+		Info: migrate.Info{From: 5, ID: "index/0006-exact-list", Desc: "add the identifier index chunks_exact (backfilled) and its vocab, exact ranks in the log, search_opens.store"},
+		Up: func(ctx context.Context, db execer) error {
+			_, err := db.ExecContext(ctx, `
+			CREATE VIRTUAL TABLE chunks_exact USING fts5(
+			  text, heading,
+			  content='', contentless_delete=1,
+			  tokenize="unicode61 remove_diacritics 0 tokenchars '_-.:/'"
+			);
+			INSERT INTO chunks_exact (rowid, text, heading) SELECT id, text, heading FROM chunks ORDER BY id;
+			CREATE VIRTUAL TABLE chunks_exact_vocab USING fts5vocab(chunks_exact, 'row');
+			ALTER TABLE search_results ADD COLUMN exact_rank INTEGER;
+			ALTER TABLE search_results ADD COLUMN exact_score REAL;
+			ALTER TABLE search_candidates ADD COLUMN exact_rank INTEGER;
+			ALTER TABLE search_candidates ADD COLUMN exact_score REAL;
+			CREATE TABLE search_opens_v6 (
+			  search_id  INTEGER NOT NULL REFERENCES searches(id) ON DELETE CASCADE,
+			  store      TEXT,
+			  entry_path TEXT NOT NULL,
+			  ts         TEXT NOT NULL
+			);
+			INSERT INTO search_opens_v6 (search_id, store, entry_path, ts)
+			SELECT o.search_id,
+			  CASE WHEN EXISTS (SELECT 1 FROM search_results AS r
+			                    WHERE r.search_id = o.search_id AND r.entry_path = o.entry_path AND r.store IS NULL)
+			       THEN NULL
+			       ELSE (SELECT min(r.store) FROM search_results AS r
+			             WHERE r.search_id = o.search_id AND r.entry_path = o.entry_path)
+			  END,
+			  o.entry_path, o.ts
+			FROM search_opens AS o ORDER BY o.rowid;
+			DROP TABLE search_opens;
+			ALTER TABLE search_opens_v6 RENAME TO search_opens;
+			CREATE UNIQUE INDEX search_opens_key ON search_opens (search_id, ifnull(store, ''), entry_path);`)
+			return err
+		},
+	},
 }
 
 func init() {

@@ -229,6 +229,17 @@ func TestDiscoverSymlinks(t *testing.T) {
 	}
 }
 
+// TestDiscoverSymlinkToRootParent: an entries directory linked to the directory that holds the
+// root resolves to exactly "..", not below it; it is still outside and the source is skipped.
+func TestDiscoverSymlinkToRootParent(t *testing.T) {
+	root := mkTree(t, map[string]string{"docs/own.md": "# Own\n"})
+	symlink(t, filepath.Dir(root), filepath.Join(root, "data"))
+	got, skipped, err := Discover(root, []config.Source{{Path: "data", Layout: config.LayoutEntries}})
+	if err != nil || len(got) != 0 || len(skipped) != 1 || skipped[0].Path != "data" || !strings.Contains(skipped[0].Reason, "outside the location root") {
+		t.Fatalf("data -> root's parent: %v %v %v, want one skip of data", paths(got), skipped, err)
+	}
+}
+
 // TestResolveSources: the root-relative path wins, then each entries source in order; a files
 // entry resolves by its path; a miss is NotFound, an outside path Usage.
 func TestResolveSources(t *testing.T) {
@@ -392,6 +403,11 @@ func TestFallbackMeta(t *testing.T) {
 		{"summary cut to 200 runes", FrontMatter{}, long, "x.md", "X", strings.TrimSpace(long[:199*1]) + ""},
 		{"control characters stripped", FrontMatter{}, "# a\x1bb\tc\n\nx\x00y\n", "x.md", "ab c", "xy"},
 		{"name made of separators", FrontMatter{}, "", "dir/-_-.md", "dir/-_-.md", ""},
+		{"two backticks are not a fence", FrontMatter{}, "``\n# Real\n``\n", "x.md", "Real", "``"},
+		{"tilde fence hides its heading", FrontMatter{}, "~~~\n# no\n~~~\n", "x.md", "X", ""},
+		{"a fence closes only on its own marker", FrontMatter{}, "```\n~~~\n# no\n```\n# yes\n", "x.md", "yes", ""},
+		{"empty in-place summary falls back", FrontMatter{Summary: "  "}, "# H\n\npara\n", "x.md", "H", "para"},
+		{"empty summary and title both fall back", FrontMatter{Title: "", Summary: ""}, "# H\n\npara\n", "x.md", "H", "para"},
 		{"invalid UTF-8 in the name is dropped, not upper-cased", FrontMatter{}, "", "dir/\xffab.md", "ab", ""},
 	}
 	for _, tt := range tests {

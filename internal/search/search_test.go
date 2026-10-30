@@ -61,7 +61,7 @@ func TestFuse(t *testing.T) {
 	}
 
 	t.Run("both lists beat one list", func(t *testing.T) {
-		got := Fuse(fts(1, 2), vec(1, 3), DefaultParams())
+		got := Fuse(fts(1, 2), vec(1, 3), nil, DefaultParams())
 		wantOrder := []int64{1, 2, 3}
 		assertOrder(t, got, wantOrder)
 		if want := 1/float64(61) + 1/float64(61); !almostEqual(got[0].RRFScore, want) {
@@ -83,7 +83,7 @@ func TestFuse(t *testing.T) {
 
 	t.Run("tie broken by fts rank then vec rank then id", func(t *testing.T) {
 		// 7 is fts#1/vec#2, 8 is fts#2/vec#1: identical scores, 7 wins on fts rank.
-		got := Fuse(fts(7, 8), vec(8, 7), DefaultParams())
+		got := Fuse(fts(7, 8), vec(8, 7), nil, DefaultParams())
 		assertOrder(t, got, []int64{7, 8})
 		if !almostEqual(got[0].RRFScore, got[1].RRFScore) {
 			t.Fatalf("expected tied scores, got %v and %v", got[0].RRFScore, got[1].RRFScore)
@@ -91,11 +91,11 @@ func TestFuse(t *testing.T) {
 
 		// Two chunks seen only by vec at the same rank cannot happen, but two chunks with no
 		// fts rank and distinct vec ranks must still order by vec rank.
-		got = Fuse(nil, vec(9, 4), DefaultParams())
+		got = Fuse(nil, vec(9, 4), nil, DefaultParams())
 		assertOrder(t, got, []int64{9, 4})
 
 		// Equal scores and no ranks to separate them falls through to the chunk id.
-		got = Fuse(fts(5), fts5ToVec(fts(3)), DefaultParams())
+		got = Fuse(fts(5), fts5ToVec(fts(3)), nil, DefaultParams())
 		if !almostEqual(got[0].RRFScore, got[1].RRFScore) {
 			t.Fatalf("expected tied scores, got %v and %v", got[0].RRFScore, got[1].RRFScore)
 		}
@@ -103,7 +103,7 @@ func TestFuse(t *testing.T) {
 	})
 
 	t.Run("vec only", func(t *testing.T) {
-		got := Fuse(nil, vec(42), DefaultParams())
+		got := Fuse(nil, vec(42), nil, DefaultParams())
 		assertOrder(t, got, []int64{42})
 		if got[0].FTSRank != nil || got[0].FTSScore != nil {
 			t.Errorf("fts fields = %v/%v, want nil", got[0].FTSRank, got[0].FTSScore)
@@ -117,7 +117,7 @@ func TestFuse(t *testing.T) {
 	})
 
 	t.Run("fts only", func(t *testing.T) {
-		got := Fuse(fts(11), nil, DefaultParams())
+		got := Fuse(fts(11), nil, nil, DefaultParams())
 		assertOrder(t, got, []int64{11})
 		if got[0].VecRank != nil || got[0].VecDistance != nil {
 			t.Errorf("vec fields = %v/%v, want nil", got[0].VecRank, got[0].VecDistance)
@@ -125,7 +125,7 @@ func TestFuse(t *testing.T) {
 	})
 
 	t.Run("empty", func(t *testing.T) {
-		if got := Fuse(nil, nil, DefaultParams()); len(got) != 0 {
+		if got := Fuse(nil, nil, nil, DefaultParams()); len(got) != 0 {
 			t.Errorf("Fuse(nil, nil) = %v, want empty", got)
 		}
 	})
@@ -138,7 +138,7 @@ func TestFuse(t *testing.T) {
 			v = append(v, VecRow{ChunkID: 100 + i})
 		}
 		f = append(f, FTSRow{ChunkID: 999}) // a 21st, as if the limit had not been applied
-		if got := Fuse(f, v, DefaultParams()); len(got) != CandidateLimit {
+		if got := Fuse(f, v, nil, DefaultParams()); len(got) != CandidateLimit {
 			t.Errorf("len = %d, want %d", len(got), CandidateLimit)
 		}
 	})
@@ -677,7 +677,7 @@ func TestSearchANDThenORRetry(t *testing.T) {
 	if len(andOnly.Rows) != 0 {
 		t.Fatalf("AND query matched %d rows, want 0 (the fixture must not contain 'fluffernutter')", len(andOnly.Rows))
 	}
-	res, _, err := s.ftsList(ctx, terms, "", DefaultParams())
+	res, _, err := s.lexicalList(ctx, terms, "", DefaultParams(), false)
 	if err != nil {
 		t.Fatalf("fts AND/OR: %v", err)
 	}

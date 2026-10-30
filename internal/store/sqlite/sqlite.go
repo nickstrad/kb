@@ -3,9 +3,9 @@
 // kb uses.
 //
 // Inputs: a database path and Options. Outputs: *Store. Invariants: an entry's rows in chunks,
-// chunks_fts and chunks_vec always move together in one transaction (asserted before commit);
-// the schema version is checked in exactly one place (checkVersion, from Open and Artefact);
-// migrations are an append-only migrate.Steps (migrations.go).
+// chunks_fts, chunks_exact and chunks_vec always move together in one transaction (asserted
+// before commit); the schema version is checked in exactly one place (checkVersion, from Open and
+// Artefact); migrations are an append-only migrate.Steps (migrations.go).
 //
 // BUILD TAG: build with -tags fts5. mattn/go-sqlite3 compiles FTS5 in only under that tag, so
 // Open checks PRAGMA compile_options and fails with that instruction. sqlite-vec is registered as

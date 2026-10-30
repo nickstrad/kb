@@ -99,19 +99,11 @@ func (s *Store) judgedVerdicts(ctx context.Context, since, caller string, out []
 	return nil
 }
 
-// judgedOpens fills Opens and OtherOpens. search_opens has no store column (Q82), so the open's
-// store is inferred from the search's results at that path: this store's own hit wins (RecordOpen
-// matches it for a plain kb show), else the smallest other store's ref. An open whose path the
-// search never returned (only a damaged log has one) counts as this store's.
+// judgedOpens fills Opens and OtherOpens from search_opens.store (NULL = this store; schema v6
+// filled it in for older opens from what the search returned at that path).
 func (s *Store) judgedOpens(ctx context.Context, since, caller string, out []store.JudgedSearch, byID map[int64]int) error {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT o.search_id, o.entry_path,
-			CASE WHEN EXISTS (SELECT 1 FROM search_results AS r
-			                  WHERE r.search_id = o.search_id AND r.entry_path = o.entry_path AND r.store IS NULL)
-			     THEN ''
-			     ELSE coalesce((SELECT min(r.store) FROM search_results AS r
-			                    WHERE r.search_id = o.search_id AND r.entry_path = o.entry_path), '')
-			END
+		SELECT o.search_id, o.entry_path, coalesce(o.store, '')
 		FROM search_opens AS o
 		JOIN searches AS s ON s.id = o.search_id
 		WHERE `+judgedWhere+`

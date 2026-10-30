@@ -12,8 +12,17 @@ measured on the whole composed string (not a sum of parts), so the budget holds 
 monotone in levels. `search.Hit` has no summary/updated; `cli.renderHits` reads them with
 `Store.Entry`. RRF score is JSON only. `[output] budget` is the default; `--budget` (even 0) wins.
 
-**Why it matters.** 4.2 (`--expand`) expands text before allocation: feed bigger `Text` into
-`render.Hit`. 4.3 (`kb context`) should call `render.Render` with `output.context_budget`.
+**Expand (4.2).** `--expand none|section|entry` (default `[output] expand`): `cli/expand.go`
+`expandHits` finds each hit's chunk (heading+text match) in its own store's `Chunks(entryID)` (via
+`lookups[hit.Store]`; no lookup/no `Chunks`/entry gone/chunk changed = unexpanded), and
+`render.Section`/`render.Entry` build the text (context line stripped, section pieces joined by a
+blank line, entry adds `## heading` lines). It lands in `render.Hit.Expanded`, the level-3 body
+(untrimmed), so the budget still holds. `render.Dedupe` merges hits with one key (entry for
+`entry`, entry+file+heading for `section`) into the best rank; header gets ` · also [3] [5]`.
+`--json` adds `expanded` per hit (no dedupe). Note: FTS drops hits for a term present in most
+chunks (bm25 ~0), so CLI tests query a rare tag word.
+
+**Why it matters.** 4.3 (`kb context`) reuses `expandHits` with `section`. 4.3 (`kb context`) should call `render.Render` with `output.context_budget`.
 
 **How to apply.** Change wording: `go test -tags fts5 ./internal/render -update` and review goldens.
 

@@ -1,0 +1,380 @@
+-- exact_list=on
+== query="reindex_test" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=2 n_vec=20 exact="reindex_test" n_exact=1
+cand  1 chunk=15 reindex.md|section 2 fts=2/-2.2887430093577 vec=20/1.0768847465515137 exact=1/-2.9174480755962393 rrf=0.04502247488101534
+cand  2 chunk=14 reindex.md|section 1 fts=1/-2.748056898177294 vec=18/1.0472702980041504 rrf=0.02921395544346364
+cand  3 chunk=12 gamma/README.md|section 3 fts=-/- vec=1/0.9533342719078064 rrf=0.01639344262295082
+cand  4 chunk=20 config.md|section 1 fts=-/- vec=2/0.9587333798408508 rrf=0.016129032258064516
+cand  5 chunk=21 config.md|section 2 fts=-/- vec=3/0.9698590636253357 rrf=0.015873015873015872
+cand  6 chunk=19 config.md| fts=-/- vec=4/0.9770087003707886 rrf=0.015625
+cand  7 chunk=18 flags.md|section 2 fts=-/- vec=5/0.9782592058181763 rrf=0.015384615384615385
+cand  8 chunk=1 alpha.md| fts=-/- vec=6/0.9791658520698547 rrf=0.015151515151515152
+cand  9 chunk=2 alpha.md|section 1 fts=-/- vec=7/0.9807074666023254 rrf=0.014925373134328358
+cand 10 chunk=8 beta.md|section 2 fts=-/- vec=8/0.9928420186042786 rrf=0.014705882352941176
+cand 11 chunk=22 paths.md| fts=-/- vec=9/0.9933151602745056 rrf=0.014492753623188406
+cand 12 chunk=5 alpha.md|section 4 fts=-/- vec=10/0.993596076965332 rrf=0.014285714285714285
+cand 13 chunk=4 alpha.md|section 3 fts=-/- vec=11/0.9991940855979919 rrf=0.014084507042253521
+cand 14 chunk=9 gamma/README.md| fts=-/- vec=12/1.0000221729278564 rrf=0.013888888888888888
+cand 15 chunk=6 beta.md| fts=-/- vec=13/1.0018415451049805 rrf=0.0136986301369863
+cand 16 chunk=10 gamma/README.md|section 1 fts=-/- vec=14/1.0075029134750366 rrf=0.013513513513513514
+cand 17 chunk=16 flags.md| fts=-/- vec=15/1.0180373191833496 rrf=0.013333333333333334
+cand 18 chunk=7 beta.md|section 1 fts=-/- vec=16/1.03680419921875 rrf=0.013157894736842105
+cand 19 chunk=3 alpha.md|section 2 fts=-/- vec=17/1.0395722389221191 rrf=0.012987012987012988
+cand 20 chunk=11 gamma/README.md|section 2 fts=-/- vec=19/1.0691460371017456 rrf=0.012658227848101266
+hit  1 reindex.md|section 2 rrf=0.04502247488101534
+hit  2 reindex.md|section 1 rrf=0.02921395544346364
+hit  3 gamma/README.md|section 3 rrf=0.01639344262295082
+hit  4 config.md|section 1 rrf=0.016129032258064516
+hit  5 config.md|section 2 rrf=0.015873015873015872
+hit  6 config.md| rrf=0.015625
+hit  7 flags.md|section 2 rrf=0.015384615384615385
+hit  8 alpha.md| rrf=0.015151515151515152
+-- exact_list=off
+== query="reindex_test" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=2 n_vec=20
+cand  1 chunk=14 reindex.md|section 1 fts=1/-2.748056898177294 vec=18/1.0472702980041504 rrf=0.02921395544346364
+cand  2 chunk=15 reindex.md|section 2 fts=2/-2.2887430093577 vec=20/1.0768847465515137 rrf=0.028629032258064516
+cand  3 chunk=12 gamma/README.md|section 3 fts=-/- vec=1/0.9533342719078064 rrf=0.01639344262295082
+cand  4 chunk=20 config.md|section 1 fts=-/- vec=2/0.9587333798408508 rrf=0.016129032258064516
+cand  5 chunk=21 config.md|section 2 fts=-/- vec=3/0.9698590636253357 rrf=0.015873015873015872
+cand  6 chunk=19 config.md| fts=-/- vec=4/0.9770087003707886 rrf=0.015625
+cand  7 chunk=18 flags.md|section 2 fts=-/- vec=5/0.9782592058181763 rrf=0.015384615384615385
+cand  8 chunk=1 alpha.md| fts=-/- vec=6/0.9791658520698547 rrf=0.015151515151515152
+cand  9 chunk=2 alpha.md|section 1 fts=-/- vec=7/0.9807074666023254 rrf=0.014925373134328358
+cand 10 chunk=8 beta.md|section 2 fts=-/- vec=8/0.9928420186042786 rrf=0.014705882352941176
+cand 11 chunk=22 paths.md| fts=-/- vec=9/0.9933151602745056 rrf=0.014492753623188406
+cand 12 chunk=5 alpha.md|section 4 fts=-/- vec=10/0.993596076965332 rrf=0.014285714285714285
+cand 13 chunk=4 alpha.md|section 3 fts=-/- vec=11/0.9991940855979919 rrf=0.014084507042253521
+cand 14 chunk=9 gamma/README.md| fts=-/- vec=12/1.0000221729278564 rrf=0.013888888888888888
+cand 15 chunk=6 beta.md| fts=-/- vec=13/1.0018415451049805 rrf=0.0136986301369863
+cand 16 chunk=10 gamma/README.md|section 1 fts=-/- vec=14/1.0075029134750366 rrf=0.013513513513513514
+cand 17 chunk=16 flags.md| fts=-/- vec=15/1.0180373191833496 rrf=0.013333333333333334
+cand 18 chunk=7 beta.md|section 1 fts=-/- vec=16/1.03680419921875 rrf=0.013157894736842105
+cand 19 chunk=3 alpha.md|section 2 fts=-/- vec=17/1.0395722389221191 rrf=0.012987012987012988
+cand 20 chunk=11 gamma/README.md|section 2 fts=-/- vec=19/1.0691460371017456 rrf=0.012658227848101266
+hit  1 reindex.md|section 1 rrf=0.02921395544346364
+hit  2 reindex.md|section 2 rrf=0.028629032258064516
+hit  3 gamma/README.md|section 3 rrf=0.01639344262295082
+hit  4 config.md|section 1 rrf=0.016129032258064516
+hit  5 config.md|section 2 rrf=0.015873015873015872
+hit  6 config.md| rrf=0.015625
+hit  7 flags.md|section 2 rrf=0.015384615384615385
+hit  8 alpha.md| rrf=0.015151515151515152
+-- exact_list=on
+== query="--embed-model" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=2 n_vec=20 exact="--embed-model" n_exact=1
+cand  1 chunk=18 flags.md|section 2 fts=2/-2.4793980382899266 vec=3/0.9477556943893433 exact=1/-3.217886113416878 rrf=0.04839549075403121
+cand  2 chunk=17 flags.md|section 1 fts=1/-2.8129858294840426 vec=7/0.9636406898498535 rrf=0.03131881575727918
+cand  3 chunk=9 gamma/README.md| fts=-/- vec=1/0.9274126887321472 rrf=0.01639344262295082
+cand  4 chunk=2 alpha.md|section 1 fts=-/- vec=2/0.9310064315795898 rrf=0.016129032258064516
+cand  5 chunk=21 config.md|section 2 fts=-/- vec=4/0.954863429069519 rrf=0.015625
+cand  6 chunk=7 beta.md|section 1 fts=-/- vec=5/0.9578165411949158 rrf=0.015384615384615385
+cand  7 chunk=6 beta.md| fts=-/- vec=6/0.9626651406288147 rrf=0.015151515151515152
+cand  8 chunk=23 paths.md|section 1 fts=-/- vec=8/0.9974275827407837 rrf=0.014705882352941176
+cand  9 chunk=5 alpha.md|section 4 fts=-/- vec=9/1.00071120262146 rrf=0.014492753623188406
+cand 10 chunk=4 alpha.md|section 3 fts=-/- vec=10/1.0088433027267456 rrf=0.014285714285714285
+cand 11 chunk=8 beta.md|section 2 fts=-/- vec=11/1.0104061365127563 rrf=0.014084507042253521
+cand 12 chunk=24 paths.md|section 2 fts=-/- vec=12/1.0110543966293335 rrf=0.013888888888888888
+cand 13 chunk=10 gamma/README.md|section 1 fts=-/- vec=13/1.0121612548828125 rrf=0.0136986301369863
+cand 14 chunk=3 alpha.md|section 2 fts=-/- vec=14/1.0137419700622559 rrf=0.013513513513513514
+cand 15 chunk=14 reindex.md|section 1 fts=-/- vec=15/1.0140900611877441 rrf=0.013333333333333334
+cand 16 chunk=15 reindex.md|section 2 fts=-/- vec=16/1.01578950881958 rrf=0.013157894736842105
+cand 17 chunk=11 gamma/README.md|section 2 fts=-/- vec=17/1.017761468887329 rrf=0.012987012987012988
+cand 18 chunk=12 gamma/README.md|section 3 fts=-/- vec=18/1.027444839477539 rrf=0.01282051282051282
+cand 19 chunk=20 config.md|section 1 fts=-/- vec=19/1.028681755065918 rrf=0.012658227848101266
+cand 20 chunk=22 paths.md| fts=-/- vec=20/1.036703109741211 rrf=0.0125
+hit  1 flags.md|section 2 rrf=0.04839549075403121
+hit  2 flags.md|section 1 rrf=0.03131881575727918
+hit  3 gamma/README.md| rrf=0.01639344262295082
+hit  4 alpha.md|section 1 rrf=0.016129032258064516
+hit  5 config.md|section 2 rrf=0.015625
+hit  6 beta.md|section 1 rrf=0.015384615384615385
+hit  7 beta.md| rrf=0.015151515151515152
+hit  8 paths.md|section 1 rrf=0.014705882352941176
+-- exact_list=off
+== query="--embed-model" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=2 n_vec=20
+cand  1 chunk=18 flags.md|section 2 fts=2/-2.4793980382899266 vec=3/0.9477556943893433 rrf=0.03200204813108039
+cand  2 chunk=17 flags.md|section 1 fts=1/-2.8129858294840426 vec=7/0.9636406898498535 rrf=0.03131881575727918
+cand  3 chunk=9 gamma/README.md| fts=-/- vec=1/0.9274126887321472 rrf=0.01639344262295082
+cand  4 chunk=2 alpha.md|section 1 fts=-/- vec=2/0.9310064315795898 rrf=0.016129032258064516
+cand  5 chunk=21 config.md|section 2 fts=-/- vec=4/0.954863429069519 rrf=0.015625
+cand  6 chunk=7 beta.md|section 1 fts=-/- vec=5/0.9578165411949158 rrf=0.015384615384615385
+cand  7 chunk=6 beta.md| fts=-/- vec=6/0.9626651406288147 rrf=0.015151515151515152
+cand  8 chunk=23 paths.md|section 1 fts=-/- vec=8/0.9974275827407837 rrf=0.014705882352941176
+cand  9 chunk=5 alpha.md|section 4 fts=-/- vec=9/1.00071120262146 rrf=0.014492753623188406
+cand 10 chunk=4 alpha.md|section 3 fts=-/- vec=10/1.0088433027267456 rrf=0.014285714285714285
+cand 11 chunk=8 beta.md|section 2 fts=-/- vec=11/1.0104061365127563 rrf=0.014084507042253521
+cand 12 chunk=24 paths.md|section 2 fts=-/- vec=12/1.0110543966293335 rrf=0.013888888888888888
+cand 13 chunk=10 gamma/README.md|section 1 fts=-/- vec=13/1.0121612548828125 rrf=0.0136986301369863
+cand 14 chunk=3 alpha.md|section 2 fts=-/- vec=14/1.0137419700622559 rrf=0.013513513513513514
+cand 15 chunk=14 reindex.md|section 1 fts=-/- vec=15/1.0140900611877441 rrf=0.013333333333333334
+cand 16 chunk=15 reindex.md|section 2 fts=-/- vec=16/1.01578950881958 rrf=0.013157894736842105
+cand 17 chunk=11 gamma/README.md|section 2 fts=-/- vec=17/1.017761468887329 rrf=0.012987012987012988
+cand 18 chunk=12 gamma/README.md|section 3 fts=-/- vec=18/1.027444839477539 rrf=0.01282051282051282
+cand 19 chunk=20 config.md|section 1 fts=-/- vec=19/1.028681755065918 rrf=0.012658227848101266
+cand 20 chunk=22 paths.md| fts=-/- vec=20/1.036703109741211 rrf=0.0125
+hit  1 flags.md|section 2 rrf=0.03200204813108039
+hit  2 flags.md|section 1 rrf=0.03131881575727918
+hit  3 gamma/README.md| rrf=0.01639344262295082
+hit  4 alpha.md|section 1 rrf=0.016129032258064516
+hit  5 config.md|section 2 rrf=0.015625
+hit  6 beta.md|section 1 rrf=0.015384615384615385
+hit  7 beta.md| rrf=0.015151515151515152
+hit  8 paths.md|section 1 rrf=0.014705882352941176
+-- exact_list=on
+== query="kb.toml" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=2 n_vec=20 exact="kb.toml" n_exact=1
+cand  1 chunk=21 config.md|section 2 fts=1/-2.380258834981777 vec=19/1.0474878549575806 exact=1/-3.0603110963010205 rrf=0.04544511309400291
+cand  2 chunk=20 config.md|section 1 fts=2/-2.0520520629702457 vec=17/1.0437777042388916 rrf=0.029116045245077504
+cand  3 chunk=24 paths.md|section 2 fts=-/- vec=1/0.9663532376289368 rrf=0.01639344262295082
+cand  4 chunk=12 gamma/README.md|section 3 fts=-/- vec=2/0.9750463962554932 rrf=0.016129032258064516
+cand  5 chunk=5 alpha.md|section 4 fts=-/- vec=3/0.976266086101532 rrf=0.015873015873015872
+cand  6 chunk=18 flags.md|section 2 fts=-/- vec=4/0.9774627685546875 rrf=0.015625
+cand  7 chunk=4 alpha.md|section 3 fts=-/- vec=5/0.9813554883003235 rrf=0.015384615384615385
+cand  8 chunk=7 beta.md|section 1 fts=-/- vec=6/0.9897873401641846 rrf=0.015151515151515152
+cand  9 chunk=13 reindex.md| fts=-/- vec=7/0.9947241544723511 rrf=0.014925373134328358
+cand 10 chunk=17 flags.md|section 1 fts=-/- vec=8/0.9983046054840088 rrf=0.014705882352941176
+cand 11 chunk=22 paths.md| fts=-/- vec=9/1.0062601566314697 rrf=0.014492753623188406
+cand 12 chunk=6 beta.md| fts=-/- vec=10/1.007686734199524 rrf=0.014285714285714285
+cand 13 chunk=2 alpha.md|section 1 fts=-/- vec=11/1.0121949911117554 rrf=0.014084507042253521
+cand 14 chunk=14 reindex.md|section 1 fts=-/- vec=12/1.0176039934158325 rrf=0.013888888888888888
+cand 15 chunk=3 alpha.md|section 2 fts=-/- vec=13/1.0246719121932983 rrf=0.0136986301369863
+cand 16 chunk=16 flags.md| fts=-/- vec=14/1.0355724096298218 rrf=0.013513513513513514
+cand 17 chunk=9 gamma/README.md| fts=-/- vec=15/1.0408005714416504 rrf=0.013333333333333334
+cand 18 chunk=1 alpha.md| fts=-/- vec=16/1.0430305004119873 rrf=0.013157894736842105
+cand 19 chunk=11 gamma/README.md|section 2 fts=-/- vec=18/1.0456622838974 rrf=0.01282051282051282
+cand 20 chunk=15 reindex.md|section 2 fts=-/- vec=20/1.0481435060501099 rrf=0.0125
+hit  1 config.md|section 2 rrf=0.04544511309400291
+hit  2 config.md|section 1 rrf=0.029116045245077504
+hit  3 paths.md|section 2 rrf=0.01639344262295082
+hit  4 gamma/README.md|section 3 rrf=0.016129032258064516
+hit  5 alpha.md|section 4 rrf=0.015873015873015872
+hit  6 flags.md|section 2 rrf=0.015625
+hit  7 alpha.md|section 3 rrf=0.015384615384615385
+hit  8 beta.md|section 1 rrf=0.015151515151515152
+-- exact_list=off
+== query="kb.toml" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=2 n_vec=20
+cand  1 chunk=20 config.md|section 1 fts=2/-2.0520520629702457 vec=17/1.0437777042388916 rrf=0.029116045245077504
+cand  2 chunk=21 config.md|section 2 fts=1/-2.380258834981777 vec=19/1.0474878549575806 rrf=0.029051670471052088
+cand  3 chunk=24 paths.md|section 2 fts=-/- vec=1/0.9663532376289368 rrf=0.01639344262295082
+cand  4 chunk=12 gamma/README.md|section 3 fts=-/- vec=2/0.9750463962554932 rrf=0.016129032258064516
+cand  5 chunk=5 alpha.md|section 4 fts=-/- vec=3/0.976266086101532 rrf=0.015873015873015872
+cand  6 chunk=18 flags.md|section 2 fts=-/- vec=4/0.9774627685546875 rrf=0.015625
+cand  7 chunk=4 alpha.md|section 3 fts=-/- vec=5/0.9813554883003235 rrf=0.015384615384615385
+cand  8 chunk=7 beta.md|section 1 fts=-/- vec=6/0.9897873401641846 rrf=0.015151515151515152
+cand  9 chunk=13 reindex.md| fts=-/- vec=7/0.9947241544723511 rrf=0.014925373134328358
+cand 10 chunk=17 flags.md|section 1 fts=-/- vec=8/0.9983046054840088 rrf=0.014705882352941176
+cand 11 chunk=22 paths.md| fts=-/- vec=9/1.0062601566314697 rrf=0.014492753623188406
+cand 12 chunk=6 beta.md| fts=-/- vec=10/1.007686734199524 rrf=0.014285714285714285
+cand 13 chunk=2 alpha.md|section 1 fts=-/- vec=11/1.0121949911117554 rrf=0.014084507042253521
+cand 14 chunk=14 reindex.md|section 1 fts=-/- vec=12/1.0176039934158325 rrf=0.013888888888888888
+cand 15 chunk=3 alpha.md|section 2 fts=-/- vec=13/1.0246719121932983 rrf=0.0136986301369863
+cand 16 chunk=16 flags.md| fts=-/- vec=14/1.0355724096298218 rrf=0.013513513513513514
+cand 17 chunk=9 gamma/README.md| fts=-/- vec=15/1.0408005714416504 rrf=0.013333333333333334
+cand 18 chunk=1 alpha.md| fts=-/- vec=16/1.0430305004119873 rrf=0.013157894736842105
+cand 19 chunk=11 gamma/README.md|section 2 fts=-/- vec=18/1.0456622838974 rrf=0.01282051282051282
+cand 20 chunk=15 reindex.md|section 2 fts=-/- vec=20/1.0481435060501099 rrf=0.0125
+hit  1 config.md|section 1 rrf=0.029116045245077504
+hit  2 config.md|section 2 rrf=0.029051670471052088
+hit  3 paths.md|section 2 rrf=0.01639344262295082
+hit  4 gamma/README.md|section 3 rrf=0.016129032258064516
+hit  5 alpha.md|section 4 rrf=0.015873015873015872
+hit  6 flags.md|section 2 rrf=0.015625
+hit  7 alpha.md|section 3 rrf=0.015384615384615385
+hit  8 beta.md|section 1 rrf=0.015151515151515152
+-- exact_list=on
+== query="internal/store/sqlite/retrieve.go" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=1 n_vec=20 exact="internal/store/sqlite/retrieve.go" n_exact=1
+cand  1 chunk=24 paths.md|section 2 fts=1/-2.661485066433304 vec=12/1.0136849880218506 exact=1/-3.0603110963010205 rrf=0.04667577413479053
+cand  2 chunk=15 reindex.md|section 2 fts=-/- vec=1/0.9366570711135864 rrf=0.01639344262295082
+cand  3 chunk=18 flags.md|section 2 fts=-/- vec=2/0.937899649143219 rrf=0.016129032258064516
+cand  4 chunk=7 beta.md|section 1 fts=-/- vec=3/0.9504146575927734 rrf=0.015873015873015872
+cand  5 chunk=8 beta.md|section 2 fts=-/- vec=4/0.9523249864578247 rrf=0.015625
+cand  6 chunk=22 paths.md| fts=-/- vec=5/0.9537109136581421 rrf=0.015384615384615385
+cand  7 chunk=12 gamma/README.md|section 3 fts=-/- vec=6/0.9607014656066895 rrf=0.015151515151515152
+cand  8 chunk=20 config.md|section 1 fts=-/- vec=7/0.9683606028556824 rrf=0.014925373134328358
+cand  9 chunk=5 alpha.md|section 4 fts=-/- vec=8/0.9825453758239746 rrf=0.014705882352941176
+cand 10 chunk=2 alpha.md|section 1 fts=-/- vec=9/0.9975333213806152 rrf=0.014492753623188406
+cand 11 chunk=17 flags.md|section 1 fts=-/- vec=10/1.0061118602752686 rrf=0.014285714285714285
+cand 12 chunk=14 reindex.md|section 1 fts=-/- vec=11/1.0068451166152954 rrf=0.014084507042253521
+cand 13 chunk=3 alpha.md|section 2 fts=-/- vec=13/1.0179492235183716 rrf=0.0136986301369863
+cand 14 chunk=10 gamma/README.md|section 1 fts=-/- vec=14/1.021296739578247 rrf=0.013513513513513514
+cand 15 chunk=9 gamma/README.md| fts=-/- vec=15/1.0227129459381104 rrf=0.013333333333333334
+cand 16 chunk=1 alpha.md| fts=-/- vec=16/1.0244264602661133 rrf=0.013157894736842105
+cand 17 chunk=13 reindex.md| fts=-/- vec=17/1.0308831930160522 rrf=0.012987012987012988
+cand 18 chunk=16 flags.md| fts=-/- vec=18/1.031812071800232 rrf=0.01282051282051282
+cand 19 chunk=6 beta.md| fts=-/- vec=19/1.036719560623169 rrf=0.012658227848101266
+cand 20 chunk=19 config.md| fts=-/- vec=20/1.0433940887451172 rrf=0.0125
+hit  1 paths.md|section 2 rrf=0.04667577413479053
+hit  2 reindex.md|section 2 rrf=0.01639344262295082
+hit  3 flags.md|section 2 rrf=0.016129032258064516
+hit  4 beta.md|section 1 rrf=0.015873015873015872
+hit  5 beta.md|section 2 rrf=0.015625
+hit  6 paths.md| rrf=0.015384615384615385
+hit  7 gamma/README.md|section 3 rrf=0.015151515151515152
+hit  8 config.md|section 1 rrf=0.014925373134328358
+-- exact_list=off
+== query="internal/store/sqlite/retrieve.go" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=1 n_vec=20
+cand  1 chunk=24 paths.md|section 2 fts=1/-2.661485066433304 vec=12/1.0136849880218506 rrf=0.03028233151183971
+cand  2 chunk=15 reindex.md|section 2 fts=-/- vec=1/0.9366570711135864 rrf=0.01639344262295082
+cand  3 chunk=18 flags.md|section 2 fts=-/- vec=2/0.937899649143219 rrf=0.016129032258064516
+cand  4 chunk=7 beta.md|section 1 fts=-/- vec=3/0.9504146575927734 rrf=0.015873015873015872
+cand  5 chunk=8 beta.md|section 2 fts=-/- vec=4/0.9523249864578247 rrf=0.015625
+cand  6 chunk=22 paths.md| fts=-/- vec=5/0.9537109136581421 rrf=0.015384615384615385
+cand  7 chunk=12 gamma/README.md|section 3 fts=-/- vec=6/0.9607014656066895 rrf=0.015151515151515152
+cand  8 chunk=20 config.md|section 1 fts=-/- vec=7/0.9683606028556824 rrf=0.014925373134328358
+cand  9 chunk=5 alpha.md|section 4 fts=-/- vec=8/0.9825453758239746 rrf=0.014705882352941176
+cand 10 chunk=2 alpha.md|section 1 fts=-/- vec=9/0.9975333213806152 rrf=0.014492753623188406
+cand 11 chunk=17 flags.md|section 1 fts=-/- vec=10/1.0061118602752686 rrf=0.014285714285714285
+cand 12 chunk=14 reindex.md|section 1 fts=-/- vec=11/1.0068451166152954 rrf=0.014084507042253521
+cand 13 chunk=3 alpha.md|section 2 fts=-/- vec=13/1.0179492235183716 rrf=0.0136986301369863
+cand 14 chunk=10 gamma/README.md|section 1 fts=-/- vec=14/1.021296739578247 rrf=0.013513513513513514
+cand 15 chunk=9 gamma/README.md| fts=-/- vec=15/1.0227129459381104 rrf=0.013333333333333334
+cand 16 chunk=1 alpha.md| fts=-/- vec=16/1.0244264602661133 rrf=0.013157894736842105
+cand 17 chunk=13 reindex.md| fts=-/- vec=17/1.0308831930160522 rrf=0.012987012987012988
+cand 18 chunk=16 flags.md| fts=-/- vec=18/1.031812071800232 rrf=0.01282051282051282
+cand 19 chunk=6 beta.md| fts=-/- vec=19/1.036719560623169 rrf=0.012658227848101266
+cand 20 chunk=19 config.md| fts=-/- vec=20/1.0433940887451172 rrf=0.0125
+hit  1 paths.md|section 2 rrf=0.03028233151183971
+hit  2 reindex.md|section 2 rrf=0.01639344262295082
+hit  3 flags.md|section 2 rrf=0.016129032258064516
+hit  4 beta.md|section 1 rrf=0.015873015873015872
+hit  5 beta.md|section 2 rrf=0.015625
+hit  6 paths.md| rrf=0.015384615384615385
+hit  7 gamma/README.md|section 3 rrf=0.015151515151515152
+hit  8 config.md|section 1 rrf=0.014925373134328358
+-- exact_list=on
+== query="how is reindex_test run" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=3 n_vec=20 exact="reindex_test" n_exact=1
+cand  1 chunk=15 reindex.md|section 2 fts=3/-2.2887430093577 vec=7/0.9973391890525818 exact=1/-2.9174480755962393 rrf=0.047191831630295056
+cand  2 chunk=14 reindex.md|section 1 fts=1/-5.152055801121678 vec=3/0.9750120639801025 rrf=0.032266458495966696
+cand  3 chunk=12 gamma/README.md|section 3 fts=2/-2.3288956684873425 vec=20/1.0395362377166748 rrf=0.028629032258064516
+cand  4 chunk=18 flags.md|section 2 fts=-/- vec=1/0.948637068271637 rrf=0.01639344262295082
+cand  5 chunk=11 gamma/README.md|section 2 fts=-/- vec=2/0.9609808921813965 rrf=0.016129032258064516
+cand  6 chunk=3 alpha.md|section 2 fts=-/- vec=4/0.9899231195449829 rrf=0.015625
+cand  7 chunk=24 paths.md|section 2 fts=-/- vec=5/0.98996901512146 rrf=0.015384615384615385
+cand  8 chunk=17 flags.md|section 1 fts=-/- vec=6/0.9933988451957703 rrf=0.015151515151515152
+cand  9 chunk=5 alpha.md|section 4 fts=-/- vec=8/1.0056123733520508 rrf=0.014705882352941176
+cand 10 chunk=20 config.md|section 1 fts=-/- vec=9/1.0063899755477905 rrf=0.014492753623188406
+cand 11 chunk=10 gamma/README.md|section 1 fts=-/- vec=10/1.0073786973953247 rrf=0.014285714285714285
+cand 12 chunk=16 flags.md| fts=-/- vec=11/1.007454752922058 rrf=0.014084507042253521
+cand 13 chunk=4 alpha.md|section 3 fts=-/- vec=12/1.0113146305084229 rrf=0.013888888888888888
+cand 14 chunk=7 beta.md|section 1 fts=-/- vec=13/1.0147860050201416 rrf=0.0136986301369863
+cand 15 chunk=21 config.md|section 2 fts=-/- vec=14/1.015292763710022 rrf=0.013513513513513514
+cand 16 chunk=22 paths.md| fts=-/- vec=15/1.0169579982757568 rrf=0.013333333333333334
+cand 17 chunk=19 config.md| fts=-/- vec=16/1.020520806312561 rrf=0.013157894736842105
+cand 18 chunk=23 paths.md|section 1 fts=-/- vec=17/1.026452898979187 rrf=0.012987012987012988
+cand 19 chunk=6 beta.md| fts=-/- vec=18/1.0334614515304565 rrf=0.01282051282051282
+cand 20 chunk=1 alpha.md| fts=-/- vec=19/1.0337800979614258 rrf=0.012658227848101266
+hit  1 reindex.md|section 2 rrf=0.047191831630295056
+hit  2 reindex.md|section 1 rrf=0.032266458495966696
+hit  3 gamma/README.md|section 3 rrf=0.028629032258064516
+hit  4 flags.md|section 2 rrf=0.01639344262295082
+hit  5 gamma/README.md|section 2 rrf=0.016129032258064516
+hit  6 alpha.md|section 2 rrf=0.015625
+hit  7 paths.md|section 2 rrf=0.015384615384615385
+hit  8 flags.md|section 1 rrf=0.015151515151515152
+-- exact_list=off
+== query="how is reindex_test run" mode=hybrid k=8 tag=""
+ran=hybrid n_fts=3 n_vec=20
+cand  1 chunk=14 reindex.md|section 1 fts=1/-5.152055801121678 vec=3/0.9750120639801025 rrf=0.032266458495966696
+cand  2 chunk=15 reindex.md|section 2 fts=3/-2.2887430093577 vec=7/0.9973391890525818 rrf=0.030798389007344232
+cand  3 chunk=12 gamma/README.md|section 3 fts=2/-2.3288956684873425 vec=20/1.0395362377166748 rrf=0.028629032258064516
+cand  4 chunk=18 flags.md|section 2 fts=-/- vec=1/0.948637068271637 rrf=0.01639344262295082
+cand  5 chunk=11 gamma/README.md|section 2 fts=-/- vec=2/0.9609808921813965 rrf=0.016129032258064516
+cand  6 chunk=3 alpha.md|section 2 fts=-/- vec=4/0.9899231195449829 rrf=0.015625
+cand  7 chunk=24 paths.md|section 2 fts=-/- vec=5/0.98996901512146 rrf=0.015384615384615385
+cand  8 chunk=17 flags.md|section 1 fts=-/- vec=6/0.9933988451957703 rrf=0.015151515151515152
+cand  9 chunk=5 alpha.md|section 4 fts=-/- vec=8/1.0056123733520508 rrf=0.014705882352941176
+cand 10 chunk=20 config.md|section 1 fts=-/- vec=9/1.0063899755477905 rrf=0.014492753623188406
+cand 11 chunk=10 gamma/README.md|section 1 fts=-/- vec=10/1.0073786973953247 rrf=0.014285714285714285
+cand 12 chunk=16 flags.md| fts=-/- vec=11/1.007454752922058 rrf=0.014084507042253521
+cand 13 chunk=4 alpha.md|section 3 fts=-/- vec=12/1.0113146305084229 rrf=0.013888888888888888
+cand 14 chunk=7 beta.md|section 1 fts=-/- vec=13/1.0147860050201416 rrf=0.0136986301369863
+cand 15 chunk=21 config.md|section 2 fts=-/- vec=14/1.015292763710022 rrf=0.013513513513513514
+cand 16 chunk=22 paths.md| fts=-/- vec=15/1.0169579982757568 rrf=0.013333333333333334
+cand 17 chunk=19 config.md| fts=-/- vec=16/1.020520806312561 rrf=0.013157894736842105
+cand 18 chunk=23 paths.md|section 1 fts=-/- vec=17/1.026452898979187 rrf=0.012987012987012988
+cand 19 chunk=6 beta.md| fts=-/- vec=18/1.0334614515304565 rrf=0.01282051282051282
+cand 20 chunk=1 alpha.md| fts=-/- vec=19/1.0337800979614258 rrf=0.012658227848101266
+hit  1 reindex.md|section 1 rrf=0.032266458495966696
+hit  2 reindex.md|section 2 rrf=0.030798389007344232
+hit  3 gamma/README.md|section 3 rrf=0.028629032258064516
+hit  4 flags.md|section 2 rrf=0.01639344262295082
+hit  5 gamma/README.md|section 2 rrf=0.016129032258064516
+hit  6 alpha.md|section 2 rrf=0.015625
+hit  7 paths.md|section 2 rrf=0.015384615384615385
+hit  8 flags.md|section 1 rrf=0.015151515151515152
+-- exact_list=on
+== query="reindex_test" mode=fts k=8 tag=""
+ran=fts n_fts=2 n_vec=0 exact="reindex_test" n_exact=1
+cand  1 chunk=15 reindex.md|section 2 fts=2/-2.2887430093577 vec=-/- exact=1/-2.9174480755962393 rrf=0.03252247488101534
+cand  2 chunk=14 reindex.md|section 1 fts=1/-2.748056898177294 vec=-/- rrf=0.01639344262295082
+hit  1 reindex.md|section 2 rrf=0.03252247488101534
+hit  2 reindex.md|section 1 rrf=0.01639344262295082
+-- exact_list=off
+== query="reindex_test" mode=fts k=8 tag=""
+ran=fts n_fts=2 n_vec=0
+cand  1 chunk=14 reindex.md|section 1 fts=1/-2.748056898177294 vec=-/- rrf=0.01639344262295082
+cand  2 chunk=15 reindex.md|section 2 fts=2/-2.2887430093577 vec=-/- rrf=0.016129032258064516
+hit  1 reindex.md|section 1 rrf=0.01639344262295082
+hit  2 reindex.md|section 2 rrf=0.016129032258064516
+-- exact_list=on
+== query="--embed-model" mode=fts k=8 tag=""
+ran=fts n_fts=2 n_vec=0 exact="--embed-model" n_exact=1
+cand  1 chunk=18 flags.md|section 2 fts=2/-2.4793980382899266 vec=-/- exact=1/-3.217886113416878 rrf=0.03252247488101534
+cand  2 chunk=17 flags.md|section 1 fts=1/-2.8129858294840426 vec=-/- rrf=0.01639344262295082
+hit  1 flags.md|section 2 rrf=0.03252247488101534
+hit  2 flags.md|section 1 rrf=0.01639344262295082
+-- exact_list=off
+== query="--embed-model" mode=fts k=8 tag=""
+ran=fts n_fts=2 n_vec=0
+cand  1 chunk=17 flags.md|section 1 fts=1/-2.8129858294840426 vec=-/- rrf=0.01639344262295082
+cand  2 chunk=18 flags.md|section 2 fts=2/-2.4793980382899266 vec=-/- rrf=0.016129032258064516
+hit  1 flags.md|section 1 rrf=0.01639344262295082
+hit  2 flags.md|section 2 rrf=0.016129032258064516
+-- exact_list=on
+== query="kb.toml" mode=fts k=8 tag=""
+ran=fts n_fts=2 n_vec=0 exact="kb.toml" n_exact=1
+cand  1 chunk=21 config.md|section 2 fts=1/-2.380258834981777 vec=-/- exact=1/-3.0603110963010205 rrf=0.03278688524590164
+cand  2 chunk=20 config.md|section 1 fts=2/-2.0520520629702457 vec=-/- rrf=0.016129032258064516
+hit  1 config.md|section 2 rrf=0.03278688524590164
+hit  2 config.md|section 1 rrf=0.016129032258064516
+-- exact_list=off
+== query="kb.toml" mode=fts k=8 tag=""
+ran=fts n_fts=2 n_vec=0
+cand  1 chunk=21 config.md|section 2 fts=1/-2.380258834981777 vec=-/- rrf=0.01639344262295082
+cand  2 chunk=20 config.md|section 1 fts=2/-2.0520520629702457 vec=-/- rrf=0.016129032258064516
+hit  1 config.md|section 2 rrf=0.01639344262295082
+hit  2 config.md|section 1 rrf=0.016129032258064516
+-- exact_list=on
+== query="internal/store/sqlite/retrieve.go" mode=fts k=8 tag=""
+ran=fts n_fts=1 n_vec=0 exact="internal/store/sqlite/retrieve.go" n_exact=1
+cand  1 chunk=24 paths.md|section 2 fts=1/-2.661485066433304 vec=-/- exact=1/-3.0603110963010205 rrf=0.03278688524590164
+hit  1 paths.md|section 2 rrf=0.03278688524590164
+-- exact_list=off
+== query="internal/store/sqlite/retrieve.go" mode=fts k=8 tag=""
+ran=fts n_fts=1 n_vec=0
+cand  1 chunk=24 paths.md|section 2 fts=1/-2.661485066433304 vec=-/- rrf=0.01639344262295082
+hit  1 paths.md|section 2 rrf=0.01639344262295082
+-- exact_list=on
+== query="how is reindex_test run" mode=fts k=8 tag=""
+ran=fts n_fts=3 n_vec=0 exact="reindex_test" n_exact=1
+cand  1 chunk=15 reindex.md|section 2 fts=3/-2.2887430093577 vec=-/- exact=1/-2.9174480755962393 rrf=0.032266458495966696
+cand  2 chunk=14 reindex.md|section 1 fts=1/-5.152055801121678 vec=-/- rrf=0.01639344262295082
+cand  3 chunk=12 gamma/README.md|section 3 fts=2/-2.3288956684873425 vec=-/- rrf=0.016129032258064516
+hit  1 reindex.md|section 2 rrf=0.032266458495966696
+hit  2 reindex.md|section 1 rrf=0.01639344262295082
+hit  3 gamma/README.md|section 3 rrf=0.016129032258064516
+-- exact_list=off
+== query="how is reindex_test run" mode=fts k=8 tag=""
+ran=fts n_fts=3 n_vec=0
+cand  1 chunk=14 reindex.md|section 1 fts=1/-5.152055801121678 vec=-/- rrf=0.01639344262295082
+cand  2 chunk=12 gamma/README.md|section 3 fts=2/-2.3288956684873425 vec=-/- rrf=0.016129032258064516
+cand  3 chunk=15 reindex.md|section 2 fts=3/-2.2887430093577 vec=-/- rrf=0.015873015873015872
+hit  1 reindex.md|section 1 rrf=0.01639344262295082
+hit  2 gamma/README.md|section 3 rrf=0.016129032258064516
+hit  3 reindex.md|section 2 rrf=0.015873015873015872

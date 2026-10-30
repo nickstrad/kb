@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/nickstrad/kb/internal/config"
 	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/search"
 	"github.com/nickstrad/kb/internal/store"
 	"github.com/nickstrad/kb/internal/workspace"
@@ -136,12 +138,30 @@ func (d *deps) openExtraStores(cmd *cobra.Command, ws *workspace.Workspace, refs
 		part, err := d.extraPart(cmd, t.label, o, mode, settings, memo, embs)
 		if err != nil {
 			o.Store.Close()
-			warnSkip(cmd, t.label, "%v", err)
+			d.skipExtra(cmd, t.label, err)
 			continue
 		}
 		x.parts, x.stores = append(x.parts, part), append(x.stores, o.Store)
 	}
 	return x, nil
+}
+
+// skipExtra leaves one extra store out with its warning (DEFAULTS 175/206: a broken extra store
+// never fails the search). An Internal error is a kb bug, not a store problem, so it is also
+// recorded as an incident and the warning names its id (CODING_STYLE 1.5, 1.6: a worker does not
+// decide that a store "doesn't matter"; the coordinator surfaces what it cannot classify). Under
+// --debug the full chain follows.
+func (d *deps) skipExtra(cmd *cobra.Command, label string, err error) {
+	if errs.KindOf(err) != errs.Internal {
+		warnSkip(cmd, label, "%v", err)
+		return
+	}
+	id := newIncidentID()
+	where := writeIncident(d, cmd, id, []string{cmd.CommandPath()}, incident{Kind: errs.Internal.String(), Chain: errs.Chain(err), Stack: stackOf(err)})
+	warnSkip(cmd, label, "%v (internal error, a kb bug: id %s, details %s; please report it)", err, id, where)
+	if debugFlag(cmd) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", detail(err))
+	}
 }
 
 // extraPart sets up the search of one opened extra store: its own config and embedder (checked

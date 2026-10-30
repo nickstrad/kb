@@ -99,7 +99,7 @@ func TestCandidateLimitParamBoundary(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := DefaultParams()
 			p.CandidateLimit = tc.limit
-			if got := Fuse(fts, vec, p); len(got) != tc.want {
+			if got := Fuse(fts, vec, nil, p); len(got) != tc.want {
 				t.Fatalf("len(Fuse) = %d, want %d", len(got), tc.want)
 			}
 		})
@@ -165,7 +165,7 @@ func TestRRFKParamBoundary(t *testing.T) {
 		t.Run(fmt.Sprint("rrf_k ", k), func(t *testing.T) {
 			p := DefaultParams()
 			p.RRFK = k
-			got := Fuse([]FTSRow{{ChunkID: 1}, {ChunkID: 2}}, []VecRow{{ChunkID: 1}}, p)
+			got := Fuse([]FTSRow{{ChunkID: 1}, {ChunkID: 2}}, []VecRow{{ChunkID: 1}}, nil, p)
 			if want := 1/float64(k+1) + 1/float64(k+1); got[0].RRFScore != want {
 				t.Errorf("chunk 1 = %v, want %v", got[0].RRFScore, want)
 			}
@@ -176,32 +176,36 @@ func TestRRFKParamBoundary(t *testing.T) {
 	}
 }
 
-// TestListWeightParamBoundary: a list's weight multiplies its RRF term, from 0 (no score) to the
+// TestListWeightParamBoundary: a list's weight (fts, vec, exact) multiplies its RRF term, from 0 (no score) to the
 // config maximum (still finite).
 func TestListWeightParamBoundary(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		fts, vec float64
+		name            string
+		fts, vec, exact float64
 	}{
-		{"both 0 (min)", 0, 0},
-		{"fts 0", 0, 1},
-		{"vec 0", 1, 0},
-		{"fts 0.5, vec 2", 0.5, 2},
-		{"both MaxWeight", config.MaxWeight, config.MaxWeight},
+		{"all 0 (min)", 0, 0, 0},
+		{"fts 0", 0, 1, 1},
+		{"vec 0", 1, 0, 1},
+		{"exact 0", 1, 1, 0},
+		{"fts 0.5, vec 2, exact 4", 0.5, 2, 4},
+		{"all MaxWeight", config.MaxWeight, config.MaxWeight, config.MaxWeight},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := DefaultParams()
-			p.FTSWeight, p.VecWeight, p.RRFK = tc.fts, tc.vec, 1
-			got := Fuse([]FTSRow{{ChunkID: 1}}, []VecRow{{ChunkID: 1}, {ChunkID: 2}}, p)
+			p.FTSWeight, p.VecWeight, p.ExactWeight, p.RRFK = tc.fts, tc.vec, tc.exact, 1
+			got := Fuse([]FTSRow{{ChunkID: 1}}, []VecRow{{ChunkID: 1}, {ChunkID: 2}}, []FTSRow{{ChunkID: 3}, {ChunkID: 1}}, p)
 			byID := map[int64]float64{}
 			for _, c := range got {
 				byID[c.ChunkID] = c.RRFScore
 			}
-			if want := tc.fts/2 + tc.vec/2; byID[1] != want || math.IsInf(byID[1], 0) {
+			if want := tc.fts/2 + tc.vec/2 + tc.exact/3; byID[1] != want || math.IsInf(byID[1], 0) {
 				t.Errorf("chunk 1 = %v, want %v", byID[1], want)
 			}
 			if want := tc.vec / 3; byID[2] != want {
 				t.Errorf("chunk 2 = %v, want %v", byID[2], want)
+			}
+			if want := tc.exact / 2; byID[3] != want {
+				t.Errorf("chunk 3 = %v, want %v", byID[3], want)
 			}
 		})
 	}

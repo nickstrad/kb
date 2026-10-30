@@ -56,6 +56,13 @@ func goldenEntries() []testEntry {
 // goldenSearcher indexes goldenEntries, in order, with the prefix-blind fake embedder.
 func goldenSearcher(t *testing.T) *Searcher {
 	t.Helper()
+	return indexedSearcher(t, goldenEntries())
+}
+
+// indexedSearcher indexes entries, in order, with the prefix-blind fake embedder: chunk j > 0 gets
+// the heading "section j".
+func indexedSearcher(t testing.TB, entries []testEntry) *Searcher {
+	t.Helper()
 	ctx := context.Background()
 	emb := prefixBlindEmbedder{fake.New("fake-embed", 768)}
 	st, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "kb.sqlite"), sqlite.Options{})
@@ -66,7 +73,7 @@ func goldenSearcher(t *testing.T) *Searcher {
 	if err := st.EnsureEmbedMeta(ctx, store.EmbedMeta{Model: emb.Model(), Dim: emb.Dim()}); err != nil {
 		t.Fatal(err)
 	}
-	for _, e := range goldenEntries() {
+	for _, e := range entries {
 		texts := make([]string, len(e.chunks))
 		for j, text := range e.chunks {
 			texts[j] = embed.DocPrefix + text
@@ -119,7 +126,11 @@ func renderOutcome(req Request, out *Outcome) string {
 	var b strings.Builder
 	f := func(v float64) string { return strconv.FormatFloat(v, 'g', -1, 64) }
 	fmt.Fprintf(&b, "== query=%q mode=%s k=%d tag=%q\n", req.Query, req.Mode, req.K, req.Tag)
-	fmt.Fprintf(&b, "ran=%s n_fts=%d n_vec=%d\n", out.Mode, out.NFTS, out.NVec)
+	fmt.Fprintf(&b, "ran=%s n_fts=%d n_vec=%d", out.Mode, out.NFTS, out.NVec)
+	if out.ExactMatch != "" { // only when the exact list ran, so two-list goldens are unchanged
+		fmt.Fprintf(&b, " exact=%s n_exact=%d", out.ExactMatch, out.NExact)
+	}
+	b.WriteString("\n")
 	for i, c := range out.Candidates {
 		fr, fs, vr, vd := "-", "-", "-", "-"
 		if c.FTSRank != nil {
@@ -128,8 +139,12 @@ func renderOutcome(req Request, out *Outcome) string {
 		if c.VecRank != nil {
 			vr, vd = strconv.Itoa(*c.VecRank), f(*c.VecDistance)
 		}
-		fmt.Fprintf(&b, "cand %2d chunk=%d %s|%s fts=%s/%s vec=%s/%s rrf=%s\n",
-			i+1, c.ChunkID, c.EntryPath, c.Heading, fr, fs, vr, vd, f(c.RRFScore))
+		ex := ""
+		if c.ExactRank != nil {
+			ex = fmt.Sprintf(" exact=%d/%s", *c.ExactRank, f(*c.ExactScore))
+		}
+		fmt.Fprintf(&b, "cand %2d chunk=%d %s|%s fts=%s/%s vec=%s/%s%s rrf=%s\n",
+			i+1, c.ChunkID, c.EntryPath, c.Heading, fr, fs, vr, vd, ex, f(c.RRFScore))
 	}
 	for _, h := range out.Result.Hits {
 		fmt.Fprintf(&b, "hit %2d %s|%s rrf=%s\n", h.Rank, h.Path, h.Heading, f(h.RRFScore))
@@ -153,6 +168,17 @@ func TestSearchGoldenDefaults(t *testing.T) {
 	s.Settings = explicit
 	if fromConfig := renderGolden(t, s); fromConfig != got {
 		t.Errorf("Settings from config.Default rank differently from the zero Settings:\n%s", firstDiff(got, fromConfig))
+	}
+	// The one golden query with an identifier is draw-visual, which no chunk holds: its exact list
+	// runs (the trace says so) but returns nothing, so turning the list off ranks every query
+	// bit-identically. The two-list path is the pre-4.5 ranking.
+	off := config.Default()
+	off.Search.ExactList = false
+	if s.Settings, err = NewSettings(off); err != nil {
+		t.Fatal(err)
+	}
+	if noExact, want := renderGolden(t, s), strings.ReplaceAll(got, ` exact="draw-visual" n_exact=0`, ""); noExact != want {
+		t.Errorf("exact_list=false ranks differently from the defaults on the golden corpus:\n%s", firstDiff(want, noExact))
 	}
 	path := filepath.Join("testdata", "golden", "search_defaults.golden")
 	if *update {

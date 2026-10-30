@@ -1,6 +1,7 @@
-// Package search is the hybrid searcher: a full-text list and a KNN list from a store.Retriever,
-// fused with weighted reciprocal rank fusion, capped to a number of chunks per entry, and logged
-// through a Logger. It holds no SQL; the backend owns query syntax.
+// Package search is the hybrid searcher: a full-text list, a KNN list and, when the query holds an
+// identifier, an exact-identifier list from a store.Retriever, fused with weighted reciprocal rank
+// fusion, capped to a number of chunks per entry, and logged through a Logger. It holds no SQL; the
+// backend owns query syntax.
 //
 // Inputs: a Request, an embedder and Settings (the [search] Params plus the settings hash).
 // Outputs: an Outcome (the Result, everything the log records and the trace: settings, FTS
@@ -54,19 +55,21 @@ const vecOverFetch = 60
 var ErrNoVectors = errors.New("this index has no vectors yet; run `kb reindex --all` to embed it")
 
 // Hit is one returned chunk. The JSON tags are the --json contract: the hits array of
-// {search_id, query, mode, hits:[...]}. FTSRank and VecRank are null when the chunk appeared in
-// only one of the two lists.
+// {search_id, query, mode, hits:[...]}. FTSRank and VecRank are null when the chunk was not in that
+// list; ExactRank, its place in the exact-identifier list, is omitted when it was not there (the
+// list runs only for a query with an identifier in it).
 type Hit struct {
 	Rank int `json:"rank"`
 	// Store is the store that returned the hit in a cross-store search, as the user named it
 	// (--stores, search.stores); omitted for the primary store's hits.
-	Store    string  `json:"store,omitempty"`
-	RRFScore float64 `json:"rrf_score"`
-	FTSRank  *int    `json:"fts_rank"`
-	VecRank  *int    `json:"vec_rank"`
-	Path     string  `json:"path"`
-	Heading  string  `json:"heading"`
-	Text     string  `json:"text"`
+	Store     string  `json:"store,omitempty"`
+	RRFScore  float64 `json:"rrf_score"`
+	FTSRank   *int    `json:"fts_rank"`
+	VecRank   *int    `json:"vec_rank"`
+	ExactRank *int    `json:"exact_rank,omitempty"`
+	Path      string  `json:"path"`
+	Heading   string  `json:"heading"`
+	Text      string  `json:"text"`
 }
 
 // Result is one whole search, shaped exactly like the --json output. Hits is never nil — an empty
@@ -126,8 +129,8 @@ func (s *Searcher) now() time.Time {
 }
 
 // Candidate is one chunk in the fused list. FTSRank/FTSScore are nil when the chunk was not in
-// the FTS list and VecRank/VecDistance are nil when it was not in the vector list; at least one
-// pair is always set. RRFScore is the reciprocal-rank-fusion score the list is sorted by.
+// the FTS list, VecRank/VecDistance when it was not in the vector list and ExactRank/ExactScore
+// when it was not in the exact-identifier list; at least one pair is always set. RRFScore is the reciprocal-rank-fusion score the list is sorted by.
 // CapDropped is true when the diversity cap skipped the chunk because its entry already filled
 // its places. The path/heading/text fields are filled in once the candidates are looked up in the
 // database, so the log can write search_candidates without re-reading anything. Ord is the
@@ -141,6 +144,8 @@ type Candidate struct {
 	FTSScore    *float64
 	VecRank     *int
 	VecDistance *float64
+	ExactRank   *int
+	ExactScore  *float64
 	RRFScore    float64
 	CapDropped  bool
 
@@ -155,15 +160,18 @@ type Candidate struct {
 // Mode is the mode that actually ran, which is ModeFTSFallback when a hybrid search lost its
 // embedder; in that case FallbackErr says why and Search still returns a nil error. Settings,
 // FTSMatch and FTSFallbackToOr are the trace: what the search ran with, the FTS expression that
-// produced the FTS list ("" when none ran) and whether it is the OR retry.
+// produced the FTS list ("" when none ran) and whether it is the OR retry; ExactTerms, ExactMatch
+// and ExactFallbackToOr are the same for the exact-identifier list (ExactTerms nil and ExactMatch
+// "" when it did not run: no identifier in the query, exact_list off, or vec mode).
 type Outcome struct {
 	Result     *Result
 	Candidates []Candidate // the fused list, top Params.CandidateLimit, in fused order
 	Returned   []Candidate // the subset that survived the diversity cap and k (returned=1)
 	Mode       string
 
-	NFTS int
-	NVec int
+	NFTS   int
+	NVec   int
+	NExact int
 
 	FTSMs   int64
 	VecMs   int64
@@ -175,9 +183,12 @@ type Outcome struct {
 	K           int
 	FallbackErr error
 
-	Settings        Settings
-	FTSMatch        string
-	FTSFallbackToOr bool
+	Settings          Settings
+	FTSMatch          string
+	FTSFallbackToOr   bool
+	ExactTerms        []string
+	ExactMatch        string
+	ExactFallbackToOr bool
 }
 
 // FTSRow and VecRow are the two ranked lists Fuse takes, as the store returns them.
@@ -186,15 +197,16 @@ type (
 	VecRow = store.VecRow
 )
 
-// Fuse merges the two lists with weighted reciprocal rank fusion: a chunk scores
-// w/(p.RRFK+rank) for every list it appears in, rank starting at 1 and w that list's weight
-// (p.FTSWeight, p.VecWeight). The result is sorted by score descending and truncated to
-// p.CandidateLimit. Ties are broken by FTS rank, then vector rank, then chunk id, all ascending (a
-// missing rank sorts last), so the same lists and params always fuse to the same order. A list
-// of weight 0 still contributes its chunks and ranks, but no score.
-func Fuse(fts []FTSRow, vec []VecRow, p Params) []Candidate {
-	byChunk := make(map[int64]*Candidate, len(fts)+len(vec))
-	order := make([]int64, 0, len(fts)+len(vec))
+// Fuse merges the lists with weighted reciprocal rank fusion: a chunk scores w/(p.RRFK+rank) for
+// every list it appears in, rank starting at 1 and w that list's weight (p.FTSWeight, p.VecWeight,
+// p.ExactWeight). The result is sorted by score descending and truncated to p.CandidateLimit. Ties
+// are broken by FTS rank, then vector rank, then exact rank, then chunk id, all ascending (a
+// missing rank sorts last), so the same lists and params always fuse to the same order; with no
+// exact list the order is the two-list order. A list of weight 0 still contributes its chunks and
+// ranks, but no score.
+func Fuse(fts []FTSRow, vec []VecRow, exact []FTSRow, p Params) []Candidate {
+	byChunk := make(map[int64]*Candidate, len(fts)+len(vec)+len(exact))
+	order := make([]int64, 0, len(fts)+len(vec)+len(exact))
 
 	get := func(id int64) *Candidate {
 		c, ok := byChunk[id]
@@ -222,6 +234,14 @@ func Fuse(fts []FTSRow, vec []VecRow, p Params) []Candidate {
 		c.VecDistance = &distance
 		c.RRFScore += p.VecWeight / float64(p.RRFK+rank)
 	}
+	for i, r := range exact {
+		rank := i + 1
+		c := get(r.ChunkID)
+		score := r.Score
+		c.ExactRank = &rank
+		c.ExactScore = &score
+		c.RRFScore += p.ExactWeight / float64(p.RRFK+rank)
+	}
 
 	out := make([]Candidate, 0, len(order))
 	for _, id := range order {
@@ -248,6 +268,9 @@ func fusedBefore(a, b Candidate) bool {
 	if ra, rb := rankOrMax(a.VecRank), rankOrMax(b.VecRank); ra != rb {
 		return ra < rb
 	}
+	if ra, rb := rankOrMax(a.ExactRank), rankOrMax(b.ExactRank); ra != rb {
+		return ra < rb
+	}
 	return a.ChunkID < b.ChunkID
 }
 
@@ -259,7 +282,7 @@ func assertFused(out []Candidate, limit int) {
 	for i, c := range out {
 		assert.Post(!seen[c.ChunkID], "Fuse: chunk %d appears twice", c.ChunkID)
 		seen[c.ChunkID] = true
-		assert.Post(c.FTSRank != nil || c.VecRank != nil, "Fuse: chunk %d has neither rank", c.ChunkID)
+		assert.Post(c.FTSRank != nil || c.VecRank != nil || c.ExactRank != nil, "Fuse: chunk %d has no rank", c.ChunkID)
 		if i > 0 {
 			assert.Post(fusedBefore(out[i-1], c), "Fuse: out[%d] (chunk %d) does not sort before out[%d] (chunk %d)",
 				i-1, out[i-1].ChunkID, i, c.ChunkID)
@@ -448,7 +471,7 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 	var fts []FTSRow
 	if out.Mode != ModeVec {
 		ftsStart := time.Now()
-		res, retried, err := s.ftsList(ctx, strings.Fields(req.Query), req.Tag, p)
+		res, retried, err := s.lexicalList(ctx, strings.Fields(req.Query), req.Tag, p, false)
 		out.FTSMs = time.Since(ftsStart).Milliseconds()
 		if err != nil {
 			return nil, err
@@ -457,10 +480,26 @@ func (s *Searcher) search(ctx context.Context, req Request) (*Outcome, error) {
 		out.FTSMatch = res.Match
 		out.FTSFallbackToOr = retried
 	}
+	var exact []FTSRow
+	if out.Mode != ModeVec && p.ExactList {
+		if terms := ExactTerms(req.Query); len(terms) > 0 {
+			exactStart := time.Now()
+			res, retried, err := s.lexicalList(ctx, terms, req.Tag, p, true)
+			out.FTSMs += time.Since(exactStart).Milliseconds() // FTSMs times the lexical lists
+			if err != nil {
+				return nil, err
+			}
+			exact = res.Rows
+			out.ExactTerms = terms
+			out.ExactMatch = res.Match
+			out.ExactFallbackToOr = retried
+		}
+	}
 	out.NFTS = len(fts)
 	out.NVec = len(vec)
+	out.NExact = len(exact)
 
-	cands := Fuse(fts, vec, p)
+	cands := Fuse(fts, vec, exact, p)
 	ids := make([]int64, len(cands))
 	for i, c := range cands {
 		ids[i] = c.ChunkID
@@ -500,13 +539,14 @@ func resultOf(query, mode string, returned []Candidate, label func(store string)
 	result := NewResult(query, mode)
 	for i, c := range returned {
 		h := Hit{
-			Rank:     i + 1,
-			RRFScore: c.RRFScore,
-			FTSRank:  c.FTSRank,
-			VecRank:  c.VecRank,
-			Path:     c.EntryPath,
-			Heading:  c.Heading,
-			Text:     c.Text,
+			Rank:      i + 1,
+			RRFScore:  c.RRFScore,
+			FTSRank:   c.FTSRank,
+			VecRank:   c.VecRank,
+			ExactRank: c.ExactRank,
+			Path:      c.EntryPath,
+			Heading:   c.Heading,
+			Text:      c.Text,
 		}
 		if label != nil && c.Store != "" {
 			h.Store = label(c.Store)
@@ -516,12 +556,13 @@ func resultOf(query, mode string, returned []Candidate, label func(store string)
 	return result
 }
 
-// ftsList runs the full-text list: all terms ANDed first and, if that matches nothing and there
-// is more than one term, ORed (one unknown word should not empty a good query). retried reports
-// that the OR query is the one that produced res.
-func (s *Searcher) ftsList(ctx context.Context, terms []string, tag string, p Params) (res store.FTSResult, retried bool, err error) {
+// lexicalList runs the full-text list (exact: the exact-identifier list over the identifier index):
+// all terms ANDed first and, if that matches nothing and there is more than one term, ORed (one
+// unknown word should not empty a good query). retried reports that the OR query is the one that
+// produced res.
+func (s *Searcher) lexicalList(ctx context.Context, terms []string, tag string, p Params, exact bool) (res store.FTSResult, retried bool, err error) {
 	weights := p.BM25
-	q := store.FTSQuery{Terms: terms, Op: store.OpAnd, Tag: tag, Limit: p.ListLimit, Weights: &weights}
+	q := store.FTSQuery{Terms: terms, Op: store.OpAnd, Tag: tag, Limit: p.ListLimit, Weights: &weights, Exact: exact}
 	if res, err = s.Store.FTS(ctx, q); err != nil {
 		return store.FTSResult{}, false, err
 	}

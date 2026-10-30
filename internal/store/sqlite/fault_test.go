@@ -259,14 +259,17 @@ func TestDriverFaultsAreInternalAndRollBack(t *testing.T) {
 		{"replace: read old chunk ids", 4, "SELECT id FROM chunks WHERE entry_id", 1, nil},
 		{"replace: vec table check in clear", 4, "sqlite_master", 2, nil},
 		{"replace: un-index fts", 4, "DELETE FROM chunks_fts", 1, nil},
+		{"replace: un-index exact", 4, "DELETE FROM chunks_exact", 1, nil},
 		{"replace: un-index vec", 4, "DELETE FROM chunks_vec", 1, nil},
 		{"replace: delete chunks", 4, "DELETE FROM chunks WHERE", 1, nil},
 		{"replace: upsert entry", 4, "INSERT INTO entries", 1, nil},
 		{"replace: prepare chunk insert", 4, "PREPARE \n\t\tINSERT INTO chunks", 1, nil},
 		{"replace: prepare fts insert", 4, "PREPARE INSERT INTO chunks_fts", 1, nil},
+		{"replace: prepare exact insert", 4, "PREPARE INSERT INTO chunks_exact", 1, nil},
 		{"replace: prepare vec insert", 4, "PREPARE INSERT INTO chunks_vec", 1, nil},
 		{"replace: insert chunk", 4, "INSERT INTO chunks (entry_id", 2, nil},
 		{"replace: insert fts", 4, "INSERT INTO chunks_fts (rowid", 2, nil},
+		{"replace: insert exact", 4, "INSERT INTO chunks_exact (rowid", 2, nil},
 		{"replace: insert vec", 4, "INSERT INTO chunks_vec (chunk_id", 2, nil},
 		{"replace: commit", 4, "COMMIT", 1, nil},
 		{"replace fts-only: commit", 0, "COMMIT", 1, nil},
@@ -274,6 +277,7 @@ func TestDriverFaultsAreInternalAndRollBack(t *testing.T) {
 		{"delete: delete entry", 4, "DELETE FROM entries", 1, func(st *Store) error { return st.DeleteEntry(ctx, "a.md") }},
 		{"delete: commit", 4, "COMMIT", 1, func(st *Store) error { return st.DeleteEntry(ctx, "a.md") }},
 		{"reset: fts delete-all", 4, "delete-all", 1, func(st *Store) error { return st.ResetIndex(ctx) }},
+		{"reset: exact delete-all", 4, "delete-all", 2, func(st *Store) error { return st.ResetIndex(ctx) }},
 		{"reset: begin", 4, "BEGIN", 1, func(st *Store) error { return st.ResetIndex(ctx) }},
 		{"reset: commit", 4, "COMMIT", 1, func(st *Store) error { return st.ResetIndex(ctx) }},
 	} {
@@ -302,6 +306,11 @@ func TestDriverFaultsAreInternalAndRollBack(t *testing.T) {
 			cs, _ := st.Chunks(ctx, e.ID)
 			if len(cs) != 2 || cs[0].TextHash != "before0" {
 				t.Errorf("chunks after a failed op = %+v, want the previous version", cs)
+			}
+			for _, exact := range []bool{false, true} {
+				if res, err := st.FTS(ctx, store.FTSQuery{Terms: []string{"before"}, Limit: 5, Exact: exact}); err != nil || len(res.Rows) != 2 {
+					t.Errorf("FTS(before, exact=%v) after a failed op = %+v, %v; want the previous version's 2 rows", exact, res.Rows, err)
+				}
 			}
 			if _, ok, _ := st.EmbedMeta(ctx); !ok {
 				t.Error("embed_meta lost after a failed op")

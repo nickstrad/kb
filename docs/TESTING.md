@@ -22,6 +22,7 @@ Platform: kb is developed and tested on macOS (darwin/arm64). Tests run there, l
 | L4 Golden | **Exact bytes** that users or tools depend on: chunk boundaries for real entries, `--json` output, `kb explain` output | `testdata/golden` | `go test`; regenerate with `-update` |
 | L5 Contract | Behaviour **every implementation** of an interface (storage backend, `Embedder`) must have | `internal/store/storetest`, `internal/embed/embedtest` | from each implementation's package |
 | L6 Integration | **Wiring**: flags reach the service, output and exit code come back. One success and one failure per command. | `internal/cli/*_test.go` | `go test` |
+| L7 End-to-end (planned, PLAN E1–E5) | **User journeys across commands**: the commands work together as README and `kb help` say, against the real binary in a hermetic temp world. Example: `kb show` after `kb search` counts as an open in `kb stats`. Never a claim a lower layer owns (§11). | `internal/e2e/testdata/journeys/*.txt` | `make e2e` (`-tags fts5,e2e`) |
 
 ### 2.1 Placement rules
 
@@ -31,6 +32,7 @@ Platform: kb is developed and tested on macOS (darwin/arm64). Tests run there, l
 - **What fuzzing doesn't reach gets a unit test.** Tests are cheap. If a line or branch isn't reached by the fuzz targets (check `go test -cover` with the seeds, or reason about the generator), add an explicit unit test for it rather than bending the fuzz target or leaving it uncovered. This is not duplication: the seed rule above applies only to claims the fuzzer already exercises.
 - **Every boundary is tested, by a property or a unit test.** Boundaries are the edges of a range or a limit: empty and nil input; 0, 1 and the maximum; exactly at, one below and one above a limit (`MaxChunkChars`, `MinK`/`MaxK`, `ListLimit`, `CandidateLimit`, `PerEntryCap`, a token budget, a date window); the first and last element; and the switch points between modes. A property may own a boundary only if its generator demonstrably produces it (add the boundary value as an `f.Add` seed); otherwise write a table test with one row per boundary value. Name the rows after the boundary (`"at MaxChunkChars"`, `"MaxChunkChars+1"`).
 - **Golden files pin bytes. They do not pin invariants.** If a golden diff is the only thing that would catch a bug, ask whether an L1 assertion or an L3 property should own it instead.
+- **Journeys never own a lower layer's claim.** A journey may *show* a ranking, a clamp or a validation message, but a wrong value there is fixed and pinned at the layer that owns it, then the transcript is updated. Hostile inputs, concurrency and interruption belong to the adversarial harness, not to journeys (§11.4).
 - **Integration tests never re-check service logic.** "`kb search --k 99` returns 20 hits" is a `ClampK` unit test. The CLI test checks only that `--k` reaches `Request.K`.
 
 ### 2.2 Package matrix
@@ -49,6 +51,7 @@ Platform: kb is developed and tested on macOS (darwin/arm64). Tests run there, l
 | stats, index | | yes | | | |
 | v2 workspace (root discovery), config | yes | yes, D | round trip, discovery | | |
 | cli | | flag validation only, D (`runFeedback`) | | `--json`, `explain` | |
+| e2e (planned, PLAN E1): runner only; journeys are L7 | | yes (parse, normalise, match) | `FuzzTranscript` (round trip) | journeys are transcripts | |
 
 v2 moves (PLAN.md §2): `SanitizeFTS`, its fuzz target and its corpus move to `store/sqlite`. `embed/ollama`, `embed/openai`, `embed/provider` and DuckDB (`stats/duck.go`) are deleted, and their tests go with them. Write nothing new against them.
 
@@ -228,7 +231,7 @@ Second example, `runFeedback`. Its guards say "error unless exactly one of none 
 
 **Measure each package with its own tests (no `-coverpkg`).** This is what enforces "lowest layer wins". With `-coverpkg=./...`, a CLI integration test that runs `search` code would count as coverage of `search`, and a missing unit test would go unnoticed. A cross-package total (`-coverpkg=./internal/...`) is fine as information. It is never a gate.
 
-Pin the tool as a module tool (Go 1.24+ `tool` directive), so the version lives in `go.mod` with no `@latest` and no separate install step. Adding them is an owner decision (§11):
+Pin the tool as a module tool (Go 1.24+ `tool` directive), so the version lives in `go.mod` with no `@latest` and no separate install step. Adding them is an owner decision (§12):
 
 ```sh
 go get -tool github.com/vladopajic/go-test-coverage/v2@v2.21.0
@@ -397,6 +400,8 @@ Every versioned artefact (CODING_STYLE.md §6.1) has these, in its own package. 
 | `fts5` | required by mattn/go-sqlite3 for FTS5 | every build and test |
 | `noassert` | compile assertions out | `make test-noassert` (every PR), `make build-noassert` (profiling only) |
 | `model` | tests that load a real rembed model | `make test-model`, nightly and local |
+| `harnessfake` | **binary build tag, not a test tag**: adds the deterministic `fake:<dim>` embedding model (DEFAULTS #189) and, from PLAN E1, the `KB_HARNESS_NOW` clock. Release builds never set it. | the adversarial harness and the E2E runner build kb with `-tags fts5,harnessfake` |
+| `e2e` (planned, PLAN E1) | the journey test file in `internal/e2e` (it builds the binary, so it stays out of plain `go test`) | `make e2e`, CI `test` job step, nightly |
 
 Combine tags with commas: `-tags fts5,noassert`. There is no `integration` tag. Integration tests are ordinary fast tests. Add the tag only if the suite grows past about 60 s.
 
@@ -439,6 +444,7 @@ FUZZTIME ?= 30s
 
 - **Every PR:** `make check`. Seeds and crashers replay inside `make test`.
 - **Nightly:** `make fuzz FUZZTIME=2m`. On failure, upload the new `testdata/fuzz/` files as an artifact. Also nightly: `make test-model`.
+- **E2E** (from PLAN E1): one step in the PR job, `go test -tags fts5,e2e -count=1 ./internal/e2e/`, budget under 90 s warm; nightly adds `-count=3 -shuffle=on` (§11.6).
 - **Release** (not testing): each release target must build with `-tags fts5`. Cross-compilation with cgo is a release-pipeline concern, and it does not run tests.
 
 ## 10. Where does my new test go?
@@ -451,7 +457,8 @@ Work down the list and stop at the first yes.
 4. **Is it exact bytes others depend on?** **Golden.**
 5. **Must every backend or embedder do it?** **Contract suite** (§6).
 6. **Is it only that a command wires flags to a service and maps the result to output and exit code?** **Integration**: at most one success and one failure per command.
-7. **Already owned by a lower layer?** Stop. If the lower-layer test is missing, add it there.
+7. **Is it a user flow across commands** (the output of one command is the input or the precondition of the next, as README or `kb help` describes it)? An **E2E journey** (§11): add a new journey or extend an existing one. A new user-facing command, a new cross-command flow (a REF form, an upgrade step, a new log signal) or a changed README workflow needs one, in the same item. A new flag on an existing command usually doesn't: it gets the L6 wiring test. (Planned: until PLAN E1 lands, note the missing journey on the E-item.)
+8. **Already owned by a lower layer?** Stop. If the lower-layer test is missing, add it there.
 
 Bug fixes: put the regression at the layer that owns the root cause. If the fuzzer found the bug, commit the crasher. Any test that needs the network, a model, a host tool or a sleep: redesign it (a double, injection, `t.TempDir()`). If it truly needs a real model, tag it `model`.
 
@@ -462,7 +469,41 @@ Mutation testing (do the tests fail when the code is wrong?) and the hostile CLI
 [ADVERSARIAL_TESTING.md](ADVERSARIAL_TESTING.md). They are a check on these layers, not a new
 layer. A survivor or a failed scenario becomes a test at the layer this section picks.
 
-## 11. Open decisions for the owner
+## 11. End-to-end journeys (L7)
+
+**Status: planned, not built.** PLAN.md Phase 7: E1 (runner, clock seam, first journeys) runs as a W10 lane, E2/E4 in W11, and E3/E5 in W14. Until E1 lands, this section is the spec. E1 replaces "planned" here and in §2, §8 and §9.
+
+### 11.1 What a journey owns
+
+A journey is a realistic flow across several kb commands, run against the real binary. It owns **one** kind of claim: the commands work together the way README and `kb help` describe. Examples: init, add, search, show, feedback, then stats counts the open and the verdict; an old store is refused, `kb migrate up` backs it up and upgrades it, and search works again with the log kept; a `--stores` hit is readable with `kb show REF:path`. A transcript is also living documentation. Write it as a short story with prose lines between commands, and E5 cross-checks the README's examples against it.
+
+### 11.2 Format and runner
+
+Journeys are cram-style transcripts in `internal/e2e/testdata/journeys/<slug>.txt`. Unindented lines are prose. `  $ kb …` is a command, and the indented lines after it are the expected output: stdout verbatim, then stderr lines prefixed `[stderr] `, then `[exit N]` when N ≠ 0. `...` matches any lines and `~ RE` matches one line by regexp. Use both sparingly: a journey that elides everything asserts nothing. Runner builtins: `cd`, `env K=V`, `write`, `rm`, `exists` / `! exists` (globs), `grep RE FILE`, `mkfixture <artefact>-v<N> PATH` (from the §6.1 migration fixtures). `-- path --` sections at the end are files extracted into `$WORK` first. The runner (stdlib only) has its own L2 tests and a round-trip fuzz target, and these run in plain `go test`. Only `journeys_test.go` carries the `e2e` tag. PLAN.md Phase 7 has the full spec and the rejected frameworks.
+
+### 11.3 Hermetic environment and determinism
+
+- The binary is built once per run with `-tags fts5,harnessfake`. Journeys use the `fake:<dim>` model or `none`, and never download. A guard fails a journey that leaves model weights under `$WORK`, and a dead HTTP(S) proxy makes any attempt fail fast.
+- Each journey gets `$WORK = t.TempDir()`, `HOME=$WORK/home` (so the global location and the model and embed caches are inside it), `TMPDIR` under `$WORK`, an empty `PATH` (no host tools), stdin from `/dev/null`, and `EDITOR` pointing at the test binary's own editor helper mode. Nothing outside `$WORK` is read or written, and journeys run with `t.Parallel`.
+- **Time:** `KB_HARNESS_NOW` (harnessfake builds only) pins the clock that search and open stamps use; `env KB_HARNESS_NOW=…` between commands moves it on. The other stamps (entry `indexed` times, backup names, incident times) are normalised.
+- **Normalisers** (a fixed list; extending it is a reviewed change): `$WORK`, `kb (version)`, `(time)`, `.bak-vN-(time)`, `(size)`, `(ms)`, `(id)`. A human table with volatile numbers is asserted through `--json`, because normalising does not re-align columns.
+- No journey asserts a duration, sleeps or depends on another journey's state.
+
+### 11.4 What a journey must not do
+
+- Re-test unit logic: ranking order, clamps, config validation tables, metric arithmetic, message wording families. One failure per error family is enough, and it shows the user's recovery path (error → doctor → fix → green), not the validation table.
+- Hostile, malformed or edge inputs; concurrency; signals and interruption; corrupt or newer-schema files. Those belong to the adversarial harness (ADVERSARIAL_TESTING.md §3.2, "Harness vs E2E").
+- Performance. Real `kb model pull`: that is the nightly `model` job.
+
+### 11.5 Updating transcripts
+
+`make e2e-update` (or `go test -tags fts5,e2e ./internal/e2e -run 'TestJourneys/<slug>' -update`) rewrites the expected output in place and keeps prose, commands and still-matching `...`/`~` lines. Update one journey at a time and review the diff like code. A changed line must be explained by the change under review. Never update to make an unexplained failure pass: find the owning layer first (§10).
+
+### 11.6 Cadence
+
+Every PR: the E2E step in the macOS CI job, under 90 s warm (5 min step timeout). Nightly: `-count=3 -shuffle=on`. Wave-end green (PLAN §6.4 rule 6): `make e2e`. If the step grows past 3 min, it moves to nightly plus the wave-end check.
+
+## 12. Open decisions for the owner
 
 - Add `go-test-coverage` as a `tool` dependency in `go.mod` (§4.4).
 - The exact coverage floors, once measured.

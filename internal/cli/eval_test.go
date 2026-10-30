@@ -79,7 +79,8 @@ func TestEvalErrors(t *testing.T) {
 	}{
 		{"bad mode", []string{"eval", "--mode", "fts-fallback"}, true, `invalid --mode "fts-fallback"`},
 		{"bad since", []string{"eval", "--since", "soon"}, true, `invalid --since "soon"`},
-		{"positional argument", []string{"eval", "q"}, true, "unknown command"},
+		{"baseline name without a baseline flag", []string{"eval", "q"}, true, "a baseline NAME needs --save-baseline or --compare"},
+		{"two names", []string{"eval", "a", "b", "--compare"}, true, "accepts at most 1 arg"},
 		{"no index", []string{"eval"}, false, "no index at"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
