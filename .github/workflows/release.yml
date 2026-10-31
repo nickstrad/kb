@@ -1,7 +1,8 @@
 name: release
 
-# Tag v* builds and uploads release tarballs. workflow_dispatch is a dry run: it builds and
-# smoke-tests every target and keeps the tarballs as workflow artifacts, but uploads no release.
+# Tag v* builds every target, then one job creates the GitHub Release with all tarballs.
+# workflow_dispatch is a dry run: it builds and smoke-tests every target and keeps the tarballs as
+# workflow artifacts, but creates no release.
 #
 # Zig fallback: if a native runner (for example ubuntu-24.04-arm) is unavailable, build the Linux
 # targets from a macOS job instead: `brew install zig`, then
@@ -15,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # gh release upload
+  contents: write # gh release create
 
 jobs:
   build:
@@ -65,13 +66,23 @@ jobs:
           tar -czf "dist/$NAME.tar.gz" kb
           (cd dist && if command -v sha256sum >/dev/null; then sha256sum "$NAME.tar.gz"; else shasum -a 256 "$NAME.tar.gz"; fi > "$NAME.tar.gz.sha256")
       - name: Upload workflow artifact
-        if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
           name: kb-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
-      - name: Upload release assets
-        if: github.ref_type == 'tag'
+
+  # One job creates the release once every target has built, so a failed target publishes nothing
+  # and the four build jobs never race to create it.
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" dist/* --clobber
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

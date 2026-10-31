@@ -293,7 +293,7 @@ which holds the search log), its `config.toml`, and the location's `.kb/kb.toml`
 installing a new kb, a command that meets an older file stops with exit 1 and
 
 ```
-store database /path/.kb/stores/default/kb.sqlite is at schema v5; this kb needs v6. Run: kb migrate up (with the same --store, if any)
+store database /path/.kb/stores/default/kb.sqlite is at schema v1; this kb needs v2. Run: kb migrate up (with the same --store, if any)
 ```
 
 Run that command. It copies each file to `<file>.bak-v<N>-<time>` beside it (the newest 3 are

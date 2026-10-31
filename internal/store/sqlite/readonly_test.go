@@ -38,22 +38,24 @@ func fileHash(t *testing.T, path string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// TestOpenSchemaVersion: rows at, above and below SchemaVersion. A read-write open refuses an
-// older database (kb migrate up upgrades it) and a newer one; a read-only open (kb stats) cannot migrate, so it refuses
-// both, with a Conflict that names the file and leaves it unchanged.
+// TestOpenSchemaVersion: rows at, above and below the build's version. A read-write open refuses
+// an older database (kb migrate up upgrades it) and a newer one; a read-only open (kb stats)
+// cannot migrate, so it refuses both, with a Conflict that names the file and leaves it unchanged.
+// "Older" is a current file opened by a ProbeSteps build, one release ahead.
 func TestOpenSchemaVersion(t *testing.T) {
 	cur := SchemaVersion()
 	for _, tc := range []struct {
 		name     string
 		version  int
+		steps    Steps // the opening build's; nil = this build's
 		readOnly bool
 		wantErr  string // "" = opens
 	}{
-		{"read-only at SchemaVersion", cur, true, ""},
-		{"read-only SchemaVersion+1 (newer kb)", cur + 1, true, "only understands"},
-		{"read-only SchemaVersion-1 (not migrated)", cur - 1, true, "kb migrate up"},
-		{"read-write SchemaVersion-1 (not migrated)", cur - 1, false, "kb migrate up"},
-		{"read-write SchemaVersion+1 (newer kb)", cur + 1, false, "only understands"},
+		{"read-only at SchemaVersion", cur, nil, true, ""},
+		{"read-only SchemaVersion+1 (newer kb)", cur + 1, nil, true, "only understands"},
+		{"read-only one release older (not migrated)", cur, ProbeSteps(), true, "kb migrate up"},
+		{"read-write one release older (not migrated)", cur, ProbeSteps(), false, "kb migrate up"},
+		{"read-write SchemaVersion+1 (newer kb)", cur + 1, nil, false, "only understands"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -66,7 +68,7 @@ func TestOpenSchemaVersion(t *testing.T) {
 			setUserVersion(t, path, tc.version)
 			before := fileHash(t, path)
 
-			db, err := Open(ctx, path, Options{ReadOnly: tc.readOnly})
+			db, err := Open(ctx, path, Options{ReadOnly: tc.readOnly, Steps: tc.steps})
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("Open: %v", err)
@@ -206,14 +208,13 @@ func TestRefusedOpenLeavesFileAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		version int
-	}{{"older", 2}, {"newer", SchemaVersion() + 1}} {
+		steps   Steps // the opening build's; nil = this build's
+	}{{"older", SchemaVersion(), ProbeSteps()}, {"newer", SchemaVersion() + 1, nil}} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := loadFixture(t, 2)
-			if tc.name == "newer" {
-				setUserVersion(t, path, tc.version)
-			}
+			path := loadFixture(t, SchemaVersion())
+			setUserVersion(t, path, tc.version)
 			before := fileHash(t, path)
-			if _, err := Open(ctx, path, Options{}); errs.KindOf(err) != errs.Conflict {
+			if _, err := Open(ctx, path, Options{Steps: tc.steps}); errs.KindOf(err) != errs.Conflict {
 				t.Fatalf("Open = %v, want Conflict", err)
 			}
 			if fileHash(t, path) != before {

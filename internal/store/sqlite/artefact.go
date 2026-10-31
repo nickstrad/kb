@@ -22,8 +22,8 @@ import (
 // failure or a cancel leaves the starting version.
 type Artefact struct {
 	path   string
-	driver string                // test seam, as Options.driver
-	steps  migrate.Steps[execer] // test seam, as Options.steps; nil = indexSteps
+	driver string // test seam, as Options.driver
+	steps  Steps  // as Options.Steps; nil = indexSteps
 }
 
 var (
@@ -33,6 +33,12 @@ var (
 
 // NewArtefact returns the migration adapter for the index DB at path. The file need not exist.
 func NewArtefact(path string) *Artefact { return &Artefact{path: path} }
+
+// NewArtefactSteps is NewArtefact for a build with the given steps (nil = IndexSteps), as
+// Options.Steps: tests and harnessfake builds only.
+func NewArtefactSteps(path string, steps Steps) *Artefact {
+	return &Artefact{path: path, steps: steps}
+}
 
 // Status reads the file's schema version without changing it; a missing file is version 0.
 func (a *Artefact) Status(ctx context.Context) (migrate.Status, error) {
@@ -136,7 +142,7 @@ func (a *Artefact) Verify(ctx context.Context) error {
 
 // with opens the file without migrating, runs fn and closes it, wrapping any failure once.
 func (a *Artefact) with(ctx context.Context, readOnly bool, op string, fn func(*Store) error) (err error) {
-	s, err := open(ctx, a.path, Options{ReadOnly: readOnly, driver: a.driver, noMigrate: true, steps: a.steps})
+	s, err := open(ctx, a.path, Options{ReadOnly: readOnly, driver: a.driver, noMigrate: true, Steps: a.steps})
 	if err != nil {
 		return wrap(ctx, err, a.path, op, "could not open the database %s", a.path)
 	}

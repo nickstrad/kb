@@ -1,4 +1,4 @@
-// Related and Superseded: reads over the edges table (schema v7). The walk is a recursive CTE
+// Related and Superseded: reads over the edges table (PLAN 5.2). The walk is a recursive CTE
 // over resolved edges in both directions; UNION plus the depth bound make it cycle-safe.
 
 package sqlite

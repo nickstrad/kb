@@ -2,8 +2,10 @@ package main
 
 // Scenarios for kb migrate (PLAN 1.8b, docs/design/migrations.md): the refusal of an older or
 // newer durable file, two migrators at once, and Ctrl-C during a migration. They need an older
-// index database, which the helper loadfixture makes from the checked-in SQL fixtures, so they
-// skip (with a note) under -bin, when the harness did not build it.
+// index database: the helper loadfixture loads the newest checked-in SQL fixture and kb runs one
+// index release ahead (H.probe, KB_HARNESS_INDEX_PROBE=1 in the harnessfake build), since the
+// baseline squash (D8) left no real older schema. They skip (with a note) under -bin, when the
+// harness did not build kb and the helper.
 
 import (
 	"bytes"
@@ -26,15 +28,26 @@ var migrateScenarios = []scenario{
 
 func init() { scenarios = append(scenarios, migrateScenarios...) }
 
-// loadOld replaces the scenario's default store database with the index fixture for version v
-// (what a kb of that version left). It reports false when the helper is not available.
-func (h *H) loadOld(v int) bool {
+// loadOld replaces the scenario's default store database with the newest index fixture and makes
+// kb a probe build, so the file is what the previous kb release left. It returns the fixture's
+// version, and false when the helper is not available.
+func (h *H) loadOld() (int, bool) {
 	if loadTool == "" {
 		h.note("skipped: no loadfixture helper (the harness was started with -bin)")
-		return false
+		return 0, false
 	}
+	v := 0
+	files, _ := filepath.Glob(filepath.Join(fixtureDir, "index-v*.sql"))
+	for _, f := range files {
+		var n int
+		if _, err := fmt.Sscanf(filepath.Base(f), "index-v%d.sql", &n); err == nil && n > v {
+			v = n
+		}
+	}
+	h.must(v > 0, "no index fixture in %s", fixtureDir)
+	h.probe = true
 	h.helper("load", h.dbPath(), filepath.Join(fixtureDir, fmt.Sprintf("index-v%d.sql", v)))
-	return true
+	return v, true
 }
 
 // helper runs loadfixture and aborts the scenario when it fails.
@@ -59,7 +72,8 @@ func (h *H) backups() []string {
 }
 
 func scMigrateRefusal(h *H) {
-	if !h.loadOld(2) {
+	old, ok := h.loadOld()
+	if !ok {
 		return
 	}
 	db := h.dbPath()
@@ -132,8 +146,8 @@ func scMigrateRefusal(h *H) {
 	baks := h.backups()
 	if len(baks) != 1 {
 		h.fail("want exactly one backup, got %v", baks)
-	} else if v := h.helper("check", baks[0]); v != "2 ok" {
-		h.fail("the backup should be a valid v2 database, check says %q", v)
+	} else if v := h.helper("check", baks[0]); v != fmt.Sprintf("%d ok", old) {
+		h.fail("the backup should be a valid v%d database, check says %q", old, v)
 	}
 	h.expect(h.kb("search", "anything", "--mode", "fts"), 0)
 	h.expect(h.kb("migrate", "status"), 0)
@@ -172,7 +186,7 @@ func scMigrateConcurrent(h *H) {
 	}
 	db := h.dbPath()
 	for round := 1; round <= 6; round++ {
-		h.loadOld(2)
+		h.loadOld()
 		for _, b := range h.backups() {
 			os.Remove(b)
 		}
@@ -219,14 +233,16 @@ func scMigrateConcurrent(h *H) {
 }
 
 func scMigrateInterrupt(h *H) {
-	if !h.loadOld(2) {
+	old, ok := h.loadOld()
+	if !ok {
 		return
 	}
+	oldOK := fmt.Sprintf("%d ok", old)
 	db := h.dbPath()
 	// Big enough that the backup (VACUUM INTO) and the steps take a visible time.
 	const filler = "600000"
 	h.helper("fill", db, filler)
-	big := filepath.Join(h.dir, "big-v2.sqlite")
+	big := filepath.Join(h.dir, "big-old.sqlite")
 	h.must(copyFile(db, big) == nil, "keep a copy of the big fixture")
 
 	for _, delay := range []time.Duration{0, 30 * time.Millisecond, 120 * time.Millisecond, 300 * time.Millisecond, 700 * time.Millisecond, 1500 * time.Millisecond} {
@@ -250,20 +266,20 @@ func scMigrateInterrupt(h *H) {
 		v := h.helper("check", db)
 		h.note("SIGINT after %v: exit %d, database %s, %d backup(s)", delay, r.Code, v, len(h.backups()))
 		switch {
-		case v == "2 ok":
+		case v == oldOK:
 			if r.Code == 0 {
-				h.fail("delay %v: exit 0 but the database is still v2:\n%s", delay, r)
+				h.fail("delay %v: exit 0 but the database is still v%d:\n%s", delay, old, r)
 			}
 		case strings.HasSuffix(v, " ok"):
 			// done before the signal landed, or the apply committed: any later version
 		default:
-			h.fail("delay %v: the database is %q after an interrupted migrate (want 2 ok or the target version)", delay, v)
+			h.fail("delay %v: the database is %q after an interrupted migrate (want %q or the target version)", delay, v, oldOK)
 		}
 		// Every backup that is left must be a complete database: a half-written one would be
 		// kept by the pruning and trusted by the user.
 		for _, b := range h.backups() {
-			if got := h.helper("check", b); got != "2 ok" {
-				h.fail("delay %v: backup %s is %q, want a valid v2 database", delay, filepath.Base(b), got)
+			if got := h.helper("check", b); got != oldOK {
+				h.fail("delay %v: backup %s is %q, want a valid v%d database", delay, filepath.Base(b), got, old)
 			}
 		}
 		// A rerun finishes the job.

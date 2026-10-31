@@ -51,6 +51,10 @@ type deps struct {
 	caches    *embedCaches
 	pullModel func(ctx context.Context, spec local.Spec, cacheDir string) error
 	openStore func(ctx context.Context, path string, readOnly bool) (store.Store, error)
+	// indexSteps are the index migration steps the build has; nil = sqlite.IndexSteps. Tests and
+	// harnessfake builds set sqlite.ProbeSteps to play a store at this build's version as one
+	// release older. productionDeps' openStore and indexArtefact both read it.
+	indexSteps sqlite.Steps
 	// editor runs the configured editor command on path; configured is [edit] editor, "" when unset.
 	editor func(ctx context.Context, configured, path string) error
 	// userCacheDir is where the incident log goes when there is no <root>/.kb.
@@ -83,7 +87,6 @@ var harnessNow func() time.Time
 func productionDeps() *deps {
 	d := &deps{
 		pullModel:    local.Pull,
-		openStore:    openSQLite,
 		editor:       runEditor,
 		userCacheDir: os.UserCacheDir,
 		workspaceEnv: workspace.OSEnv,
@@ -98,12 +101,25 @@ func productionDeps() *deps {
 		return dir, nil
 	}
 	d.embedCachePath = func() (string, error) { return embedCacheFile(d.workspaceEnv().CacheBase) }
+	d.openStore = func(ctx context.Context, path string, readOnly bool) (store.Store, error) {
+		return openSQLite(ctx, path, readOnly, d.indexSteps)
+	}
+	d.indexSteps = harnessIndexSteps()
 	return d
 }
 
-// openSQLite is deps.openStore in production.
-func openSQLite(ctx context.Context, path string, readOnly bool) (store.Store, error) {
-	st, err := sqlite.Open(ctx, path, sqlite.Options{ReadOnly: readOnly})
+// harnessIndexSteps is the index steps of a harnessfake build (KB_HARNESS_INDEX_PROBE); nil in
+// release builds.
+var harnessIndexSteps = func() sqlite.Steps { return nil }
+
+// indexArtefact is the migration adapter for the index DB at path, with d's steps.
+func (d *deps) indexArtefact(path string) *sqlite.Artefact {
+	return sqlite.NewArtefactSteps(path, d.indexSteps)
+}
+
+// openSQLite is deps.openStore in production; steps nil = this build's.
+func openSQLite(ctx context.Context, path string, readOnly bool, steps sqlite.Steps) (store.Store, error) {
+	st, err := sqlite.Open(ctx, path, sqlite.Options{ReadOnly: readOnly, Steps: steps})
 	if err != nil {
 		return nil, err // not `return sqlite.Open(...)`: a nil *Store would become a non-nil interface
 	}

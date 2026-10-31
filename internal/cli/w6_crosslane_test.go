@@ -83,19 +83,23 @@ func TestStoresAndDoctorOnOtherSchemaVersions(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
+		probe   bool // the kb is a probe build (one release ahead), so this build's version is older
 		version int
 		problem string
 	}{
-		{"older", sqlite.SchemaVersion() - 1, "Run: kb migrate up"},
-		{"newer", sqlite.SchemaVersion() + 1, "use a newer kb"},
+		{"older", true, sqlite.SchemaVersion(), "Run: kb migrate up"},
+		{"newer", false, sqlite.SchemaVersion() + 1, "use a newer kb"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := newTempRoot(t)
 			useNoneModel(t, root)
+			if tc.probe {
+				useProbeBuild(t)
+			}
 			addStore(t, root, "adr")
 			ctx := context.Background()
 			for _, s := range []string{"default", "adr"} {
-				st, err := sqlite.Open(ctx, filepath.Join(root, ".kb", "stores", s, "kb.sqlite"), sqlite.Options{})
+				st, err := sqlite.Open(ctx, filepath.Join(root, ".kb", "stores", s, "kb.sqlite"), sqlite.Options{Steps: depsFor(t).indexSteps})
 				if err != nil {
 					t.Fatal(err)
 				}

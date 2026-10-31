@@ -21,18 +21,19 @@ func TestArtefactStatus(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name     string
+		steps    Steps // the build's; nil = this build's
 		setup    func(t *testing.T) string
 		wantCur  int
 		wantPend int
 		wantKind errs.Kind // -1 = no error
 	}{
-		{"missing file: v0, all pending, not created", func(t *testing.T) string { return filepath.Join(t.TempDir(), "kb.sqlite") }, 0, SchemaVersion(), -1},
-		{"oldest fixture", func(t *testing.T) string { return loadFixture(t, 1) }, 1, SchemaVersion() - 1, -1},
-		{"Target-1", func(t *testing.T) string { return loadFixture(t, SchemaVersion()-1) }, SchemaVersion() - 1, 1, -1},
-		{"current", func(t *testing.T) string { return loadFixture(t, SchemaVersion()) }, SchemaVersion(), 0, -1},
-		{"newer", func(t *testing.T) string { return withVersion(t, SchemaVersion()+1) }, SchemaVersion() + 1, 0, -1},
-		{"negative: damaged", func(t *testing.T) string { return withVersion(t, -1) }, 0, 0, errs.Conflict},
-		{"not a database", func(t *testing.T) string {
+		{"missing file: v0, all pending, not created", nil, func(t *testing.T) string { return filepath.Join(t.TempDir(), "kb.sqlite") }, 0, SchemaVersion(), -1},
+		{"baseline fixture", nil, func(t *testing.T) string { return loadFixture(t, 1) }, 1, SchemaVersion() - 1, -1},
+		{"current, one release older (probe build)", ProbeSteps(), func(t *testing.T) string { return loadFixture(t, SchemaVersion()) }, SchemaVersion(), 1, -1},
+		{"current", nil, func(t *testing.T) string { return loadFixture(t, SchemaVersion()) }, SchemaVersion(), 0, -1},
+		{"newer", nil, func(t *testing.T) string { return withVersion(t, SchemaVersion()+1) }, SchemaVersion() + 1, 0, -1},
+		{"negative: damaged", nil, func(t *testing.T) string { return withVersion(t, -1) }, 0, 0, errs.Conflict},
+		{"not a database", nil, func(t *testing.T) string {
 			p := filepath.Join(t.TempDir(), "kb.sqlite")
 			if err := os.WriteFile(p, []byte(strings.Repeat("not sqlite ", 200)), 0o644); err != nil {
 				t.Fatal(err)
@@ -43,7 +44,7 @@ func TestArtefactStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := tc.setup(t)
 			_, statErr := os.Stat(path)
-			st, err := NewArtefact(path).Status(ctx)
+			st, err := NewArtefactSteps(path, tc.steps).Status(ctx)
 			if tc.wantKind >= 0 {
 				if errs.KindOf(err) != tc.wantKind {
 					t.Fatalf("err = %v (kind %v), want %v", err, errs.KindOf(err), tc.wantKind)
@@ -53,7 +54,7 @@ func TestArtefactStatus(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if st.Artefact != "index" || st.Path != path || st.Target != SchemaVersion() || st.Current != tc.wantCur || len(st.Pending) != tc.wantPend {
+			if st.Artefact != "index" || st.Path != path || st.Target != stepsOr(tc.steps).Target() || st.Current != tc.wantCur || len(st.Pending) != tc.wantPend {
 				t.Errorf("Status = %+v, want current %d, %d pending", st, tc.wantCur, tc.wantPend)
 			}
 			if _, err := os.Stat(path); (err == nil) != (statErr == nil) {
@@ -75,14 +76,14 @@ func withVersion(t *testing.T, v int) string {
 // existing destination or a missing source is an error and changes nothing.
 func TestArtefactBackup(t *testing.T) {
 	ctx := context.Background()
-	path := loadFixture(t, 2)
-	dst := path + ".bak-v2-20261030-161205"
+	path := loadFixture(t, SchemaVersion())
+	dst := path + ".bak-v1-20261030-161205"
 	a := NewArtefact(path)
 	if err := a.Backup(ctx, dst); err != nil {
 		t.Fatal(err)
 	}
 	bak := NewArtefact(dst)
-	if st, err := bak.Status(ctx); err != nil || st.Current != 2 {
+	if st, err := bak.Status(ctx); err != nil || st.Current != SchemaVersion() {
 		t.Fatalf("backup Status = %+v, %v", st, err)
 	}
 	if err := bak.Verify(ctx); err != nil {
@@ -169,28 +170,33 @@ func TestArtefactVerifyDamaged(t *testing.T) {
 	}
 }
 
-// TestRunIndex: migrate.Run on the oldest fixture backs it up (the backup stays at v1 and
-// verifies), upgrades it, verifies it, and reports the re-embed the v3 step needs.
+// TestRunIndex: migrate.Run, as a build one release ahead (ProbeSteps), on the baseline fixture
+// backs it up (the backup stays at v1 and verifies), upgrades it, verifies it, and reports the
+// reindex the step declares.
 func TestRunIndex(t *testing.T) {
 	ctx := context.Background()
 	path := loadFixture(t, 1)
+	probe := ProbeSteps()
 	now := func() time.Time { return time.Date(2026, 10, 30, 16, 12, 5, 0, time.Local) }
-	rep, err := migrate.Run(ctx, []migrate.Artefact{NewArtefact(path)}, migrate.Options{Now: now})
+	rep, err := migrate.Run(ctx, []migrate.Artefact{NewArtefactSteps(path, probe)}, migrate.Options{Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := rep.Artefacts[0]
-	if out.Backup != path+".bak-v1-20261030-161205" || len(out.Applied) != SchemaVersion()-1 || rep.Needs() != migrate.EffectReembed {
+	if out.Backup != path+".bak-v1-20261030-161205" || len(out.Applied) != probe.Target()-1 || rep.Needs() != migrate.EffectReindex {
 		t.Fatalf("outcome = %+v, needs %v", out, rep.Needs())
 	}
-	if st, err := NewArtefact(out.Backup).Status(ctx); err != nil || st.Current != 1 {
+	if st, err := NewArtefactSteps(out.Backup, probe).Status(ctx); err != nil || st.Current != 1 {
 		t.Errorf("backup at %+v, %v; want v1", st, err)
 	}
-	if st, err := NewArtefact(path).Status(ctx); err != nil || st.Current != SchemaVersion() {
+	if err := NewArtefact(out.Backup).Verify(ctx); err != nil {
+		t.Errorf("backup Verify: %v", err)
+	}
+	if st, err := NewArtefactSteps(path, probe).Status(ctx); err != nil || st.Current != probe.Target() {
 		t.Errorf("store at %+v, %v; want current", st, err)
 	}
 	// Open works on the result without migrating again.
-	s, err := Open(ctx, path, Options{ReadOnly: true})
+	s, err := Open(ctx, path, Options{ReadOnly: true, Steps: probe})
 	if err != nil {
 		t.Fatalf("read-only open after Run: %v", err)
 	}
@@ -229,21 +235,23 @@ func TestApplyCancelledMidStep(t *testing.T) {
 		t.Errorf("backup at %+v, %v; want v1", st, err)
 	}
 
-	if _, err := migrate.Run(context.Background(), []migrate.Artefact{NewArtefact(path)}, migrate.Options{}); err != nil {
+	if _, err := migrate.Run(context.Background(), []migrate.Artefact{NewArtefactSteps(path, ProbeSteps())}, migrate.Options{}); err != nil {
 		t.Fatalf("rerun after the cancel: %v", err)
 	}
-	if err := NewArtefact(path).Verify(context.Background()); err != nil {
+	if err := NewArtefactSteps(path, ProbeSteps()).Verify(context.Background()); err != nil {
 		t.Error(err)
 	}
 }
 
-// TestApplyFaults: a driver failure at any statement of the upgrade leaves the starting version.
+// TestApplyFaults: a driver failure at any statement of the upgrade (to a ProbeSteps build) leaves
+// the starting version.
 func TestApplyFaults(t *testing.T) {
-	for _, match := range []string{"BEGIN IMMEDIATE", "ALTER TABLE searches RENAME", "DROP TABLE IF EXISTS chunks_vec", "PRAGMA user_version = 3", "COMMIT"} {
+	stamp := fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion()+1)
+	for _, match := range []string{"BEGIN IMMEDIATE", "CREATE TABLE probe", stamp, "COMMIT"} {
 		t.Run(match, func(t *testing.T) {
 			path := loadFixture(t, 1)
 			fail(t, match, 1)
-			a := &Artefact{path: path, driver: faultDriverName}
+			a := &Artefact{path: path, driver: faultDriverName, steps: ProbeSteps()}
 			if _, err := a.Apply(context.Background()); !errors.Is(err, errFault) {
 				t.Fatalf("Apply = %v, want the fault", err)
 			}
@@ -260,10 +268,11 @@ func countDBVersion(t *testing.T, path string) int {
 	return count(t, rawDB(t, path), "PRAGMA user_version")
 }
 
-// TestRunIndexConcurrent: two runners on one v1 store: one applies, the other waits on the lock
-// and finds nothing to do. Run with -race.
+// TestRunIndexConcurrent: two runners (a ProbeSteps build) on one v1 store: one applies, the other
+// waits on the lock and finds nothing to do. Run with -race.
 func TestRunIndexConcurrent(t *testing.T) {
 	path := loadFixture(t, 1)
+	probe := ProbeSteps()
 	var wg sync.WaitGroup
 	reps := make([]migrate.Report, 2)
 	errsOut := make([]error, 2)
@@ -272,7 +281,7 @@ func TestRunIndexConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			now := func() time.Time { return time.Date(2026, 10, 30, 16, 12, i, 0, time.Local) }
-			reps[i], errsOut[i] = migrate.Run(context.Background(), []migrate.Artefact{NewArtefact(path)}, migrate.Options{Now: now})
+			reps[i], errsOut[i] = migrate.Run(context.Background(), []migrate.Artefact{NewArtefactSteps(path, probe)}, migrate.Options{Now: now})
 		}()
 	}
 	wg.Wait()
@@ -283,8 +292,8 @@ func TestRunIndexConcurrent(t *testing.T) {
 		}
 		applied += len(reps[i].Artefacts[0].Applied)
 	}
-	if applied != SchemaVersion()-1 {
-		t.Errorf("steps applied across both runners = %d, want %d (one runner)", applied, SchemaVersion()-1)
+	if applied != probe.Target()-1 {
+		t.Errorf("steps applied across both runners = %d, want %d (one runner)", applied, probe.Target()-1)
 	}
 	if baks, _ := filepath.Glob(path + ".bak-v*"); len(baks) != 1 {
 		t.Errorf("backups = %v, want one", baks)

@@ -32,9 +32,9 @@ driver, so `harness/loadfixture` (built next to kb) loads fixtures, fills rows, 
 **Why it matters.** An agent's `kb search` can no longer migrate a store behind the user's back, and
 a newer binary cannot silently pin a store.
 
-**How to apply.** A new step (v5...): append to `migrations.go`, add its row to `TestIndexSteps` and
-`TestStepEffects`, write the fixture with `-write-fixtures`; scenario `migrate-refusal` uses
-`index-v2.sql` and needs no change. Doctor reports pending steps as `FAIL migrate` and does not open
+**How to apply.** A new step (v2, the first after the baseline squash): follow the checklist at the
+top of `internal/store/sqlite/migrations_test.go`; the harness `migrate-*` scenarios load the newest
+fixture under a probe build (`KB_HARNESS_INDEX_PROBE=1`) and need no change (index-baseline-squash). Doctor reports pending steps as `FAIL migrate` and does not open
 the file. `kb stores` shows the refusal text in the store's row.
 
 **Seen in:** internal/store/sqlite/sqlite.go, internal/migrate/run.go, internal/config/migrate.go, internal/cli/migrate_cmd.go, .agent/scripts/adversarial/harness/migrate_scenarios.go · 2026-10-30

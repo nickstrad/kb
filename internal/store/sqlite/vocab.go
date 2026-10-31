@@ -1,5 +1,5 @@
 // The store.Vocab implementation: the identifier index's vocabulary, read through
-// chunks_exact_vocab (fts5vocab 'row' over chunks_exact, schema v6).
+// chunks_exact_vocab (fts5vocab 'row' over chunks_exact, PLAN 5.6).
 
 package sqlite
 

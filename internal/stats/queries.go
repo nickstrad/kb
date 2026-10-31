@@ -166,8 +166,8 @@ ORDER BY CASE source WHEN 'both' THEN 1 WHEN 'fts-only' THEN 2 WHEN 'vec-only' T
 		Help: "One row per fts_tier of a result that was actually shown: 'phrase' and 'near' are the\n" +
 			"phrase and NEAR tiers that the main full-text list puts ahead of AND for a query of two or\n" +
 			"more words (search.phrase_boost), 'and' is the all-terms query, 'or' its any-term retry, and\n" +
-			"'none' a hit the full-text list did not return (vector-only or exact-only), or one logged\n" +
-			"before tiers were recorded (schema v8 and older). results counts result rows and share_pct\n" +
+			"'none' a hit the full-text list did not return (vector-only or exact-only), or one placed\n" +
+			"by a list that ran untiered. results counts result rows and share_pct\n" +
 			"is that share of every result row. judged is how many have a verdict, useful how many were\n" +
 			"marked useful, and useful_rate_pct is useful/judged (NULL when the tier was never judged).\n" +
 			"avg_rank is the mean display rank. with_memory counts the tier's rows that the query-memory\n" +
@@ -381,8 +381,8 @@ ORDER BY times_asked DESC, last_asked DESC, query`,
 			"measures as in overview, restricted to the searches of that configuration; first_seen and\n" +
 			"last_seen are the timestamps of its first and last search. settings_hash shows the first 12\n" +
 			"characters of the hash. settings is the canonical JSON the hash covers, so two rows can\n" +
-			"be diffed. A row with a NULL hash holds the searches logged before settings were\n" +
-			"recorded (schema v3 and older), which cannot be told apart.\n" +
+			"be diffed. A row with a NULL hash holds searches logged without their settings,\n" +
+			"which cannot be told apart.\n" +
 			"Read it with the coverage in mind: a row with few judged searches proves little, and\n" +
 			"rows differ in the queries they saw as well as in their settings.\n" +
 			"Decision: whether a setting change helped; which configuration to keep.",

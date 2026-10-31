@@ -221,6 +221,9 @@ type H struct {
 	bin, dir, root, home string
 	outside              string
 	failures, notes      []string
+	// probe runs kb one index release ahead (KB_HARNESS_INDEX_PROBE=1, a harnessfake build): an
+	// index at the build's own version is then an older store (loadOld, the fan-out's old store).
+	probe bool
 }
 
 // res is one finished kb process.
@@ -249,7 +252,7 @@ func (h *H) must(ok bool, format string, args ...any) {
 }
 
 func (h *H) env() []string {
-	return []string{
+	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + h.home,
 		"TMPDIR=" + filepath.Join(h.dir, "tmp"),
@@ -258,6 +261,10 @@ func (h *H) env() []string {
 		"HTTPS_PROXY=" + deadProxy, "HTTP_PROXY=" + deadProxy, "ALL_PROXY=" + deadProxy,
 		"https_proxy=" + deadProxy, "http_proxy=" + deadProxy,
 	}
+	if h.probe {
+		env = append(env, "KB_HARNESS_INDEX_PROBE=1")
+	}
+	return env
 }
 
 // seedGarbageModel puts an unparsable config.json where the default model would be cached.

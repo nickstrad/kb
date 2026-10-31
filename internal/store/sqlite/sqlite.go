@@ -48,10 +48,12 @@ type Options struct {
 	// ReadOnly opens an existing database without creating, migrating or writing it. A missing
 	// file is NotFound; a schema version other than this build's is a Conflict.
 	ReadOnly bool
+	// Steps are the migration steps this build has; nil = IndexSteps. Only tests and harnessfake
+	// builds set it (ProbeSteps).
+	Steps Steps
 
-	driver    string                // test seam: a registered database/sql driver name; "" = driverName
-	noMigrate bool                  // Artefact: open without checking or migrating the schema version
-	steps     migrate.Steps[execer] // test seam: the migration steps this build has; nil = indexSteps
+	driver    string // test seam: a registered database/sql driver name; "" = driverName
+	noMigrate bool   // Artefact: open without checking or migrating the schema version
 }
 
 // Schema versions on open (PLAN 1.8b, D10): a read-write open creates a missing or empty
@@ -113,7 +115,7 @@ func open(ctx context.Context, path string, opts Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, path: path, readOnly: opts.ReadOnly, steps: stepsOr(opts.steps)}
+	s := &Store{db: db, path: path, readOnly: opts.ReadOnly, steps: stepsOr(opts.Steps)}
 	if err := s.init(ctx, opts.noMigrate); err != nil {
 		db.Close()
 		return nil, err

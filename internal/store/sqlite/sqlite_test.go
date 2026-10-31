@@ -55,8 +55,7 @@ func TestOpenAppliesSchema(t *testing.T) {
 			t.Errorf("table %s missing: %v", table, err)
 		}
 	}
-	// chunks_vec is created by EnsureEmbedMeta at the model's width, never by the schema: schema.sql
-	// still declares FLOAT[768] and migration 2→3 drops it again.
+	// chunks_vec is created by EnsureEmbedMeta at the model's width, never by the schema.
 	if n := countRows(t, s, "SELECT count(*) FROM sqlite_master WHERE name = 'chunks_vec'"); n != 0 {
 		t.Errorf("a fresh database has chunks_vec (%d); EnsureEmbedMeta should create it", n)
 	}
@@ -956,7 +955,7 @@ func TestForeignKeyCascade(t *testing.T) {
 // --- migrations -------------------------------------------------------------------------------
 
 // TestMigrateRunsOnlyOutstandingMigrations runs a build with one more step than this one (passed
-// through Options.steps and Artefact.steps, not package state).
+// through Options.Steps and Artefact.steps, not package state).
 //
 // After a second migration is added, reopening a version-1 database must apply that one step
 // only, not schema.sql again (which would fail with "table entries already exists").
@@ -979,14 +978,14 @@ func TestMigrateRunsOnlyOutstandingMigrations(t *testing.T) {
 	schemaVersion := steps.Target()
 
 	// A plain open no longer upgrades (PLAN 1.8b); only the artefact's Apply does.
-	if _, err := Open(context.Background(), path, Options{steps: steps}); errs.KindOf(err) != errs.Conflict || !strings.Contains(err.Error(), "kb migrate up") {
+	if _, err := Open(context.Background(), path, Options{Steps: steps}); errs.KindOf(err) != errs.Conflict || !strings.Contains(err.Error(), "kb migrate up") {
 		t.Fatalf("Open of an older database = %v, want a Conflict saying kb migrate up", err)
 	}
 	applied, err := (&Artefact{path: path, steps: steps}).Apply(context.Background())
 	if err != nil || len(applied) != 1 || applied[0].ID != "index/9999-probe" {
 		t.Fatalf("Apply = %v, %v; want only the probe step", applied, err)
 	}
-	second, err := Open(context.Background(), path, Options{steps: steps})
+	second, err := Open(context.Background(), path, Options{Steps: steps})
 	if err != nil {
 		t.Fatalf("reopen after migrating: %v", err)
 	}

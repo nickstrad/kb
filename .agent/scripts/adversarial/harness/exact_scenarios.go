@@ -1,7 +1,7 @@
 package main
 
 // The exact-identifier list (PLAN 4.5): a query holding an identifier also searches the
-// identifier index (schema v6 chunks_exact). Built with the harnessfake tag for the fake:<dim>
+// identifier index (chunks_exact, PLAN 4.5). Built with the harnessfake tag for the fake:<dim>
 // model, so hybrid search has vectors without a download.
 
 import (

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// NormTag is the form a tag is stored in for the tag filter and compared in (schema v7):
+// NormTag is the form a tag is stored in for the tag filter and compared in (PLAN 5.2):
 // trimmed and lower case. The entry row keeps the tags as written, for display.
 func NormTag(tag string) string { return strings.ToLower(strings.TrimSpace(tag)) }
 

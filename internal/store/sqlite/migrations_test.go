@@ -19,6 +19,15 @@ import (
 	"github.com/nickstrad/kb/internal/store"
 )
 
+// Adding index step N+1 (the first post-release one is index/0002-…), in this file:
+//  1. append its (ID, Effect) row to TestIndexSteps;
+//  2. add its check to TestStepEffects (it runs against the fixture at its From, today the
+//     baseline fixture index-v1.sql, and checks the search log survives);
+//  3. add a seed for version N+1 to fixtureSeeds (the baseline seed plus rows in the new
+//     columns/tables) and run -write-fixtures to freeze index-v<N+1>.sql;
+//  4. TestReplay and TestFixtures then cover it with no edit. schema.sql and
+//     testdata/schema-baseline.golden never change.
+
 // writeFixtures generates the per-version fixtures that do not exist yet:
 //
 //	go test -tags fts5 ./internal/store/sqlite -run TestWriteFixtures -write-fixtures
@@ -27,11 +36,15 @@ import (
 // today's steps would hide an edit to an old step.
 var writeFixtures = flag.Bool("write-fixtures", false, "write missing testdata/migrations/index-v*.sql fixtures")
 
-// fixtureDir holds one SQL text fixture per schema version, from the oldest supported to the
+// fixtureDir holds one SQL text fixture per schema version, from the baseline (v1) to the
 // current one.
 const fixtureDir = "testdata/migrations"
 
 func fixturePath(v int) string { return filepath.Join(fixtureDir, fmt.Sprintf("index-v%d.sql", v)) }
+
+// logTables are the tables no migration may change: the search log is the only data in the file
+// that cannot be rebuilt from the Markdown.
+var logTables = []string{"searches", "search_results", "search_candidates", "search_feedback", "search_opens"}
 
 // TestIndexSteps: the index steps are well-formed, and each declares the effect the plan's
 // migration table gives it. A step that drops or clears derived data must say so here.
@@ -45,14 +58,6 @@ func TestIndexSteps(t *testing.T) {
 		effect migrate.Effect
 	}{
 		{"index/0001-baseline", migrate.EffectNone},
-		{"index/0002-log-provenance", migrate.EffectNone},
-		{"index/0003-vec-width", migrate.EffectReembed},
-		{"index/0004-search-settings", migrate.EffectNone},
-		{"index/0005-hit-store", migrate.EffectNone},
-		{"index/0006-exact-list", migrate.EffectNone},
-		{"index/0007-edges-tags-aliases", migrate.EffectReindex},
-		{"index/0008-prior", migrate.EffectNone},
-		{"index/0009-tier-memory", migrate.EffectNone},
 	}
 	if len(indexSteps) != len(want) {
 		t.Fatalf("%d steps, the effect table lists %d: add the new step's (ID, Effect) row", len(indexSteps), len(want))
@@ -64,6 +69,15 @@ func TestIndexSteps(t *testing.T) {
 	}
 	if SchemaVersion() != indexSteps.Target() {
 		t.Errorf("SchemaVersion %d != Target %d", SchemaVersion(), indexSteps.Target())
+	}
+	if err := ProbeSteps().Check(artefactName); err != nil {
+		t.Errorf("ProbeSteps: %v", err)
+	}
+	if p := ProbeSteps(); p.Target() != SchemaVersion()+1 || !slices.EqualFunc(p[:SchemaVersion()], indexSteps, func(a, b migrate.Step[execer]) bool { return a.Info == b.Info }) {
+		t.Errorf("ProbeSteps is not this build's steps plus one: %v", p.Pending(0))
+	}
+	if c := IndexSteps(); &c[0] == &indexSteps[0] {
+		t.Error("IndexSteps shares indexSteps' backing array: a caller's append or write would reach the build's steps")
 	}
 }
 
@@ -137,7 +151,7 @@ func TestFixtures(t *testing.T) {
 			}
 			after := logRows(t, path)
 			for table, rows := range before {
-				if !sameLogRows(rows, after[table], renamesSince(v)) {
+				if !sameLogRows(rows, after[table], nil) {
 					t.Errorf("%s changed:\nbefore %v\nafter  %v", table, rows, after[table])
 				}
 			}
@@ -145,225 +159,71 @@ func TestFixtures(t *testing.T) {
 	}
 }
 
-// renamesSince lists the log-column renames the steps after version v make (old name -> new).
-func renamesSince(v int) map[string]string {
-	if v < 2 {
-		return map[string]string{"kb_version": "corpus_rev"} // index/0002-log-provenance
-	}
-	return nil
-}
+// stepEffectChecks hold, per step after the baseline, what the step promises on the fixture at
+// its From. Empty until the first post-release step: TestStepEffects then demands its entry.
+var stepEffectChecks = map[string]func(t *testing.T, db *sql.DB){}
 
-// TestStepEffects applies each step alone to the fixture at its From and checks what the step
-// promises, plus that the search log survives it.
+// TestStepEffects applies each step after the baseline alone to the fixture at its From and checks
+// what the step promises, plus that the search log survives it.
 func TestStepEffects(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	checks := map[string]func(t *testing.T, db *sql.DB){
-		"index/0002-log-provenance": func(t *testing.T, db *sql.DB) {
-			var corpusRev string
-			var kbVersion sql.NullString
-			if err := db.QueryRow("SELECT corpus_rev, kb_version FROM searches WHERE id = 1").Scan(&corpusRev, &kbVersion); err != nil {
-				t.Fatal(err)
-			}
-			if corpusRev != "a1b2c3d" || kbVersion.Valid {
-				t.Errorf("corpus_rev, kb_version = %q, %v; want the old git hash and NULL", corpusRev, kbVersion)
-			}
-			if n := count(t, db, "SELECT count(*) FROM search_opens"); n != 0 {
-				t.Errorf("search_opens has %d rows, want a new empty table", n)
-			}
-		},
-		"index/0003-vec-width": func(t *testing.T, db *sql.DB) {
-			if n := count(t, db, "SELECT count(*) FROM sqlite_schema WHERE name = 'chunks_vec'"); n != 0 {
-				t.Error("chunks_vec survived")
-			}
-			if n := count(t, db, "SELECT count(*) FROM embed_meta"); n != 0 {
-				t.Error("embed_meta kept its row")
-			}
-			if n := count(t, db, "SELECT count(*) FROM entries WHERE body_hash != ''"); n != 0 {
-				t.Errorf("%d entries kept a body_hash: reindex would not re-embed them (Effect reembed)", n)
-			}
-			if n := count(t, db, "SELECT count(*) FROM chunks_fts WHERE chunks_fts MATCH 'checkpoint'"); n != 1 {
-				t.Errorf("FTS MATCH = %d after the step, want 1", n)
-			}
-		},
-		"index/0004-search-settings": func(t *testing.T, db *sql.DB) {
-			for _, col := range []string{"settings", "settings_hash", "fts_query"} {
-				if n := count(t, db, "SELECT count(*) FROM pragma_table_info('searches') WHERE name = '"+col+"' AND type = 'TEXT' AND \"notnull\" = 0"); n != 1 {
-					t.Errorf("searches.%s: want one nullable TEXT column, found %d", col, n)
-				}
-				// Old searches have no recorded settings: NULL, never "" (not known, not empty).
-				if n := count(t, db, "SELECT count(*) FROM searches WHERE "+col+" IS NOT NULL"); n != 0 {
-					t.Errorf("%d old searches have a %s; want NULL", n, col)
-				}
-			}
-			if n := count(t, db, "SELECT count(*) FROM searches"); n == 0 {
-				t.Error("the fixture has no searches: the preservation check would be vacuous")
-			}
-		},
-		"index/0006-exact-list": func(t *testing.T, db *sql.DB) {
-			// Backfilled: every chunk is in chunks_exact, and an identifier the main tokenizer
-			// splits is one token there (the v5 fixture's chunks are alpha.md's).
-			if got, want := count(t, db, "SELECT count(*) FROM chunks_exact"), count(t, db, "SELECT count(*) FROM chunks"); got != want || want == 0 {
-				t.Errorf("chunks_exact has %d rows, chunks %d: want equal and non-zero", got, want)
-			}
-			if n := count(t, db, "SELECT count(*) FROM chunks_exact WHERE chunks_exact MATCH 'checkpoint'"); n != 1 {
-				t.Errorf("exact MATCH checkpoint = %d after the backfill, want 1", n)
-			}
-			if n := count(t, db, `SELECT count(*) FROM chunks c JOIN chunks_exact x ON x.rowid = c.id WHERE chunks_exact MATCH 'starvation'`); n != 1 {
-				t.Errorf("exact rowids do not join chunks: %d", n)
-			}
-			if n := count(t, db, "SELECT count(*) FROM chunks_exact_vocab WHERE term = 'checkpoint'"); n != 1 {
-				t.Errorf("chunks_exact_vocab has %d rows for checkpoint, want 1", n)
-			}
-			for _, table := range []string{"search_results", "search_candidates"} {
-				for col, typ := range map[string]string{"exact_rank": "INTEGER", "exact_score": "REAL"} {
-					if n := count(t, db, "SELECT count(*) FROM pragma_table_info('"+table+"') WHERE name = '"+col+"' AND type = '"+typ+"' AND \"notnull\" = 0"); n != 1 {
-						t.Errorf("%s.%s: want one nullable %s column, found %d", table, col, typ, n)
-					}
-					// No search before v6 ran an exact list: NULL, never 0.
-					if n := count(t, db, "SELECT count(*) FROM "+table+" WHERE "+col+" IS NOT NULL"); n != 0 {
-						t.Errorf("%d old %s rows have a %s; want NULL", n, table, col)
-					}
-				}
-			}
-			// The open of search 4 was of the other store's hit (only it returned notes/wal.md):
-			// the inferred store is now on the row.
-			var st sql.NullString
-			if err := db.QueryRow("SELECT store FROM search_opens WHERE search_id = 4").Scan(&st); err != nil {
-				t.Fatal(err)
-			}
-			if st.String != "notes@/Users/someone/knowledge" {
-				t.Errorf("search 4's open store = %v, want the ref that returned the path", st)
-			}
-			var primary sql.NullString
-			if err := db.QueryRow("SELECT store FROM search_opens WHERE search_id = 1").Scan(&primary); err != nil {
-				t.Fatal(err)
-			}
-			if primary.Valid {
-				t.Errorf("search 1's open store = %q, want NULL (this store returned it)", primary.String)
-			}
-			// The key is (search_id, store, entry_path): the same path from another store is a
-			// second open, the same open again is ignored.
-			if _, err := db.Exec("INSERT OR IGNORE INTO search_opens (search_id, store, entry_path, ts) VALUES (1, 'x@/r', 'alpha.md', 't'), (1, NULL, 'alpha.md', 't')"); err != nil {
-				t.Fatal(err)
-			}
-			if n := count(t, db, "SELECT count(*) FROM search_opens WHERE search_id = 1"); n != 2 {
-				t.Errorf("search 1 has %d opens after adding another store's and a duplicate, want 2", n)
-			}
-			if _, err := db.Exec("DELETE FROM search_opens WHERE store = 'x@/r'"); err != nil {
-				t.Fatal(err)
-			}
-		},
-		"index/0007-edges-tags-aliases": func(t *testing.T, db *sql.DB) {
-			// Effect reindex: every body_hash is cleared, so a plain kb reindex rewrites every
-			// entry with its edges and aliases.
-			if n := count(t, db, "SELECT count(*) FROM entries WHERE body_hash != ''"); n != 0 {
-				t.Errorf("%d entries kept a body_hash: reindex would skip them and never fill edges (Effect reindex)", n)
-			}
-			if n := count(t, db, "SELECT count(*) FROM entries"); n == 0 {
-				t.Error("the fixture has no entries: the checks would be vacuous")
-			}
-			if n := count(t, db, "SELECT count(*) FROM entries WHERE aliases != '[]'"); n != 0 {
-				t.Errorf("%d entries have aliases before any reindex, want '[]'", n)
-			}
-			if n := count(t, db, "SELECT count(*) FROM pragma_table_info('entries') WHERE name = 'aliases' AND type = 'TEXT' AND \"notnull\" = 1"); n != 1 {
-				t.Error("entries.aliases: want one NOT NULL TEXT column")
-			}
-			if n := count(t, db, "SELECT count(*) FROM edges"); n != 0 {
-				t.Errorf("edges has %d rows before any reindex, want 0", n)
-			}
-			// Backfilled from entries.tags: the v6 fixture's alpha.md carries "sqlite".
-			if got, err := strings1(context.Background(), db, "SELECT e.path || ':' || t.tag FROM entry_tags t JOIN entries e ON e.id = t.entry_id ORDER BY 1"); err != nil || !slices.Equal(got, []string{"alpha.md:sqlite"}) {
-				t.Errorf("entry_tags = %q, %v; want alpha.md:sqlite", got, err)
-			}
-			// Embeddings survive: the reindex reuses them by text_hash.
-			if n := count(t, db, "SELECT count(*) FROM chunks_vec"); n != count(t, db, "SELECT count(*) FROM chunks") || n == 0 {
-				t.Errorf("chunks_vec has %d rows; want one per chunk, kept for reuse", n)
-			}
-		},
-		"index/0008-prior": func(t *testing.T, db *sql.DB) {
-			// Effect none: two nullable REAL columns, NULL on every old row (the prior was not
-			// there), and nothing else cleared.
-			for _, table := range []string{"search_results", "search_candidates"} {
-				if n := count(t, db, "SELECT count(*) FROM pragma_table_info('"+table+"') WHERE name = 'prior' AND type = 'REAL' AND \"notnull\" = 0"); n != 1 {
-					t.Errorf("%s.prior: want one nullable REAL column, found %d", table, n)
-				}
-				if n := count(t, db, "SELECT count(*) FROM "+table); n == 0 {
-					t.Errorf("the fixture has no %s rows: the checks would be vacuous", table)
-				}
-				if n := count(t, db, "SELECT count(*) FROM "+table+" WHERE prior IS NOT NULL"); n != 0 {
-					t.Errorf("%d old %s rows have a prior; want NULL", n, table)
-				}
-			}
-			if n := count(t, db, "SELECT count(*) FROM entries WHERE body_hash = ''"); n != 0 {
-				t.Errorf("%d entries lost their body_hash: the step must not ask for a reindex (Effect none)", n)
-			}
-		},
-		"index/0009-tier-memory": func(t *testing.T, db *sql.DB) {
-			// Effect none: three nullable columns on each log table, NULL on every old row
-			// (those searches had no tiers and logged no memory rank), a CHECK on the tier, and
-			// nothing else cleared.
-			for _, table := range []string{"search_results", "search_candidates"} {
-				for _, col := range []struct{ name, typ string }{{"fts_tier", "TEXT"}, {"memory_rank", "INTEGER"}, {"memory_score", "REAL"}} {
-					if n := count(t, db, "SELECT count(*) FROM pragma_table_info('"+table+"') WHERE name = '"+col.name+"' AND type = '"+col.typ+"' AND \"notnull\" = 0"); n != 1 {
-						t.Errorf("%s.%s: want one nullable %s column, found %d", table, col.name, col.typ, n)
-					}
-					if n := count(t, db, "SELECT count(*) FROM "+table+" WHERE "+col.name+" IS NOT NULL"); n != 0 {
-						t.Errorf("%d old %s rows have %s set; want NULL", n, table, col.name)
-					}
-				}
-				if n := count(t, db, "SELECT count(*) FROM "+table); n == 0 {
-					t.Errorf("the fixture has no %s rows: the checks would be vacuous", table)
-				}
-			}
-			if _, err := db.Exec(`UPDATE search_results SET fts_tier = 'fuzzy'`); err == nil {
-				t.Error("fts_tier accepted a value outside phrase, near, and, or")
-			}
-			if _, err := db.Exec(`UPDATE search_results SET fts_tier = 'near', memory_rank = 1, memory_score = 0.5`); err != nil {
-				t.Errorf("the new columns take their values: %v", err)
-			}
-			if n := count(t, db, "SELECT count(*) FROM entries WHERE body_hash = ''"); n != 0 {
-				t.Errorf("%d entries lost their body_hash: the step must not ask for a reindex (Effect none)", n)
-			}
-		},
-		"index/0005-hit-store": func(t *testing.T, db *sql.DB) {
-			for _, table := range []string{"search_results", "search_candidates"} {
-				if n := count(t, db, "SELECT count(*) FROM pragma_table_info('"+table+"') WHERE name = 'store' AND type = 'TEXT' AND \"notnull\" = 0"); n != 1 {
-					t.Errorf("%s.store: want one nullable TEXT column, found %d", table, n)
-				}
-				// Every hit logged before v5 came from the primary store: NULL, never "".
-				if n := count(t, db, "SELECT count(*) FROM "+table+" WHERE store IS NOT NULL"); n != 0 {
-					t.Errorf("%d old %s rows have a store; want NULL (primary)", n, table)
-				}
-				if n := count(t, db, "SELECT count(*) FROM "+table); n == 0 {
-					t.Errorf("the fixture has no %s rows: the NULL check would be vacuous", table)
-				}
-			}
-		},
+	for id := range stepEffectChecks {
+		if !slices.ContainsFunc(indexSteps, func(s migrate.Step[execer]) bool { return s.ID == id }) {
+			t.Errorf("stepEffectChecks has %s, which is no step", id)
+		}
 	}
 	for _, step := range indexSteps[1:] { // the baseline has no From fixture: v0 is "no file"
 		t.Run(step.ID, func(t *testing.T) {
-			check, ok := checks[step.ID]
+			check, ok := stepEffectChecks[step.ID]
 			if !ok {
 				t.Fatalf("no effect check for %s: add one", step.ID)
 			}
-			path := loadFixture(t, step.From)
-			before := logRows(t, path)
-			if _, err := artefactAt(path, step.From+1).Apply(ctx); err != nil {
-				t.Fatal(err)
-			}
-			db := rawDB(t, path)
-			if v := count(t, db, "PRAGMA user_version"); v != step.From+1 {
-				t.Fatalf("user_version = %d, want %d", v, step.From+1)
-			}
-			check(t, db)
-			after := logRows(t, path)
-			for table, rows := range before {
-				if !sameLogRows(rows, after[table], renamesSince(step.From)) {
-					t.Errorf("%s changed:\nbefore %v\nafter  %v", table, rows, after[table])
-				}
-			}
+			applyStepToFixture(t, indexSteps, step, check)
 		})
+	}
+}
+
+// TestProbeStep runs the step harness on ProbeSteps' synthetic step against the newest fixture,
+// so the harness is exercised before the first real step exists and the probe does what its
+// declared EffectReindex says: it clears every body_hash, and keeps the log.
+func TestProbeStep(t *testing.T) {
+	t.Parallel()
+	steps := ProbeSteps()
+	applyStepToFixture(t, steps, steps[len(steps)-1], func(t *testing.T, db *sql.DB) {
+		if n := count(t, db, "SELECT count(*) FROM entries"); n == 0 {
+			t.Fatal("the fixture has no entries: the body_hash check would be vacuous")
+		}
+		if n := count(t, db, "SELECT count(*) FROM entries WHERE body_hash != ''"); n != 0 {
+			t.Errorf("%d entries kept a body_hash: reindex would skip them (Effect reindex)", n)
+		}
+		if n := count(t, db, "SELECT count(*) FROM sqlite_schema WHERE name = 'probe'"); n != 1 {
+			t.Error("the probe table is missing")
+		}
+	})
+}
+
+// applyStepToFixture loads the fixture at step.From, applies step alone (as a build whose steps
+// end with it), and runs check; every search-log row must survive.
+func applyStepToFixture(t *testing.T, steps Steps, step migrate.Step[execer], check func(*testing.T, *sql.DB)) {
+	t.Helper()
+	path := loadFixture(t, step.From)
+	before := logRows(t, path)
+	if n := len(before["searches"]); n == 0 {
+		t.Fatal("the fixture has no searches: the preservation check would be vacuous")
+	}
+	if _, err := NewArtefactSteps(path, steps[:step.From+1]).Apply(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	db := rawDB(t, path)
+	if v := count(t, db, "PRAGMA user_version"); v != step.From+1 {
+		t.Fatalf("user_version = %d, want %d", v, step.From+1)
+	}
+	check(t, db)
+	after := logRows(t, path)
+	for table, rows := range before {
+		if !sameLogRows(rows, after[table], nil) {
+			t.Errorf("%s changed:\nbefore %v\nafter  %v", table, rows, after[table])
+		}
 	}
 }
 
@@ -399,54 +259,40 @@ func TestWriteFixtures(t *testing.T) {
 	}
 }
 
+// openAtVersion opens path with only the first v steps, i.e. as the kb of version v would. The
+// older build's steps travel in Options.Steps, never in package state.
+func openAtVersion(t *testing.T, path string, v int) *Store {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil { // an older file: Open would refuse it, Apply upgrades it
+		if _, err := artefactAt(path, v).Apply(context.Background()); err != nil {
+			t.Fatalf("upgrade to v%d: %v", v, err)
+		}
+	}
+	s, err := Open(context.Background(), path, Options{Steps: indexSteps[:v]})
+	if err != nil {
+		t.Fatalf("open at v%d: %v", v, err)
+	}
+	return s
+}
+
 // fixtureSeeds write realistic rows as the kb of each version did: entries, chunks, FTS, the
 // embedding model and vectors, and at least one row in every search-log table of that version.
 var fixtureSeeds = map[int]func(t *testing.T, s *Store){
-	1: seedV1,
-	2: func(t *testing.T, s *Store) { seedV2(t, s, "with vectors") },
-	3: seedV3,
-	4: seedV4,
-	5: seedV5,
-	6: seedV6,
-	7: seedV7,
-	8: seedV8,
-	9: seedV9,
+	1: seedBaseline,
 }
 
-func seedV1(t *testing.T, s *Store) {
+// seedBaseline is a baseline (v1) store after a reindex, with a search log that uses every log
+// column: the rows a pre-release kb (index v9, which the baseline squashes) left, layer by layer.
+func seedBaseline(t *testing.T, s *Store) {
 	t.Helper()
-	execAll(t, s.DB(), `
-		INSERT INTO searches (id, ts, query, mode, k, n_returned, caller, kb_version)
-		VALUES (1, '2026-09-01T09:00:00Z', 'checkpoint', 'hybrid', 8, 1, 'claude', 'a1b2c3d'),
-		       (2, '2026-09-02T09:00:00Z', 'vacuum', 'fts', 8, 0, 'human', NULL);
-		INSERT INTO search_results (search_id, rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, rrf_score)
-		VALUES (1, 1, 2, 'alpha.md', 'Body', 1, -2.75, 1, 0.125, 0.0328);
-		INSERT INTO search_candidates (search_id, fused_rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, rrf_score, returned)
-		VALUES (1, 1, 2, 'alpha.md', 'Body', 1, -2.75, 1, 0.125, 0.0328, 1),
-		       (1, 2, 1, 'alpha.md', '', NULL, NULL, 2, 0.5, 0.0161, 0);
-		INSERT INTO search_feedback (search_id, rank, useful, note, ts) VALUES (1, 1, 1, 'right entry', '2026-09-01T09:01:00Z');
-		INSERT INTO entries (id, path, kind, title, summary, tags, body_hash, indexed_at)
-		VALUES (1, 'alpha.md', 'file', 'Alpha', 'WAL notes', '["sqlite"]', 'hash-a', '2026-09-01T00:00:00Z');
-		INSERT INTO chunks (id, entry_id, ord, source_file, heading, text, text_hash)
-		VALUES (1, 1, 0, 'alpha.md', '', 'Alpha: WAL notes', 'h1'), (2, 1, 1, 'alpha.md', 'Body', 'checkpoint starvation', 'h2');
-		INSERT INTO chunks_fts (rowid, text, heading, title) VALUES (1, 'Alpha: WAL notes', '', 'Alpha'), (2, 'checkpoint starvation', 'Body', 'Alpha');
-		INSERT INTO embed_meta (id, model, dim, created_at) VALUES (1, 'nomic-embed-text', 768, '2026-09-01T00:00:00Z');`)
-	for id := 1; id <= 2; id++ {
-		v := make([]float32, 768)
-		v[0], v[id] = 1, 0.5
-		blob, err := sqlite_vec.SerializeFloat32(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.DB().Exec("INSERT INTO chunks_vec (chunk_id, embedding) VALUES (?, ?)", id, blob); err != nil {
-			t.Fatal(err)
-		}
+	for _, seed := range []func(*testing.T, *Store){seedLog, seedSettings, seedCrossStore, seedExact, seedLinks, seedPrior, seedTiers} {
+		seed(t, s)
 	}
 }
 
-// seedV3 is a v3 store after a reindex: vectors at the model's width (4) in the table
-// EnsureEmbedMeta creates, plus a full search log with opens.
-func seedV3(t *testing.T, s *Store) {
+// seedLog: an indexed entry with vectors at the model's width (4) in the table EnsureEmbedMeta
+// creates, plus a search with a result, a candidate, a verdict and an open.
+func seedLog(t *testing.T, s *Store) {
 	t.Helper()
 	ctx := context.Background()
 	if err := s.EnsureEmbedMeta(ctx, store.EmbedMeta{Model: "BAAI/bge-small-en-v1.5", Dim: 4}); err != nil {
@@ -470,11 +316,10 @@ func seedV3(t *testing.T, s *Store) {
 		INSERT INTO search_opens (search_id, entry_path, ts) VALUES (1, 'alpha.md', '2026-10-01T09:02:00Z');`)
 }
 
-// seedV4 is a v4 store: the v3 data, plus searches that recorded their settings as a v4 kb does
-// (one with an FTS expression, one fts-only with none), next to the v3 search that predates them.
-func seedV4(t *testing.T, s *Store) {
+// seedSettings: searches that recorded their settings (one with an FTS expression, one vec-only
+// with none), next to seedLog's search, which has none.
+func seedSettings(t *testing.T, s *Store) {
 	t.Helper()
-	seedV3(t, s)
 	execAll(t, s.DB(), `
 		INSERT INTO searches (id, ts, query, mode, k, n_returned, caller, corpus_rev, kb_version, settings, settings_hash, fts_query)
 		VALUES (2, '2026-10-02T09:00:00Z', 'wal checkpoint', 'hybrid', 8, 1, 'claude', 'a1b2c3d', 'v0.3.0',
@@ -488,11 +333,10 @@ func seedV4(t *testing.T, s *Store) {
 		INSERT INTO search_feedback (search_id, rank, useful, note, ts) VALUES (2, 1, 1, NULL, '2026-10-02T09:01:00Z');`)
 }
 
-// seedV5 is a v5 store: the v4 data, plus a cross-store search as a v5 kb logs it, with one
-// primary hit (store NULL) and one hit of another store (its canonical ref, its own chunk id).
-func seedV5(t *testing.T, s *Store) {
+// seedCrossStore: a cross-store search with one primary hit (store NULL) and one hit of another
+// store (its canonical ref, its own chunk id), and an open of the other store's hit.
+func seedCrossStore(t *testing.T, s *Store) {
 	t.Helper()
-	seedV4(t, s)
 	execAll(t, s.DB(), `
 		INSERT INTO searches (id, ts, query, mode, k, n_returned, caller, corpus_rev, kb_version, settings, settings_hash, fts_query)
 		VALUES (4, '2026-10-04T09:00:00Z', 'checkpoint', 'hybrid', 8, 2, 'claude', NULL, 'v0.4.0',
@@ -507,13 +351,11 @@ func seedV5(t *testing.T, s *Store) {
 		INSERT INTO search_opens (search_id, entry_path, ts) VALUES (4, 'notes/wal.md', '2026-10-04T09:02:00Z');`)
 }
 
-// seedV6 is a v6 store: the v5 data with the open of search 4 carrying its store, plus a search
-// whose hits carry exact-list ranks, an entry whose chunks hold identifiers (written to
-// chunks_exact by ReplaceEntry) and one path opened from two stores of one search (the widened
-// search_opens key).
-func seedV6(t *testing.T, s *Store) {
+// seedExact: the open of search 4 carrying its store, a search whose hits carry exact-list ranks,
+// an entry whose chunks hold identifiers (written to chunks_exact by ReplaceEntry) and one path
+// opened from two stores of one search.
+func seedExact(t *testing.T, s *Store) {
 	t.Helper()
-	seedV5(t, s)
 	ctx := context.Background()
 	chunks := []store.ChunkInput{
 		{Ord: 0, SourceFile: "beta.md", Text: "Beta: config notes", TextHash: "h3", Embedding: []float32{0, 0, 1, 0}},
@@ -541,12 +383,11 @@ func seedV6(t *testing.T, s *Store) {
 		       (5, 'notes@/Users/someone/knowledge', 'beta.md', '2026-10-05T09:03:00Z');`)
 }
 
-// seedV7 is a v7 store after a reindex: the v6 data, plus entries with mixed-case tags,
-// aliases and edges of both kinds (resolved by path, directory, basename and alias, one
-// dangling), resolved as reindex leaves them, and a search filtered by a tag.
-func seedV7(t *testing.T, s *Store) {
+// seedLinks: entries with mixed-case tags, aliases and edges of both kinds (resolved by path,
+// directory, basename and alias, one dangling), resolved as reindex leaves them, and a search
+// filtered by a tag.
+func seedLinks(t *testing.T, s *Store) {
 	t.Helper()
-	seedV6(t, s)
 	ctx := context.Background()
 	write := func(e store.EntryInput, text, hash string, v []float32) {
 		t.Helper()
@@ -587,12 +428,10 @@ func seedV7(t *testing.T, s *Store) {
 		INSERT INTO search_opens (search_id, store, entry_path, ts) VALUES (6, NULL, 'gamma.md', '2026-10-06T09:02:00Z');`)
 }
 
-// seedV8 is a v8 store: the v7 data, plus a search that ran with the feedback prior active (its
-// results and candidates carry the multiplier, already folded into rrf_score) and one verdict
-// recorded after it.
-func seedV8(t *testing.T, s *Store) {
+// seedPrior: a search that ran with the feedback prior active (its results and candidates carry
+// the multiplier, already folded into rrf_score) and one verdict recorded after it.
+func seedPrior(t *testing.T, s *Store) {
 	t.Helper()
-	seedV7(t, s)
 	execAll(t, s.DB(), `
 		INSERT INTO searches (id, ts, query, mode, k, n_returned, caller, corpus_rev, kb_version, settings, settings_hash, fts_query)
 		VALUES (7, '2026-10-07T09:00:00Z', 'kubernetes', 'hybrid', 8, 1, 'claude', NULL, 'v0.8.0',
@@ -605,11 +444,10 @@ func seedV8(t *testing.T, s *Store) {
 		INSERT INTO search_feedback (search_id, rank, useful, note, ts) VALUES (7, 1, 1, 'prior helped', '2026-10-07T09:01:00Z');`)
 }
 
-// seedV9 is a v9 store: the v8 data, plus a search whose main list ran tiered (a phrase hit and
-// an AND hit) and whose hit also came from the query-memory list.
-func seedV9(t *testing.T, s *Store) {
+// seedTiers: a search whose main list ran tiered (a phrase hit and an AND hit) and whose hit
+// also came from the query-memory list.
+func seedTiers(t *testing.T, s *Store) {
 	t.Helper()
-	seedV8(t, s)
 	execAll(t, s.DB(), `
 		INSERT INTO searches (id, ts, query, mode, k, n_returned, caller, corpus_rev, kb_version, settings, settings_hash, fts_query)
 		VALUES (8, '2026-10-08T09:00:00Z', 'kubernetes cluster', 'fts', 8, 1, 'claude', NULL, 'v0.9.0',
@@ -620,32 +458,6 @@ func seedV9(t *testing.T, s *Store) {
 		INSERT INTO search_candidates (search_id, fused_rank, chunk_id, entry_path, heading, fts_rank, fts_score, vec_rank, vec_distance, exact_rank, exact_score, rrf_score, returned, store, prior, memory_rank, memory_score, fts_tier)
 		VALUES (8, 1, 5, 'gamma.md', '', 1, -2.5, NULL, NULL, NULL, NULL, 0.0328, 1, NULL, NULL, 1, 0.75, 'phrase'),
 		       (8, 2, 2, 'alpha.md', '', 2, -1.5, NULL, NULL, NULL, NULL, 0.0161, 0, NULL, NULL, NULL, NULL, 'and');`)
-}
-
-// TestStep7BackfillsTags: the v7 step backfills entry_tags from entries.tags lowercased and
-// trimmed, one row per distinct tag, skipping empty and non-string items, and a tags value that is
-// not a JSON array (corrupt, or a bare string) backfills nothing instead of failing the upgrade.
-func TestStep7BackfillsTags(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	path := loadFixture(t, 6)
-	execAll(t, rawDB(t, path), `
-		UPDATE entries SET tags = '["Docker", " SQLite ", "", "docker", 3, "  "]' WHERE path = 'alpha.md';
-		INSERT INTO entries (id, path, kind, title, summary, tags, body_hash, indexed_at)
-		VALUES (10, 'corrupt.md', 'file', 'C', 'S', 'not json', 'h', 't'),
-		       (11, 'scalar.md', 'file', 'S', 'S', '"docker"', 'h', 't'),
-		       (12, 'object.md', 'file', 'O', 'S', '{"a":"b"}', 'h', 't'),
-		       (13, 'none.md', 'file', 'N', 'S', '[]', 'h', 't');`)
-	if _, err := artefactAt(path, 7).Apply(ctx); err != nil {
-		t.Fatalf("Apply v7: %v", err)
-	}
-	got, err := strings1(ctx, rawDB(t, path), "SELECT e.path || ':' || t.tag FROM entry_tags t JOIN entries e ON e.id = t.entry_id ORDER BY 1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"alpha.md:docker", "alpha.md:sqlite"}; !slices.Equal(got, want) {
-		t.Errorf("entry_tags = %q, want %q", got, want)
-	}
 }
 
 // dumpFixture renders the database at path as the SQL text that rebuilds it: the version, every

@@ -34,7 +34,6 @@ import (
 	"github.com/nickstrad/kb/internal/embed/cache"
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/migrate"
-	"github.com/nickstrad/kb/internal/store/sqlite"
 	"github.com/nickstrad/kb/internal/workspace"
 )
 
@@ -128,7 +127,7 @@ func (d *deps) migrateScope(cmd *cobra.Command, all bool) ([]migrateItem, error)
 		if err != nil {
 			return nil, err
 		}
-		return d.withCacheItem(append(locationItems(rr.ws.Location), storeItems(rr.ws)...)), nil
+		return d.withCacheItem(append(locationItems(rr.ws.Location), d.storeItems(rr.ws)...)), nil
 	}
 	loc, err := workspace.ResolveLocation(root, global, env)
 	if err != nil {
@@ -151,7 +150,7 @@ func (d *deps) migrateScope(cmd *cobra.Command, all bool) ([]migrateItem, error)
 			if err != nil {
 				return nil, err
 			}
-			items = append(items, storeItems(ws)...)
+			items = append(items, d.storeItems(ws)...)
 		}
 		// The global location, unless that is where we already are.
 		if gl, err := workspace.ResolveLocation("", true, env); err == nil && gl.Root != loc.Root {
@@ -166,7 +165,7 @@ func (d *deps) migrateScope(cmd *cobra.Command, all bool) ([]migrateItem, error)
 					if err != nil {
 						return nil, err
 					}
-					items = append(items, storeItems(ws)...)
+					items = append(items, d.storeItems(ws)...)
 				}
 			}
 		}
@@ -179,7 +178,7 @@ func (d *deps) migrateScope(cmd *cobra.Command, all bool) ([]migrateItem, error)
 		if err != nil {
 			return nil, err
 		}
-		items = append(items, storeItems(ws)...)
+		items = append(items, d.storeItems(ws)...)
 	}
 	return d.withCacheItem(items), nil
 }
@@ -198,11 +197,11 @@ func locationItems(loc *workspace.Location) []migrateItem {
 	return []migrateItem{existing(migrateItem{Scope: "location", Where: loc.Root, Art: config.NewLocationArtefact(loc.FilePath), Path: loc.FilePath})}
 }
 
-func storeItems(ws *workspace.Workspace) []migrateItem {
+func (d *deps) storeItems(ws *workspace.Workspace) []migrateItem {
 	scope := "store " + ws.Store
 	return []migrateItem{
 		existing(migrateItem{Scope: scope, Where: ws.Root, Art: config.NewArtefact(ws.ConfigPath), Path: ws.ConfigPath}),
-		existing(migrateItem{Scope: scope, Where: ws.Root, Art: sqlite.NewArtefact(ws.DBPath), Path: ws.DBPath}),
+		existing(migrateItem{Scope: scope, Where: ws.Root, Art: d.indexArtefact(ws.DBPath), Path: ws.DBPath}),
 	}
 }
 

@@ -305,7 +305,7 @@ func TestCommonTermIsNeverDropped(t *testing.T) {
 }
 
 // FuzzExactMatch checks the exact list's query path against SQLite, with a table built with the
-// identifier index's own tokenizer (schema v6 chunks_exact): the AND expression of the query's
+// identifier index's own tokenizer (chunks_exact, PLAN 4.5): the AND expression of the query's
 // identifiers (ExactTerms, then the store's MatchExpr) always parses, every phrase in it is at
 // least one token, and a document holding the identifiers as words is found by it. This is the
 // sanitiser contract (sqlite FuzzSanitizeFTS) for the second tokenizer.

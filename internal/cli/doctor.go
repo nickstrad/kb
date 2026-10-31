@@ -152,7 +152,7 @@ func runDoctor(ctx context.Context, cmd *cobra.Command, dp *deps, stdout io.Writ
 	var st store.Store
 	if _, statErr := os.Stat(dbPath); statErr != nil {
 		d.warn("database", fmt.Sprintf("not indexed: run kb reindex --all (no database at %s)", dbPath))
-	} else if pending := pendingMigration(ctx, dbPath); pending != "" {
+	} else if pending := dp.pendingMigration(ctx, dbPath); pending != "" {
 		// Commands refuse an older index (PLAN 1.8b), so doctor says what to run instead of
 		// opening it, which would fail the same way.
 		d.fail("migrate", pending)
@@ -220,8 +220,8 @@ func runConfigChecks(ctx context.Context, cmd *cobra.Command, d *doctorState, dp
 
 // pendingMigration describes the steps an older index database still needs, "" when it is current,
 // newer (the open reports that) or unreadable (the open reports that too). It never changes the file.
-func pendingMigration(ctx context.Context, dbPath string) string {
-	st, err := sqlite.NewArtefact(dbPath).Status(ctx)
+func (d *deps) pendingMigration(ctx context.Context, dbPath string) string {
+	st, err := d.indexArtefact(dbPath).Status(ctx)
 	if err != nil || st.Newer() || len(st.Pending) == 0 || st.Current == 0 {
 		return ""
 	}

@@ -1,4 +1,4 @@
-# The phrase/NEAR tiers of the main FTS list (schema v9)
+# The phrase/NEAR tiers of the main FTS list (PLAN 4.6)
 
 > With two or more query groups and `search.phrase_boost`, the main FTS list is phrase, NEAR(8) and AND rows concatenated in that order (OR only when AND is empty), one list and one RRF term; the tier is logged per hit (`fts_tier`).
 

@@ -379,6 +379,7 @@ Rules: anything a second backend must also do goes in the suite. Behaviour speci
 
 Every versioned artefact (CODING_STYLE.md §6.1) has these, in its own package. The framework itself (`internal/migrate`: `Steps.Check`, `Run`'s lock, backup, apply and verify decision table) is tested once, against a fake artefact; adapters do not repeat it.
 
+0. **Baseline golden (index).** The index's pre-release steps were squashed into one baseline (`index/0001-baseline`, PLAN §2.5). `TestBaselineSchemaGolden` compares a fresh baseline store's *semantic* schema (columns with types, NOT NULL, defaults and keys; foreign keys; index columns; CHECKs; normalised virtual-table, index and trigger SQL; not `sqlite_schema` text, which ALTER rewrites) with `testdata/schema-baseline.golden`, so `schema.sql` cannot change after release. The golden is never regenerated.
 1. **Fixtures.** One SQL text fixture per version (`testdata/migrations/<artefact>-v<N>.sql`), with realistic rows: entries, chunks, FTS, the embedding model and vectors, and at least one row in every search-log table of that version. It is generated once by the package's `-write-fixtures` test flag (steps `0..N-1` applied, rows inserted, dumped as `quote()` literals) and checked in as text, never binary. **A fixture is never edited or regenerated**: it freezes what an older kb wrote, so an edit to an old step fails the fixture test instead of passing silently. A new step adds the next fixture.
 2. **Replay (one per artefact):**
    - building the artefact one version at a time gives the same normalised schema and `user_version` as creating it fresh at the target;
@@ -387,6 +388,7 @@ Every versioned artefact (CODING_STYLE.md §6.1) has these, in its own package. 
 3. **Per step:** the fixture at `From`, upgraded by that step alone, shows the step's effect (columns renamed, tables cleared, `body_hash` emptied) and keeps the search log (renamed columns compared under their new names). A step without an effect check fails the test.
 4. **Effect table:** a test lists `(step ID, Effect)` for every step, so adding a step or changing an effect is a reviewed diff.
 5. **Interruption:** a cancel during the last pending step leaves the starting version and schema (one transaction), and a rerun succeeds. A driver fault at each statement of the upgrade does the same (fault driver).
+6. **Probe build (index).** With only the baseline there is no real older schema, so tests that need "an older store" (the refusal, `kb migrate up`, backups, the declared reindex, interruption) run kb one release ahead: `sqlite.ProbeSteps()` adds a synthetic step `index/<N+1>-probe` (an empty table, every `body_hash` cleared, Effect reindex), passed through `sqlite.Options.Steps` / `sqlite.NewArtefactSteps`, the CLI's `deps.indexSteps` (`useProbeBuild`, `installOlderIndex`), and `KB_HARNESS_INDEX_PROBE=1` in a harnessfake binary (the `upgrade` journey, the harness `migrate-*` and `stores-fanout` scenarios). The newest fixture is then the older store. This keeps working after real steps land.
 
 ## 7. Test doubles and determinism
 

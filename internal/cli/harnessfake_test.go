@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nickstrad/kb/internal/store/sqlite"
 )
 
 func TestFakeModel(t *testing.T) {
@@ -65,4 +67,31 @@ func TestHarnessClock(t *testing.T) {
 	if !d.clock().Equal(pinned) {
 		t.Errorf("deps.clock() = %v, want the pinned time", d.clock())
 	}
+}
+
+// TestHarnessProbe: KB_HARNESS_INDEX_PROBE=1, and only that value, makes the build one index
+// release ahead; productionDeps carries the choice into openStore and the migrate adapter.
+func TestHarnessProbe(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		val   string
+		set   bool
+		probe bool
+	}{{"1", true, true}, {"", false, false}, {"", true, false}, {"0", true, false}, {"true", true, false}} {
+		got := harnessProbe(func(string) (string, bool) { return tc.val, tc.set })
+		want := sqlite.SchemaVersion()
+		if tc.probe {
+			want++
+		}
+		if (got != nil) != tc.probe || stepsTarget(got) != want {
+			t.Errorf("KB_HARNESS_INDEX_PROBE=%q (set %v): target %d, want %d", tc.val, tc.set, stepsTarget(got), want)
+		}
+	}
+}
+
+func stepsTarget(s sqlite.Steps) int {
+	if s == nil {
+		return sqlite.SchemaVersion()
+	}
+	return s.Target()
 }

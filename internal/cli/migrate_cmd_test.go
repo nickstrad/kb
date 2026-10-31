@@ -39,8 +39,34 @@ func fixtureSQL(t *testing.T, v int) string {
 	return string(b)
 }
 
-// installIndex replaces the database at path with the fixture for schema version v: what an older
-// kb left behind.
+// useProbeBuild makes the test's kb one index release ahead of this build (sqlite.ProbeSteps),
+// so an index at this build's version is what an older kb left behind: until the first
+// post-release step there is no real older schema. It returns the probe steps.
+func useProbeBuild(t *testing.T) sqlite.Steps {
+	t.Helper()
+	p := sqlite.ProbeSteps()
+	depsFor(t).indexSteps = p
+	return p
+}
+
+// installOlderIndex makes the test's kb a probe build and installs the newest checked-in index
+// fixture at path: a store one release older than that kb, with realistic rows.
+func installOlderIndex(t *testing.T, path string) {
+	t.Helper()
+	useProbeBuild(t)
+	installIndex(t, path, sqlite.SchemaVersion())
+}
+
+// buildTarget is the index schema version the test's kb writes (one more for a probe build).
+func buildTarget(t *testing.T) int {
+	t.Helper()
+	if s := depsFor(t).indexSteps; s != nil {
+		return s.Target()
+	}
+	return sqlite.SchemaVersion()
+}
+
+// installIndex replaces the database at path with the fixture for schema version v.
 func installIndex(t *testing.T, path string, v int) {
 	t.Helper()
 	// Opening a database registers sqlite-vec for the plain driver the fixture needs.
@@ -89,7 +115,7 @@ func indexState(t *testing.T, root, state string) {
 	db := testDBPath(root)
 	switch state {
 	case "current":
-		st, err := sqlite.Open(context.Background(), db, sqlite.Options{})
+		st, err := sqlite.Open(context.Background(), db, sqlite.Options{Steps: depsFor(t).indexSteps})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,14 +124,14 @@ func indexState(t *testing.T, root, state string) {
 		}
 		st.Close()
 	case "older":
-		installIndex(t, db, sqlite.SchemaVersion()-1)
+		installOlderIndex(t, db)
 	case "newer":
-		st, err := sqlite.Open(context.Background(), db, sqlite.Options{})
+		st, err := sqlite.Open(context.Background(), db, sqlite.Options{Steps: depsFor(t).indexSteps})
 		if err != nil {
 			t.Fatal(err)
 		}
 		st.Close()
-		setUserVersion(t, db, sqlite.SchemaVersion()+1)
+		setUserVersion(t, db, buildTarget(t)+1)
 	case "missing":
 	default:
 		t.Fatalf("unknown state %q", state)
@@ -171,17 +197,20 @@ func TestCommandsOnIndexStates(t *testing.T) {
 	}
 }
 
-// TestMigrateUpUpgrades is the accept path: an older store is refused, `kb migrate up` backs it up
-// and upgrades it, and the same command then works. From v2 the re-embed effect is reported.
+// TestMigrateUpUpgrades is the accept path: an older store (a probe build's view of the baseline
+// fixture) is refused, `kb migrate up` backs it up and upgrades it, and the same command then
+// works. The step's declared reindex is reported.
 func TestMigrateUpUpgrades(t *testing.T) {
 	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
 	db := testDBPath(root)
-	installIndex(t, db, 2)
+	installOlderIndex(t, db)
+	from, to := sqlite.SchemaVersion(), buildTarget(t)
+	probe := depsFor(t).indexSteps[from]
 
 	if _, stderr, code := run(t, "search", "zzz", "--mode", "fts"); code != 1 || !strings.Contains(stderr, "Run: kb migrate up") {
-		t.Fatalf("search on a v2 store: exit %d %q", code, stderr)
+		t.Fatalf("search on a v%d store: exit %d %q", from, code, stderr)
 	}
 	stdout, stderr, code := run(t, "migrate", "up")
 	if code != 0 || stderr != "" {
@@ -192,17 +221,17 @@ func TestMigrateUpUpgrades(t *testing.T) {
 		t.Fatalf("backups = %v, want exactly one", baks)
 	}
 	for _, want := range []string{
-		"migrated store default index: v2 -> v" + fmt.Sprint(sqlite.SchemaVersion()),
+		fmt.Sprintf("migrated store default index: v%d -> v%d", from, to),
 		"backup: " + baks[0],
-		"applied index/0003-vec-width",
-		"needs: kb reindex (store default: index/0003-vec-width; store default: index/0007-edges-tags-aliases)",
+		"applied " + probe.ID,
+		"needs: kb reindex (store default: " + probe.ID + ")",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("migrate up output lacks %q:\n%s", want, stdout)
 		}
 	}
-	if st, err := sqlite.NewArtefact(baks[0]).Status(context.Background()); err != nil || st.Current != 2 {
-		t.Errorf("the backup is at %+v, %v; want v2", st, err)
+	if st, err := sqlite.NewArtefact(baks[0]).Status(context.Background()); err != nil || st.Current != from {
+		t.Errorf("the backup is at %+v, %v; want v%d", st, err, from)
 	}
 	if _, stderr, code := run(t, "search", "zzz", "--mode", "fts"); code != 0 {
 		t.Errorf("search after migrate up: exit %d %q", code, stderr)
@@ -224,7 +253,7 @@ func TestMigrateUpOptions(t *testing.T) {
 		root := newTempRoot(t)
 		useNoneModel(t, root)
 		db := testDBPath(root)
-		installIndex(t, db, sqlite.SchemaVersion()-1)
+		installOlderIndex(t, db)
 		before := fileDigest(t, db)
 		stdout, _, code := run(t, "migrate", "up", "--dry-run")
 		if code != 0 || !strings.Contains(stdout, "would migrate store default index") || !strings.Contains(stdout, "backup would be written to ") {
@@ -241,12 +270,12 @@ func TestMigrateUpOptions(t *testing.T) {
 		root := newTempRoot(t)
 		useNoneModel(t, root)
 		db := testDBPath(root)
-		installIndex(t, db, sqlite.SchemaVersion()-1)
+		installOlderIndex(t, db)
 		stdout, _, code := run(t, "migrate", "up", "--no-backup")
 		if code != 0 || !strings.Contains(stdout, "no backup (--no-backup)") || len(backupFiles(t, db)) != 0 {
 			t.Fatalf("exit %d, backups %v\n%s", code, backupFiles(t, db), stdout)
 		}
-		if st, _ := sqlite.NewArtefact(db).Status(context.Background()); st.Current != sqlite.SchemaVersion() {
+		if st, _ := sqlite.NewArtefact(db).Status(context.Background()); st.Current != buildTarget(t) {
 			t.Errorf("not upgraded: %+v", st)
 		}
 	})
@@ -270,8 +299,8 @@ func TestMigrateScope(t *testing.T) {
 	useNoneModel(t, root)
 	addStore(t, root, "adr")
 	adrDB := filepath.Join(root, ".kb", "stores", "adr", "kb.sqlite")
-	installIndex(t, testDBPath(root), sqlite.SchemaVersion()-1)
-	installIndex(t, adrDB, sqlite.SchemaVersion()-1)
+	installOlderIndex(t, testDBPath(root))
+	installOlderIndex(t, adrDB)
 
 	stdout, _, code := run(t, "migrate", "status")
 	if code != 1 || !strings.Contains(stdout, "store default") || strings.Contains(stdout, "store adr") {
@@ -292,7 +321,7 @@ func TestMigrateScope(t *testing.T) {
 		t.Errorf("up --all: exit %d\n%s", code, stdout)
 	}
 	for _, db := range []string{testDBPath(root), adrDB} {
-		if st, _ := sqlite.NewArtefact(db).Status(context.Background()); st.Current != sqlite.SchemaVersion() || len(backupFiles(t, db)) != 1 {
+		if st, _ := sqlite.NewArtefact(db).Status(context.Background()); st.Current != buildTarget(t) || len(backupFiles(t, db)) != 1 {
 			t.Errorf("%s: %+v, backups %v", db, st, backupFiles(t, db))
 		}
 	}
@@ -309,20 +338,20 @@ func TestMigrateStatusOutput(t *testing.T) {
 	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
-	installIndex(t, testDBPath(root), sqlite.SchemaVersion()-1)
+	installOlderIndex(t, testDBPath(root))
 	norm := func(s string) string { return strings.ReplaceAll(s, root, "<root>") }
 
 	stdout, _, code := run(t, "migrate", "status")
 	if code != 1 {
 		t.Fatalf("exit %d", code)
 	}
-	cur := sqlite.SchemaVersion()
-	st, err := sqlite.NewArtefact(testDBPath(root)).Status(context.Background())
+	cur, target := sqlite.SchemaVersion(), buildTarget(t)
+	st, err := sqlite.NewArtefactSteps(testDBPath(root), depsFor(t).indexSteps).Status(context.Background())
 	if err != nil || len(st.Pending) != 1 {
 		t.Fatalf("status of the fixture: %+v, %v", st, err)
 	}
 	step := st.Pending[0]
-	note := "" // a step that clears derived data says what it needs (v7: reindex)
+	note := "" // a step that clears derived data says what it needs (the probe: reindex)
 	if step.Effect != migrate.EffectNone {
 		note = "  [needs kb reindex; effect " + step.Effect.String() + "]"
 	}
@@ -333,7 +362,7 @@ store default  index     v%d -> v%d  1 pending: run kb migrate up  <root>/.kb/st
 
 store default index:
   %s  %s%s
-`, cur-1, cur, step.ID, step.Desc, note)
+`, cur, target, step.ID, step.Desc, note)
 	if got := norm(stdout); got != want {
 		t.Errorf("status output:\n%s\nwant:\n%s", got, want)
 	}
@@ -349,7 +378,7 @@ store default index:
 		t.Fatalf("%d artefacts, want 3: %+v", len(doc.Artefacts), doc.Artefacts)
 	}
 	idx := doc.Artefacts[2]
-	if idx.Artefact != "index" || idx.State != "pending" || idx.Current != cur-1 || idx.Target != cur || len(idx.Pending) != 1 || idx.Pending[0].ID == "" || idx.Pending[0].Effect == "" {
+	if idx.Artefact != "index" || idx.State != "pending" || idx.Current != cur || idx.Target != target || len(idx.Pending) != 1 || idx.Pending[0].ID == "" || idx.Pending[0].Effect == "" {
 		t.Errorf("index row = %+v", idx)
 	}
 }
@@ -423,7 +452,7 @@ func TestMigrateAllCoversGlobalLocation(t *testing.T) {
 	globalRoot := filepath.Join(home, ".local", "share", "kb")
 	makeLocation(t, globalRoot, "default")
 	globalDB := filepath.Join(globalRoot, ".kb", "stores", "default", "kb.sqlite")
-	installIndex(t, globalDB, sqlite.SchemaVersion()-1)
+	installOlderIndex(t, globalDB)
 	indexState(t, root, "current")
 
 	stdout, _, code := run(t, "migrate", "status", "--all")
@@ -444,7 +473,7 @@ func TestMigrateAllCoversGlobalLocation(t *testing.T) {
 	if stdout, _, code := run(t, "migrate", "up", "--all"); code != 0 || strings.Count(stdout, "migrated store ") != 1 {
 		t.Errorf("up --all: exit %d\n%s", code, stdout)
 	}
-	if st, _ := sqlite.NewArtefact(globalDB).Status(context.Background()); st.Current != sqlite.SchemaVersion() {
+	if st, _ := sqlite.NewArtefact(globalDB).Status(context.Background()); st.Current != buildTarget(t) {
 		t.Errorf("the global store was not migrated: %+v", st)
 	}
 	// Run from the global location itself, --all lists it once.
@@ -519,7 +548,7 @@ func TestMigrateInterrupted(t *testing.T) {
 	t.Parallel()
 	root := newTempRoot(t)
 	useNoneModel(t, root)
-	installIndex(t, testDBPath(root), sqlite.SchemaVersion()-1)
+	installOlderIndex(t, testDBPath(root))
 	before := fileDigest(t, testDBPath(root))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

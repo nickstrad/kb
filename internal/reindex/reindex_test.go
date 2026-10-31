@@ -19,7 +19,7 @@ import (
 	"github.com/nickstrad/kb/internal/store"
 )
 
-// testDim matches the vec0 column declared in schema.sql (FLOAT[768]).
+// testDim is the test embedder's width; EnsureEmbedMeta creates chunks_vec at it.
 const testDim = 768
 
 // sourceRepo is the miniature repository already checked in for the chunk package's golden

@@ -1,0 +1,147 @@
+index edges_dst: key seqno=0 cid=2 name=dst_entry_id desc=0 coll=BINARY key=1
+index edges_dst: key seqno=1 cid=-1 name=<nil> desc=0 coll=BINARY key=0
+index edges_dst: on edges CREATE INDEX edges_dst ON edges (dst_entry_id)
+index search_opens_key: key seqno=0 cid=0 name=search_id desc=0 coll=BINARY key=1
+index search_opens_key: key seqno=1 cid=-2 name=<nil> desc=0 coll=BINARY key=1
+index search_opens_key: key seqno=2 cid=2 name=entry_path desc=0 coll=BINARY key=1
+index search_opens_key: key seqno=3 cid=-1 name=<nil> desc=0 coll=BINARY key=0
+index search_opens_key: on search_opens CREATE UNIQUE INDEX search_opens_key ON search_opens (search_id, ifnull(store, ''), entry_path)
+table chunks: autoindex unique=1 | origin=u | partial=0 | seqno=0 cid=1 name=entry_id desc=0 coll=BINARY key=1 | seqno=1 cid=2 name=ord desc=0 coll=BINARY key=1 | seqno=2 cid=-1 name=<nil> desc=0 coll=BINARY key=0
+table chunks: column cid=0 name=id type=INTEGER notnull=0 dflt_value=<nil> pk=1 hidden=0
+table chunks: column cid=1 name=entry_id type=INTEGER notnull=1 dflt_value=<nil> pk=0 hidden=0
+table chunks: column cid=2 name=ord type=INTEGER notnull=1 dflt_value=<nil> pk=0 hidden=0
+table chunks: column cid=3 name=source_file type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table chunks: column cid=4 name=heading type=TEXT notnull=1 dflt_value='' pk=0 hidden=0
+table chunks: column cid=5 name=text type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table chunks: column cid=6 name=text_hash type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table chunks: fk id=0 seq=0 table=entries from=entry_id to=id on_update=NO ACTION on_delete=CASCADE match=NONE
+table chunks: type=table ncol=7 wr=0 strict=0
+table chunks_exact: column cid=0 name=text type= hidden=0
+table chunks_exact: column cid=1 name=heading type= hidden=0
+table chunks_exact: column cid=2 name=chunks_exact type= hidden=1
+table chunks_exact: column cid=3 name=rank type= hidden=1
+table chunks_exact: sql CREATE VIRTUAL TABLE chunks_exact USING fts5( text, heading, content='', contentless_delete=1, tokenize="unicode61 remove_diacritics 0 tokenchars '_-.:/'" )
+table chunks_exact_vocab: column cid=0 name=term type= hidden=0
+table chunks_exact_vocab: column cid=1 name=doc type= hidden=0
+table chunks_exact_vocab: column cid=2 name=cnt type= hidden=0
+table chunks_exact_vocab: sql CREATE VIRTUAL TABLE chunks_exact_vocab USING fts5vocab(chunks_exact, 'row')
+table chunks_fts: column cid=0 name=text type= hidden=0
+table chunks_fts: column cid=1 name=heading type= hidden=0
+table chunks_fts: column cid=2 name=title type= hidden=0
+table chunks_fts: column cid=3 name=chunks_fts type= hidden=1
+table chunks_fts: column cid=4 name=rank type= hidden=1
+table chunks_fts: sql CREATE VIRTUAL TABLE chunks_fts USING fts5( text, heading, title, content='', contentless_delete=1, tokenize='porter unicode61' )
+table edges: autoindex unique=1 | origin=pk | partial=0 | seqno=0 cid=0 name=src_entry_id desc=0 coll=BINARY key=1 | seqno=1 cid=1 name=dst_path desc=0 coll=BINARY key=1 | seqno=2 cid=3 name=rel desc=0 coll=BINARY key=1 | seqno=3 cid=4 name=kind desc=0 coll=BINARY key=1 | seqno=4 cid=-1 name=<nil> desc=0 coll=BINARY key=0
+table edges: check kindIN('path','wikilink')
+table edges: column cid=0 name=src_entry_id type=INTEGER notnull=1 dflt_value=<nil> pk=1 hidden=0
+table edges: column cid=1 name=dst_path type=TEXT notnull=1 dflt_value=<nil> pk=2 hidden=0
+table edges: column cid=2 name=dst_entry_id type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table edges: column cid=3 name=rel type=TEXT notnull=1 dflt_value=<nil> pk=3 hidden=0
+table edges: column cid=4 name=kind type=TEXT notnull=1 dflt_value=<nil> pk=4 hidden=0
+table edges: fk id=0 seq=0 table=entries from=dst_entry_id to=id on_update=NO ACTION on_delete=SET NULL match=NONE
+table edges: fk id=1 seq=0 table=entries from=src_entry_id to=id on_update=NO ACTION on_delete=CASCADE match=NONE
+table edges: type=table ncol=5 wr=0 strict=0
+table embed_meta: check id=1
+table embed_meta: column cid=0 name=id type=INTEGER notnull=0 dflt_value=<nil> pk=1 hidden=0
+table embed_meta: column cid=1 name=model type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table embed_meta: column cid=2 name=dim type=INTEGER notnull=1 dflt_value=<nil> pk=0 hidden=0
+table embed_meta: column cid=3 name=created_at type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table embed_meta: type=table ncol=4 wr=0 strict=0
+table entries: autoindex unique=1 | origin=u | partial=0 | seqno=0 cid=1 name=path desc=0 coll=BINARY key=1 | seqno=1 cid=-1 name=<nil> desc=0 coll=BINARY key=0
+table entries: check kindIN('file','dir')
+table entries: column cid=0 name=id type=INTEGER notnull=0 dflt_value=<nil> pk=1 hidden=0
+table entries: column cid=1 name=path type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table entries: column cid=10 name=aliases type=TEXT notnull=1 dflt_value='[]' pk=0 hidden=0
+table entries: column cid=2 name=kind type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table entries: column cid=3 name=title type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table entries: column cid=4 name=summary type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table entries: column cid=5 name=tags type=TEXT notnull=1 dflt_value='[]' pk=0 hidden=0
+table entries: column cid=6 name=updated type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table entries: column cid=7 name=verified type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table entries: column cid=8 name=body_hash type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table entries: column cid=9 name=indexed_at type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table entries: type=table ncol=11 wr=0 strict=0
+table entry_tags: autoindex unique=1 | origin=pk | partial=0 | seqno=0 cid=0 name=entry_id desc=0 coll=BINARY key=1 | seqno=1 cid=1 name=tag desc=0 coll=BINARY key=1 | seqno=2 cid=-1 name=<nil> desc=0 coll=BINARY key=0
+table entry_tags: column cid=0 name=entry_id type=INTEGER notnull=1 dflt_value=<nil> pk=1 hidden=0
+table entry_tags: column cid=1 name=tag type=TEXT notnull=1 dflt_value=<nil> pk=2 hidden=0
+table entry_tags: fk id=0 seq=0 table=entries from=entry_id to=id on_update=NO ACTION on_delete=CASCADE match=NONE
+table entry_tags: type=table ncol=2 wr=0 strict=0
+table search_candidates: autoindex unique=1 | origin=pk | partial=0 | seqno=0 cid=0 name=search_id desc=0 coll=BINARY key=1 | seqno=1 cid=1 name=fused_rank desc=0 coll=BINARY key=1 | seqno=2 cid=-1 name=<nil> desc=0 coll=BINARY key=0
+table search_candidates: check fts_tierIN('phrase','near','and','or')
+table search_candidates: column cid=0 name=search_id type=INTEGER notnull=1 dflt_value=<nil> pk=1 hidden=0
+table search_candidates: column cid=1 name=fused_rank type=INTEGER notnull=1 dflt_value=<nil> pk=2 hidden=0
+table search_candidates: column cid=10 name=returned type=INTEGER notnull=1 dflt_value=0 pk=0 hidden=0
+table search_candidates: column cid=11 name=store type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=12 name=exact_rank type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=13 name=exact_score type=REAL notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=14 name=prior type=REAL notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=15 name=fts_tier type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=16 name=memory_rank type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=17 name=memory_score type=REAL notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=2 name=chunk_id type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=3 name=entry_path type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=4 name=heading type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=5 name=fts_rank type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=6 name=fts_score type=REAL notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=7 name=vec_rank type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=8 name=vec_distance type=REAL notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: column cid=9 name=rrf_score type=REAL notnull=1 dflt_value=<nil> pk=0 hidden=0
+table search_candidates: fk id=0 seq=0 table=searches from=search_id to=id on_update=NO ACTION on_delete=CASCADE match=NONE
+table search_candidates: type=table ncol=18 wr=0 strict=0
+table search_feedback: autoindex unique=1 | origin=pk | partial=0 | seqno=0 cid=0 name=search_id desc=0 coll=BINARY key=1 | seqno=1 cid=1 name=rank desc=0 coll=BINARY key=1 | seqno=2 cid=-1 name=<nil> desc=0 coll=BINARY key=0
+table search_feedback: check usefulIN(0,1)
+table search_feedback: column cid=0 name=search_id type=INTEGER notnull=1 dflt_value=<nil> pk=1 hidden=0
+table search_feedback: column cid=1 name=rank type=INTEGER notnull=1 dflt_value=<nil> pk=2 hidden=0
+table search_feedback: column cid=2 name=useful type=INTEGER notnull=1 dflt_value=<nil> pk=0 hidden=0
+table search_feedback: column cid=3 name=note type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_feedback: column cid=4 name=ts type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table search_feedback: fk id=0 seq=0 table=searches from=search_id to=id on_update=NO ACTION on_delete=CASCADE match=NONE
+table search_feedback: type=table ncol=5 wr=0 strict=0
+table search_opens: column cid=0 name=search_id type=INTEGER notnull=1 dflt_value=<nil> pk=0 hidden=0
+table search_opens: column cid=1 name=store type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_opens: column cid=2 name=entry_path type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table search_opens: column cid=3 name=ts type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table search_opens: fk id=0 seq=0 table=searches from=search_id to=id on_update=NO ACTION on_delete=CASCADE match=NONE
+table search_opens: type=table ncol=4 wr=0 strict=0
+table search_results: autoindex unique=1 | origin=pk | partial=0 | seqno=0 cid=0 name=search_id desc=0 coll=BINARY key=1 | seqno=1 cid=1 name=rank desc=0 coll=BINARY key=1 | seqno=2 cid=-1 name=<nil> desc=0 coll=BINARY key=0
+table search_results: check fts_tierIN('phrase','near','and','or')
+table search_results: column cid=0 name=search_id type=INTEGER notnull=1 dflt_value=<nil> pk=1 hidden=0
+table search_results: column cid=1 name=rank type=INTEGER notnull=1 dflt_value=<nil> pk=2 hidden=0
+table search_results: column cid=10 name=store type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=11 name=exact_rank type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=12 name=exact_score type=REAL notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=13 name=prior type=REAL notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=14 name=fts_tier type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=15 name=memory_rank type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=16 name=memory_score type=REAL notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=2 name=chunk_id type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=3 name=entry_path type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=4 name=heading type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=5 name=fts_rank type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=6 name=fts_score type=REAL notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=7 name=vec_rank type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=8 name=vec_distance type=REAL notnull=0 dflt_value=<nil> pk=0 hidden=0
+table search_results: column cid=9 name=rrf_score type=REAL notnull=1 dflt_value=<nil> pk=0 hidden=0
+table search_results: fk id=0 seq=0 table=searches from=search_id to=id on_update=NO ACTION on_delete=CASCADE match=NONE
+table search_results: type=table ncol=17 wr=0 strict=0
+table searches: column cid=0 name=id type=INTEGER notnull=0 dflt_value=<nil> pk=1 hidden=0
+table searches: column cid=1 name=ts type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=10 name=fts_ms type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=11 name=vec_ms type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=12 name=embed_ms type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=13 name=total_ms type=INTEGER notnull=0 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=14 name=caller type=TEXT notnull=1 dflt_value='unknown' pk=0 hidden=0
+table searches: column cid=15 name=corpus_rev type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=16 name=kb_version type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=17 name=settings type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=18 name=settings_hash type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=19 name=fts_query type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=2 name=query type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=3 name=mode type=TEXT notnull=1 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=4 name=k type=INTEGER notnull=1 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=5 name=tag_filter type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=6 name=embed_model type=TEXT notnull=0 dflt_value=<nil> pk=0 hidden=0
+table searches: column cid=7 name=n_fts type=INTEGER notnull=1 dflt_value=0 pk=0 hidden=0
+table searches: column cid=8 name=n_vec type=INTEGER notnull=1 dflt_value=0 pk=0 hidden=0
+table searches: column cid=9 name=n_returned type=INTEGER notnull=1 dflt_value=<nil> pk=0 hidden=0
+table searches: type=table ncol=20 wr=0 strict=0

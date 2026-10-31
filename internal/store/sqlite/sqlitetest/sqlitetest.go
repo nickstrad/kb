@@ -94,7 +94,14 @@ func LastSearch(t testing.TB, dbPath string) LoggedSearch {
 // each row as text.
 func Strings(t testing.TB, dbPath, query string) []string {
 	t.Helper()
-	st, err := sqlite.Open(context.Background(), dbPath, sqlite.Options{ReadOnly: true})
+	return StringsAt(t, dbPath, nil, query)
+}
+
+// StringsAt is Strings as a build with the given index steps sees the file (nil = this build's;
+// sqlite.ProbeSteps for a database a probe build wrote).
+func StringsAt(t testing.TB, dbPath string, steps sqlite.Steps, query string) []string {
+	t.Helper()
+	st, err := sqlite.Open(context.Background(), dbPath, sqlite.Options{ReadOnly: true, Steps: steps})
 	if err != nil {
 		t.Fatalf("sqlitetest: open %s: %v", dbPath, err)
 	}

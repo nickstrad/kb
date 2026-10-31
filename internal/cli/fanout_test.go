@@ -29,6 +29,7 @@ type fanOutWorld struct{ loc, other string }
 func newFanOutWorld(t *testing.T) fanOutWorld {
 	t.Helper()
 	useFakeEmbedder(t)
+	useProbeBuild(t) // the stores are created one release ahead, so old can be older
 	w := fanOutWorld{loc: realTempDir(t), other: realTempDir(t)}
 	makeLocation(t, w.loc, "default")
 	makeLocation(t, w.other, "default")
@@ -50,7 +51,7 @@ func newFanOutWorld(t *testing.T) fanOutWorld {
 			t.Fatalf("reindex %s: %d %q", s, code, stderr)
 		}
 	}
-	installIndex(t, filepath.Join(w.loc, ".kb", "stores", "old", "kb.sqlite"), sqlite.SchemaVersion()-1)
+	installIndex(t, filepath.Join(w.loc, ".kb", "stores", "old", "kb.sqlite"), sqlite.SchemaVersion())
 	chdir(t, w.loc)
 	return w
 }
@@ -258,10 +259,11 @@ func readFileBytes(t *testing.T, path string) []byte {
 	return b
 }
 
-// queryStrings runs a one-column query against the store database at path (read-only).
+// queryStrings runs a one-column query against the store database at path (read-only), as the
+// test's kb (a probe build or not) sees it.
 func queryStrings(t *testing.T, path, q string) []string {
 	t.Helper()
-	return sqlitetest.Strings(t, path, q)
+	return sqlitetest.StringsAt(t, path, depsFor(t).indexSteps, q)
 }
 
 // TestSearchManyModelsWarns: a search whose stores load more than two distinct models warns once

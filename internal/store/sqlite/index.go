@@ -3,10 +3,10 @@
 //	entries      one row per knowledge entry
 //	chunks       the indexed pieces of that entry
 //	chunks_fts   the FTS5 index over chunks (rowid = chunks.id)
-//	chunks_exact the identifier FTS5 index over chunks (rowid = chunks.id; schema v6)
+//	chunks_exact the identifier FTS5 index over chunks (rowid = chunks.id)
 //	chunks_vec   the sqlite-vec index over chunks (chunk_id = chunks.id)
-//	entry_tags   the entry's normalised tags, for the tag filter (schema v7; edges.go)
-//	edges        the entry's outgoing links (schema v7; edges.go)
+//	entry_tags   the entry's normalised tags, for the tag filter (edges.go)
+//	edges        the entry's outgoing links (edges.go)
 //
 // chunks_fts and chunks_exact are CONTENTLESS (content='', contentless_delete=1): they keep only
 // the inverted index, so their columns are write-only and readers join chunks on rowid. title is in

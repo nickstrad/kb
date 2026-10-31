@@ -33,7 +33,7 @@ func (e Effect) String() string {
 }
 
 // Info describes one step. ID is stable forever: "<artefact>/<NNNN>-<slug>" with NNNN = From+1,
-// e.g. "index/0003-vec-width".
+// e.g. "index/0001-baseline".
 type Info struct {
 	From   int    // the step takes the artefact from version From to From+1
 	ID     string // stable, unique within the artefact

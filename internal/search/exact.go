@@ -51,7 +51,7 @@ func exactTokenRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsMark(r) || strings.ContainsRune(exactTokenChars, r)
 }
 
-// exactTokenChars are the identifier index's tokenchars (schema v6, chunks_exact).
+// exactTokenChars are the identifier index's tokenchars (chunks_exact, PLAN 4.5).
 const exactTokenChars = "_-.:/"
 
 // isIdentifier is the PLAN's identifier test, `[_./:-]|[a-z][A-Z]|\d[a-z]`, on one field. A field

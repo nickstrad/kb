@@ -1,27 +1,32 @@
-upgrade: a store written by an older kb, refused, then migrated and used.
+upgrade: a store written by an older kb, refused, then migrated, reindexed and used.
 
-The store's index database is a frozen schema-v8 file (the newest version before the one in
-this build) holding a few entries and seven logged searches (the last one ran with the feedback prior). kb refuses it and says what to run.
-migrate up backs the file up first, and the search log survives the upgrade.
+Until the first post-release migration there is no real older schema, so this journey runs a
+harnessfake kb one index release ahead (KB_HARNESS_INDEX_PROBE=1: sqlite.ProbeSteps adds the step
+index/0002-probe, which clears every body_hash and so declares a reindex). The store's index
+database is the frozen baseline fixture (index-v1) holding a few entries and eight logged searches.
+kb refuses it and says what to run. migrate up backs the file up first, names the reindex the step
+needs, and the search log survives the upgrade.
 
-  $ kb init --model none
+  $ env KB_HARNESS_INDEX_PROBE=1
+
+  $ kb init --model none --source '*.md'
   created location $WORK/proj/.kb
   created store "default" in $WORK/proj (model none)
 
   $ rm .kb/stores/default/kb.sqlite
 
-  $ mkfixture index-v8 .kb/stores/default/kb.sqlite
+  $ mkfixture index-v1 .kb/stores/default/kb.sqlite
 
   $ kb search checkpoint --mode fts
-  [stderr] kb search: store database $WORK/proj/.kb/stores/default/kb.sqlite is at schema v8; this kb needs v9. Run: kb migrate up (with the same --store, if any)
+  [stderr] kb search: store database $WORK/proj/.kb/stores/default/kb.sqlite is at schema v1; this kb needs v2. Run: kb migrate up (with the same --store, if any)
   [exit 1]
 
   $ kb doctor
   ok   config: $WORK/proj/.kb/stores/default/config.toml
-  ok   sources: 1 configured: "data" (entries)
-  FAIL migrate: $WORK/proj/.kb/stores/default/kb.sqlite is at schema v8, this kb needs v9 (index/0009-tier-memory); run kb migrate up
+  ok   sources: 1 configured: "*.md" (files)
+  FAIL migrate: $WORK/proj/.kb/stores/default/kb.sqlite is at schema v1, this kb needs v2 (index/0002-probe); run kb migrate up
   ok   model: none: FTS-only index and search
-  ok   entries: 0 entries valid
+  ok   entries: 1 entries valid
   ok   index.md: absent (optional export)
   ~ ok   version: kb \(version\) at .*
   doctor: 1 failed, 0 warnings
@@ -37,43 +42,44 @@ kb version works on any file version, so it runs before the upgrade.
   SCOPE          FILE         VERSION   STATE                         PATH
   location       location     v1        current                       $WORK/proj/.kb/kb.toml
   store default  config       v1        current                       $WORK/proj/.kb/stores/default/config.toml
-  store default  index        v8 -> v9  1 pending: run kb migrate up  $WORK/proj/.kb/stores/default/kb.sqlite
+  store default  index        v1 -> v2  1 pending: run kb migrate up  $WORK/proj/.kb/stores/default/kb.sqlite
   cache          embed-cache  -         not created yet               $WORK/home/Library/Caches/kb/embed-cache.sqlite
 
   store default index:
-    index/0009-tier-memory  add fts_tier, memory_rank and memory_score to search_results and search_candidates
+    index/0002-probe  test probe: add the table probe and clear every body_hash  [needs kb reindex; effect reindex]
   [exit 1]
 
-The dry run reports the steps and the backup it would write, and changes nothing: the status
-still says v8 and no backup file exists.
+The dry run reports the step and the backup it would write, and changes nothing: the status
+still says v1 and no backup file exists.
 
   $ kb migrate up --dry-run
-  would migrate store default index: v8 -> v9 ($WORK/proj/.kb/stores/default/kb.sqlite)
-    backup would be written to $WORK/proj/.kb/stores/default/kb.sqlite.bak-v8-(time)
-    would apply index/0009-tier-memory: add fts_tier, memory_rank and memory_score to search_results and search_candidates
+  would migrate store default index: v1 -> v2 ($WORK/proj/.kb/stores/default/kb.sqlite)
+    backup would be written to $WORK/proj/.kb/stores/default/kb.sqlite.bak-v1-(time)
+    would apply index/0002-probe: test probe: add the table probe and clear every body_hash
+  needs: kb reindex (store default: index/0002-probe)
 
   $ kb migrate status
   SCOPE          FILE         VERSION   STATE                         PATH
   location       location     v1        current                       $WORK/proj/.kb/kb.toml
   store default  config       v1        current                       $WORK/proj/.kb/stores/default/config.toml
-  store default  index        v8 -> v9  1 pending: run kb migrate up  $WORK/proj/.kb/stores/default/kb.sqlite
+  store default  index        v1 -> v2  1 pending: run kb migrate up  $WORK/proj/.kb/stores/default/kb.sqlite
   cache          embed-cache  -         not created yet               $WORK/home/Library/Caches/kb/embed-cache.sqlite
 
   store default index:
-    index/0009-tier-memory  add fts_tier, memory_rank and memory_score to search_results and search_candidates
+    index/0002-probe  test probe: add the table probe and clear every body_hash  [needs kb reindex; effect reindex]
   [exit 1]
 
   $ ! exists .kb/stores/default/kb.sqlite.bak-*
 
-migrate up backs the file up and applies the step (this one clears nothing, so no reindex is
-needed).
+migrate up backs the file up, applies the step and says the store needs a reindex.
 
   $ kb migrate up
-  migrated store default index: v8 -> v9 ($WORK/proj/.kb/stores/default/kb.sqlite)
-    backup: $WORK/proj/.kb/stores/default/kb.sqlite.bak-v8-(time)
-    applied index/0009-tier-memory: add fts_tier, memory_rank and memory_score to search_results and search_candidates
+  migrated store default index: v1 -> v2 ($WORK/proj/.kb/stores/default/kb.sqlite)
+    backup: $WORK/proj/.kb/stores/default/kb.sqlite.bak-v1-(time)
+    applied index/0002-probe: test probe: add the table probe and clear every body_hash
+  needs: kb reindex (store default: index/0002-probe)
 
-  $ exists .kb/stores/default/kb.sqlite.bak-v8-*
+  $ exists .kb/stores/default/kb.sqlite.bak-v1-*
 
   $ kb migrate verify
   ok   location kb.toml
@@ -84,7 +90,7 @@ needed).
   SCOPE          FILE         VERSION  STATE            PATH
   location       location     v1       current          $WORK/proj/.kb/kb.toml
   store default  config       v1       current          $WORK/proj/.kb/stores/default/config.toml
-  store default  index        v9       current          $WORK/proj/.kb/stores/default/kb.sqlite
+  store default  index        v2       current          $WORK/proj/.kb/stores/default/kb.sqlite
   cache          embed-cache  -        not created yet  $WORK/home/Library/Caches/kb/embed-cache.sqlite
 
 With many stores, --all covers every store of the location (and the global location); nothing is pending now.
@@ -92,14 +98,35 @@ With many stores, --all covers every store of the location (and the global locat
   $ kb migrate up --all
   everything is up to date
 
-The fixture's seven logged searches are still there: the new search is number 8, and the
-overview counts all eight.
+The step cleared every body_hash, so the next reindex rebuilds every entry. The fixture was
+indexed with another model, so reindex --all says so on stderr and rebuilds the whole index;
+doctor is then clean.
+
+  $ kb reindex --all
+  reindexed alpha.md (3 chunks, 0 embedded)
+  entries: 1 scanned, 1 reindexed, 0 skipped; chunks: 3; embed calls: 0
+  [stderr] embedding model mismatch: this database was indexed with BAAI/bge-small-en-v1.5 (4 dims) but this run uses none (0 dims); rebuilding the index
+
+  $ kb doctor
+  ok   config: $WORK/proj/.kb/stores/default/config.toml
+  ok   sources: 1 configured: "*.md" (files)
+  ~ ok   driver: fts5 enabled, sqlite [0-9.]+, sqlite-vec v[0-9.]+
+  ok   embed_meta: model=none dim=0
+  ok   model: none: FTS-only index and search
+  ok   entries: 1 entries valid
+  ok   db-vs-files: 1 entries in sync
+  ok   index.md: absent (optional export)
+  ~ ok   version: kb \(version\) at .*
+  doctor: 0 failed, 0 warnings
+
+The fixture's eight logged searches are still there: the new search is number 9.
 
   $ kb search checkpoint --mode fts --caller claude
-  search 8 · 1 hit
+  search 9 · 1 hit
   [1] alpha.md › Body
+  Alpha › Body
   checkpoint starvation
-  search_id=8
+  search_id=9
 
   $ kb stats overview --json
   {
@@ -141,7 +168,7 @@ overview counts all eight.
         "opened_pct": 0,
         "p50_ms": (ms),
         "p95_ms": (ms),
-        "searches": 1,
+        "searches": 2,
         "zero_result_pct": 0
       },
       {
@@ -158,7 +185,17 @@ overview counts all eight.
         "zero_result_pct": 100
       }
     ],
-    "searches_loaded": 8,
+    "searches_loaded": 9,
     "since": null,
     "caller": null
   }
+-- proj/alpha.md --
+---
+title: Alpha
+summary: WAL notes
+---
+WAL notes. See [beta](beta.md).
+
+## Body
+
+checkpoint starvation

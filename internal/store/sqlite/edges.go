@@ -1,4 +1,4 @@
-// Edges, tags and aliases (schema v7). ReplaceEntry writes an entry's edges and normalised tags
+// Edges, tags and aliases (PLAN 5.2). ReplaceEntry writes an entry's edges and normalised tags
 // in the transaction that writes its chunks; DeleteEntry and ResetIndex remove them with it.
 // ResolveEdges sets every edge's dst_entry_id by store.EdgeResolver, against the entries as they
 // are when it runs.

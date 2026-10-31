@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -18,6 +19,13 @@ func init() {
 }
 
 func scStoresFanout(h *H) {
+	// kb runs one index release ahead, so the old store can be made older below. The common setup
+	// made the default store's database with this build's steps: drop it so init recreates it.
+	if h.probe = loadTool != ""; h.probe {
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			os.Remove(h.dbPath() + suffix)
+		}
+	}
 	other := filepath.Join(h.outside, "other")
 	third := filepath.Join(h.outside, "third")
 	h.must(h.kb("init", "--model", "fake:16").Code == 0, "init the primary with the fake model (is kb built with -tags harnessfake?)")
@@ -47,7 +55,9 @@ func scStoresFanout(h *H) {
 	oldDB := filepath.Join(h.root, ".kb", "stores", "old", "kb.sqlite")
 	haveOld := loadTool != ""
 	if haveOld {
-		h.helper("setver", oldDB, "4") // a store an older kb left: skipped, with the migrate hint
+		// kb runs one index release ahead (h.probe, set before the stores were made), so v1 is a
+		// store an older kb left: skipped, with the migrate hint.
+		h.helper("setver", oldDB, "1")
 	} else {
 		h.note("no loadfixture helper (-bin): the older-schema store is not made older")
 	}

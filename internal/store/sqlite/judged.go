@@ -104,8 +104,7 @@ func (s *Store) judgedVerdicts(ctx context.Context, since, caller string, out []
 	return nil
 }
 
-// judgedOpens fills Opens and OtherOpens from search_opens.store (NULL = this store; schema v6
-// filled it in for older opens from what the search returned at that path).
+// judgedOpens fills Opens and OtherOpens from search_opens.store (NULL = this store).
 func (s *Store) judgedOpens(ctx context.Context, since, caller string, out []store.JudgedSearch, byID map[int64]int) error {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT o.search_id, o.entry_path, coalesce(o.store, ''), o.ts

@@ -1,4 +1,4 @@
-# The exact-identifier list (chunks_exact, schema v6)
+# The exact-identifier list (chunks_exact, PLAN 4.5)
 
 > A query field that looks like an identifier (`[_./:-]|[a-z][A-Z]|\d[a-z]`) also searches chunks_exact, a second contentless FTS5 index whose tokenizer keeps `_ - . : /` inside tokens; its rows are a third RRF list (list_weights.exact, exact_list).
 
@@ -19,9 +19,8 @@
   today's schema: tests that open at an old version must upgrade before writing.
 - Common terms are never dropped: FTS5 clamps idf to ~1e-6, so a term in N-1 of N chunks scores
   about -1e-6 but every match is a row (`commonTerm` storetest row, `TestCommonTermIsNeverDropped`).
-- v6 also gave `search_opens` a `store` column and the key `(search_id, ifnull(store,''), entry_path)`
-  (a unique expression index: a NULL in a PRIMARY KEY would not dedupe); older opens got the
-  store the reader used to infer.
+- `search_opens` has a `store` column and the key `(search_id, ifnull(store,''), entry_path)`
+  (a unique expression index: a NULL in a PRIMARY KEY would not dedupe).
 - `kb search -- --embed-model`: a query that starts with `-` needs `--` before it.
 
 **Why it matters.** Identifier queries (code names, flags, file names) are what agents search for

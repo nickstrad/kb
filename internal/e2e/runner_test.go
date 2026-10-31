@@ -96,7 +96,7 @@ func TestRunnerBuiltins(t *testing.T) {
   $ kb env
   $ env KB_HARNESS_NOW=
   $ frobnicate
-  $ mkfixture index-v5 db/kb.sqlite
+  $ mkfixture index-v1 db/kb.sqlite
   -- src --
   not a section
 -- src --
@@ -161,7 +161,7 @@ func TestRunnerMkfixtureAndSectionsAtRoot(t *testing.T) {
 		}
 		return os.WriteFile(d, nil, 0o644)
 	}}
-	res, err := runText(t, r, `  $ mkfixture index-v5 .kb/kb.sqlite
+	res, err := runText(t, r, `  $ mkfixture index-v1 .kb/kb.sqlite
   $ exists .kb/kb.sqlite
   $ exists $WORK/notes/n.md
   $ mkfixture bad x
@@ -171,7 +171,7 @@ hi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotName != "index-v5" || !strings.HasSuffix(gotDst, "/proj/.kb/kb.sqlite") {
+	if gotName != "index-v1" || !strings.HasSuffix(gotDst, "/proj/.kb/kb.sqlite") {
 		t.Errorf("fixture called with %q, %q", gotName, gotDst)
 	}
 	if len(res[1].Actual) != 0 || len(res[2].Actual) != 0 {

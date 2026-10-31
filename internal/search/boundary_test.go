@@ -96,7 +96,7 @@ func TestApplyCapBoundaries(t *testing.T) {
 // with N, so a test controls each chunk's vec rank exactly: rank N for chunk N.
 type rankedEmbedder struct{}
 
-const rankedDim = 768 // the vec0 column width in schema.sql
+const rankedDim = 768 // the test embedder's width (chunks_vec is created at it)
 
 func (rankedEmbedder) Model() string { return "ranked" }
 func (rankedEmbedder) Dim() int      { return rankedDim }

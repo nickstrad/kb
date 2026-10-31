@@ -16,11 +16,26 @@ import (
 
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/internal/store/sqlite"
 )
 
 func init() {
 	harnessModel = fakeModel
 	harnessNow = harnessClock(os.LookupEnv, os.Stderr)
+	harnessIndexSteps = func() sqlite.Steps { return harnessProbe(os.LookupEnv) }
+}
+
+// harnessProbeEnv, set to 1, makes a harnessfake build one index release ahead of this one
+// (sqlite.ProbeSteps), so a black-box run can drive an older store through the refusal, kb
+// migrate up, the backup and the reindex it declares. Release builds never read it.
+const harnessProbeEnv = "KB_HARNESS_INDEX_PROBE"
+
+// harnessProbe is sqlite.ProbeSteps when KB_HARNESS_INDEX_PROBE=1, else nil (this build's steps).
+func harnessProbe(lookup func(string) (string, bool)) sqlite.Steps {
+	if v, _ := lookup(harnessProbeEnv); v == "1" {
+		return sqlite.ProbeSteps()
+	}
+	return nil
 }
 
 // harnessNowEnv pins the clock of a harnessfake build (RFC3339), so a black-box run can drive

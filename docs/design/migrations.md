@@ -155,7 +155,7 @@ Scope:
 7. **Effects are declared honestly.** A test table lists `(step ID, Effect)`, and a reviewer checks any step that drops or clears derived data.
 8. **Migration numbers are pre-assigned** (PLAN §6.3), and no agent adds a step that is not in that table.
 
-At the v1 tag (decision M6), all pre-v1 steps of each artefact are squashed into one baseline (index v1 = the schema at the time), so v1 users start from a single fixture. Until then steps accumulate as planned (v4–v8).
+At the first release (decision M6), all pre-release steps of each artefact are squashed into one baseline, so released stores start from a single fixture. **Done (2026-10-30, before v0.1.0):** the index's nine steps (v1→v9) became `index/0001-baseline` (v1 = the v9 schema; `schema.sql` holds it, frozen by `testdata/schema-baseline.golden`); the cache, config and location files already had a single baseline step. Tests that need an older store use a synthetic next-release step (`sqlite.ProbeSteps`, TESTING §6.1 item 6). See docs/PLAN.md §2.5.
 
 ## 3. Leverage change
 
@@ -203,6 +203,6 @@ At the v1 tag (decision M6), all pre-v1 steps of each artefact are squashed into
 | M3 | Reversibility | Forward-only; an automatic backup is the rollback | Down steps (double the tests; SQLite ALTER limits) |
 | M4 | Backup | `<file>.bak-v<N>-<ts>` beside the file, `VACUUM INTO` for SQLite, keep the newest 3, `--no-backup` to skip | No backup; one backup dir per location; keep all |
 | M5 | Concurrency | `flock` on `migrate.lock` around the whole run, plus `BEGIN IMMEDIATE` inside; the loser waits 10 s, then no-op or Conflict | Rely on `BEGIN IMMEDIATE` alone (the backup would be outside the lock) |
-| M6 | Pre-v1 history | Keep v1–v8 as planned; squash into one baseline at the v1 tag | Squash now (mid-plan churn, pre-assigned numbers); never squash |
+| M6 | Pre-v1 history | Keep v1–v8 as planned; squash into one baseline at the v1 tag (done before v0.1.0: index v1–v9 → `index/0001-baseline`) | Squash now (mid-plan churn, pre-assigned numbers); never squash |
 | M7 | Data migrations | SQL backfills inside `Up`; anything that needs the model or corpus becomes a declared `Effect` (reindex/reembed), detected later by doctor | A persisted "needs" table; running reindex inside migrate |
 | M8 | TOML migrations | Transform the map tree, rewrite with `config.Save` (comments lost, backup kept); read `version` before the strict decode | Text-preserving edits (fragile); no config migrations (a breaking config change would need manual edits) |

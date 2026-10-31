@@ -1,6 +1,6 @@
-# Edges, entry_tags and aliases (schema v7)
+# Edges, entry_tags and aliases (PLAN 5.2, in the baseline schema)
 
-> v7 adds `edges` (kind path|wikilink, dst_entry_id NULL = dangling), `entry_tags` (NormTag: trimmed lowercase; the tag filter joins it) and `entries.aliases` (folded into the FTS title column); reindex writes links in ReplaceEntry and resolves them with ResolveEdges after every All/One.
+> The baseline schema has `edges` (kind path|wikilink, dst_entry_id NULL = dangling), `entry_tags` (NormTag: trimmed lowercase; the tag filter joins it) and `entries.aliases` (folded into the FTS title column); reindex writes links in ReplaceEntry and resolves them with ResolveEdges after every All/One.
 
 **Fact.**
 - Schema: `edges(src_entry_id, dst_path, dst_entry_id, rel, kind)`, PK `(src_entry_id, dst_path, rel, kind)`,
@@ -16,8 +16,8 @@
   keeps its resolved target, a new one starts dangling. DeleteEntry nulls inbound edges explicitly (FK SET
   NULL too). `assertLinkSets` checks tags = NormTags(input) and edges = UniqueEdges(input).
 - Tag filter: `JOIN entry_tags t ON t.entry_id = c.entry_id AND t.tag = NormTag(q.Tag)` (FTS and the KNN
-  post-filter). `entries.tags` keeps the case as written. The v7 backfill uses SQL `lower()` (ASCII only);
-  the declared reindex rewrites with Go's full fold.
+  post-filter). `entries.tags` keeps the case as written; entry_tags is
+  written only by ReplaceEntry with Go's full fold (the pre-release SQL backfill is gone with the squash).
 - Aliases go into `chunks_fts.title` (title + " " + aliases), not into `chunks_exact`.
 - reindex.Links builds edges: front-door front-matter lists (against the front door's dir), then each file's
   body links (against its own dir), links.Dedupe, path self-links (own files or dir) dropped.

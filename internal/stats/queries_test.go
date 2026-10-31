@@ -231,7 +231,7 @@ func TestSources(t *testing.T) {
 		})
 }
 
-// TestSourcesExact: an exact-list rank (schema v6) marks a row with_exact, and a row only the
+// TestSourcesExact: an exact-list rank (PLAN 4.5) marks a row with_exact, and a row only the
 // exact list returned is 'exact-only'. Search 7 (hybrid) gains an exact rank on its 'both' row
 // (rank 1) and a fourth, exact-only row at rank 4: both keeps 4 rows with 1 with_exact, and
 // exact-only is 1 row of 12 (8.3%), never judged, at rank 4. The other shares become

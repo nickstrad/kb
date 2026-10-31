@@ -152,7 +152,7 @@ const (
 // FTSQuery is one full-text query. Terms are raw user fields (search splits on whitespace); the
 // backend quotes and sanitises each one. Tag, when set, keeps only entries carrying it, compared
 // in its normalised form (NormTag: trimmed, lower case), so `Docker` and `docker` filter alike
-// (schema v7; before it the match was case-sensitive). Weights
+// (PLAN 5.2). Weights
 // are the per-column relevance weights; nil means DefaultBM25(). ChunkIDs, when non-nil, restricts
 // the query to those chunks (an empty non-nil slice matches nothing), so a caller can re-score a
 // known candidate set. Exact runs the query against the identifier index instead of the main one:
