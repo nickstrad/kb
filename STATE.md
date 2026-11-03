@@ -6,9 +6,10 @@ provider plugin onto kb v2, from the brief at
 kept-vs-adopted list: [docs/embedding-plugin.md](docs/embedding-plugin.md). This replaces the
 first plugin branch (`feat/embedding-plugin` @ 72ee067, built on the pre-v2 base).
 
-**Status:** repair independently confirmed on 7284b3a; not merged. Confirm review passed
-all six checks against the brief's accepted Linux baseline. Target-platform verification and
-Nick's merge decision remain pending.
+**Status:** LANDED on main 2026-11-03 at Nick's direction: merged at 31a77c5 (merge of
+feat/embedding-plugin-v2 @ 35d2fa5) and pushed. Astra confirm review PASS (all six checks).
+Suite on the merged main on this VM shows only the six accepted Linux baseline failures
+(identical on untouched 898addb). Target-platform (darwin/arm64) verification remains open.
 
 ## Done
 
@@ -127,7 +128,7 @@ Nothing running.
 ## Next steps
 
 1. Run `go test -tags fts5 ./...` on darwin/arm64 to confirm green on the target platform.
-2. On PASS, merge to main (Nick's call), and retire the old `feat/embedding-plugin` branch.
+2. Retire the old `feat/embedding-plugin` branch (superseded by this port; Nick's call).
 
 ## Open decisions / blockers
 
