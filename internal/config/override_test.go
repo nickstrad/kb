@@ -189,3 +189,113 @@ func TestApplyAs(t *testing.T) {
 		t.Errorf("ApplyAs: %v %d", err, c.Search.RRFK)
 	}
 }
+
+// TestApplyProviderTables: --set reaches the optional provider sub-tables one key at a time, in
+// any order, and never shares a sub-table with the Config it was applied to.
+func TestApplyProviderTables(t *testing.T) {
+	base := Default()
+	c := base
+	var err error
+	for _, s := range []string{"embed.provider=http", "embed.http.url=https://api.example/v1", "embed.dim=768", "embed.model=text-embedding-3-small"} {
+		if c, err = Apply(c, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+	if c.Embed.ProviderName() != ProviderHTTP || c.Embed.HTTP.URL != "https://api.example/v1" || c.Embed.Dim != 768 || c.Embed.Needs() != "" {
+		t.Fatalf("got %+v %+v", c.Embed, c.Embed.HTTP)
+	}
+	if base.Embed.HTTP != nil {
+		t.Fatal("Apply wrote into its input's [embed.http]")
+	}
+	d, err := Apply(c, "embed.http.path=/embed")
+	if err != nil || d.Embed.HTTP.Path != "/embed" || c.Embed.HTTP.Path != "" {
+		t.Fatalf("Apply shared the sub-table with its input: %v %+v %+v", err, d.Embed.HTTP, c.Embed.HTTP)
+	}
+	args, err := Apply(Default(), "embed.command.args=--fast,--quiet")
+	if err != nil || len(args.Embed.Command.Args) != 2 {
+		t.Fatalf("embed.command.args: %v %+v", err, args.Embed.Command)
+	}
+	// The local provider keeps its rule: dim stays 0.
+	if _, err := Apply(Default(), "embed.dim=768"); err == nil || !strings.Contains(err.Error(), "only 0") {
+		t.Errorf("local dim: %v", err)
+	}
+}
+
+// TestEmbedProviderRules is the decision table for [embed] provider keys: Validate's checks and
+// what Needs reports at build time.
+func TestEmbedProviderRules(t *testing.T) {
+	http := func(url string) *EmbedHTTP { return &EmbedHTTP{URL: url} }
+	cases := []struct {
+		name     string
+		e        Embed
+		validErr string // substring; "" = valid
+		needs    string // substring; "" = nothing missing
+	}{
+		{"default", Default().Embed, "", ""},
+		{"explicit local", Embed{Provider: "Local", Model: "m", Batch: 1}, "", ""},
+		{"local dim", Embed{Model: "m", Dim: 8, Batch: 1}, "only 0", ""},
+		{"provider with space", Embed{Provider: "my http", Model: "m", Batch: 1}, "one word", ""},
+		{"http complete", Embed{Provider: "http", Model: "m", Dim: 8, Batch: 1, HTTP: http("u")}, "", ""},
+		{"http no dim", Embed{Provider: "http", Model: "m", Batch: 1, HTTP: http("u")}, "", "embed.dim"},
+		{"http no table", Embed{Provider: "http", Model: "m", Dim: 8, Batch: 1}, "", "embed.http.url"},
+		{"http none model", Embed{Provider: "http", Model: ModelNone, Batch: 1}, "", ""},
+		{"negative dim", Embed{Provider: "http", Model: "m", Dim: -1, Batch: 1}, "positive", ""},
+		{"http bad timeout", Embed{Provider: "http", Model: "m", Dim: 8, Batch: 1, HTTP: &EmbedHTTP{URL: "u", TimeoutSeconds: -1}}, "timeout_seconds", ""},
+		{"command complete", Embed{Provider: "command", Model: "m", Dim: 8, Batch: 1, Command: &EmbedCommand{Program: "p", Args: []string{"-x"}}}, "", ""},
+		{"command no program", Embed{Provider: "command", Model: "m", Dim: 8, Batch: 1, Command: &EmbedCommand{}}, "", "embed.command.program"},
+		{"command spaced arg", Embed{Provider: "command", Model: "m", Dim: 8, Batch: 1, Command: &EmbedCommand{Program: "p", Args: []string{"a b"}}}, "args[1]", ""},
+		{"command empty arg", Embed{Provider: "command", Model: "m", Dim: 8, Batch: 1, Command: &EmbedCommand{Program: "p", Args: []string{""}}}, "args[1]", ""},
+		{"command bad timeout", Embed{Provider: "command", Model: "m", Dim: 8, Batch: 1, Command: &EmbedCommand{Program: "p", TimeoutSeconds: -2}}, "timeout_seconds", ""},
+		{"unknown provider", Embed{Provider: "corp", Model: "m", Dim: 8, Batch: 1}, "", ""},
+	}
+	for _, tc := range cases {
+		c := Default()
+		c.Embed = tc.e
+		err := c.Validate("f")
+		if (err != nil) != (tc.validErr != "") || (err != nil && !strings.Contains(err.Error(), tc.validErr)) {
+			t.Errorf("%s: Validate = %v, want %q", tc.name, err, tc.validErr)
+		}
+		if err != nil {
+			continue // Needs is asked only of a valid table
+		}
+		if got := tc.e.Needs(); (got != "") != (tc.needs != "") || !strings.Contains(got, tc.needs) {
+			t.Errorf("%s: Needs = %q, want %q", tc.name, got, tc.needs)
+		}
+	}
+}
+
+// TestNoProviderKeepsEncodingAndHash: a config that names no provider writes no new keys and
+// hashes as it did before the provider keys existed (the settings_hash in old search logs).
+func TestNoProviderKeepsEncodingAndHash(t *testing.T) {
+	data, _, err := Default().EffectiveJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"provider", "http", "command"} {
+		if strings.Contains(string(data), `"`+k+`"`) {
+			t.Errorf("EffectiveJSON of the default names %q: %s", k, data)
+		}
+	}
+	c := Default()
+	c.Embed.Provider = "http"
+	c.Embed.HTTP = &EmbedHTTP{URL: "u"}
+	_, h1, _ := Default().EffectiveJSON()
+	_, h2, _ := c.EffectiveJSON()
+	if h1 == h2 {
+		t.Error("selecting a provider does not change the settings hash")
+	}
+}
+
+// TestCheckModelOnlyChecksLocal: the supported-model table applies to the local provider only.
+func TestCheckModelOnlyChecksLocal(t *testing.T) {
+	reject := func(string) error { return errors.New("unsupported") }
+	c := Default()
+	c.Embed.Model = "text-embedding-3-small"
+	if err := c.CheckModel("f", reject); err == nil {
+		t.Error("local: an unknown model passed")
+	}
+	c.Embed.Provider = "http"
+	if err := c.CheckModel("f", reject); err != nil {
+		t.Errorf("http: %v", err)
+	}
+}

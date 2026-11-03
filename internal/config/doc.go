@@ -17,7 +17,10 @@
 //     file, which is over the defaults. Location-level keys (default store, aliases) are not
 //     part of a store's Config.
 //
-// Keys wired today (a command reads them): embed.model, embed.batch, search.k,
+// Keys wired today (a command reads them): embed.provider (who computes the vectors: unset or
+// "local" is the in-process model; "http" and "command" read [embed.http] / [embed.command], see
+// docs/embedding-plugin.md), embed.model, embed.batch, embed.dim (for http and command only),
+// search.k,
 // search.list_limit, search.candidate_limit, search.per_entry_cap, search.rrf_k,
 // search.vec_overfetch, search.bm25 (text, heading, title), search.list_weights.fts,
 // search.list_weights.vec, search.list_weights.exact, search.list_weights.memory and search.exact_list (the exact-identifier
@@ -36,6 +39,6 @@
 // stays valid, but no command acts on them yet: embed.workers,
 // log.corpus_rev. prior.Validate accepts every [prior] value
 // Validate does, so a validated config always builds a prior.
-// embed.dim and embed.int8 change what the index holds, so a value other than the default is
-// rejected instead of being ignored.
+// embed.int8, and embed.dim with the local provider, change what the index holds, so a value
+// other than the default is rejected instead of being ignored.
 package config

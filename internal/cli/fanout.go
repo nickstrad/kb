@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -37,13 +38,19 @@ func fanOutRefs(flagSet bool, flag string, configured []string) []string {
 }
 
 // embedderSet shares one embedder per distinct [embed] config within one command, so stores with
-// the same model load it once. A nil set builds every time.
-type embedderSet map[config.Embed]embed.Embedder
+// the same model load it once. A nil set builds every time. It is keyed by the [embed] table's
+// JSON, since config.Embed holds a slice ([embed.command] args) and is not comparable.
+type embedderSet map[string]embed.Embedder
 
-func (s embedderSet) get(key config.Embed, build func() (embed.Embedder, error)) (embed.Embedder, error) {
+func (s embedderSet) get(ecfg config.Embed, build func() (embed.Embedder, error)) (embed.Embedder, error) {
 	if s == nil {
 		return build()
 	}
+	raw, err := json.Marshal(ecfg)
+	if err != nil {
+		return nil, errs.Wrap(err, errs.Internal, "cli.embedderSet", "cannot key the [embed] table")
+	}
+	key := string(raw)
 	if e, ok := s[key]; ok {
 		return e, nil
 	}

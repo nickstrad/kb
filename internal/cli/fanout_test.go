@@ -238,8 +238,19 @@ func TestEmbedderSet(t *testing.T) {
 	if _, err := s.get(config.Embed{Model: "c"}, func() (embed.Embedder, error) { return nil, errs.New(errs.Usage, "t", "x") }); err == nil {
 		t.Error("a build error was swallowed")
 	}
-	if _, ok := s[config.Embed{Model: "c"}]; ok {
-		t.Error("a failed build was cached")
+	if len(s) != 3 {
+		t.Errorf("a failed build was cached: %d entries, want 3", len(s))
+	}
+	// Tables that differ only inside a provider's sub-table are distinct embedders, and equal
+	// tables share one even when they are separate values.
+	cmd := func(arg string) config.Embed {
+		return config.Embed{Provider: "command", Model: "m", Dim: 8, Command: &config.EmbedCommand{Program: "p", Args: []string{arg}}}
+	}
+	c1, _ := s.get(cmd("--x"), build("c1"))
+	c2, _ := s.get(cmd("--y"), build("c2"))
+	c3, _ := s.get(cmd("--x"), build("c1"))
+	if c1 == c2 || c1 != c3 {
+		t.Errorf("command args do not key the set: c1==c2 %v, c1==c3 %v", c1 == c2, c1 == c3)
 	}
 	n := 0
 	var none embedderSet

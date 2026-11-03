@@ -92,6 +92,9 @@ func resolve(t reflect.Type, segs []string) (target, error) {
 		}
 		tables = append(tables, segs[i])
 		t = f.Type
+		if t.Kind() == reflect.Pointer { // an optional sub-table such as [embed.http]
+			t = t.Elem()
+		}
 	}
 	switch t.Kind() {
 	case reflect.Struct:
@@ -119,7 +122,7 @@ func finish(tables []string, key string, kind reflect.Kind) target {
 
 func fieldByTag(t reflect.Type, name string) (reflect.StructField, bool) {
 	for i := 0; i < t.NumField(); i++ {
-		if t.Field(i).Tag.Get("toml") == name {
+		if tagName(t.Field(i)) == name {
 			return t.Field(i), true
 		}
 	}
@@ -130,7 +133,13 @@ func firstTag(t reflect.Type) string {
 	if t.NumField() == 0 {
 		return ""
 	}
-	return t.Field(0).Tag.Get("toml")
+	return tagName(t.Field(0))
+}
+
+// tagName is a field's TOML key: its toml tag without options such as omitempty.
+func tagName(f reflect.StructField) string {
+	name, _, _ := strings.Cut(f.Tag.Get("toml"), ",")
+	return name
 }
 
 // literal renders value as a TOML literal for a key of the given kind.
@@ -187,6 +196,15 @@ func clone(c Config) Config {
 		out.Sources[i] = s
 	}
 	out.Search.Stores = append([]string{}, c.Search.Stores...)
+	if c.Embed.HTTP != nil {
+		h := *c.Embed.HTTP
+		out.Embed.HTTP = &h
+	}
+	if c.Embed.Command != nil {
+		cmd := *c.Embed.Command
+		cmd.Args = append([]string(nil), cmd.Args...)
+		out.Embed.Command = &cmd
+	}
 	return out
 }
 

@@ -39,15 +39,70 @@ type Config struct {
 	Edit    Edit     `toml:"edit"`
 }
 
-// Embed is [embed]: which model builds the vectors. Model, Dim and Int8 are the identity of the
-// index recorded in embed_meta.
+// Embed is [embed]: which provider and model build the vectors. The embedder's Model() and Dim()
+// are the identity of the index recorded in embed_meta.
+//
+// Provider picks the embedder from kb's registry (internal/embed/provider): empty or "local" is
+// the in-process model, the default, and every other key behaves as before the providers existed.
+// "http" and "command" read [embed.http] / [embed.command] and need dim, the model's vector width.
+// The new keys are omitted when unset, so a config that names no provider encodes, and hashes
+// (EffectiveJSON), exactly as it did.
 type Embed struct {
-	Model   string `toml:"model" json:"model"`     // a supported model id, or "none" (FTS only)
-	Dim     int    `toml:"dim" json:"dim"`         // reserved: only 0 (native width) is accepted
-	Int8    bool   `toml:"int8" json:"int8"`       // reserved: only false is accepted
-	Workers int    `toml:"workers" json:"workers"` // reserved: 0 = rembed default
-	Batch   int    `toml:"batch" json:"batch"`     // texts per Embed call during indexing
+	Provider string        `toml:"provider,omitempty" json:"provider,omitempty"` // "" or "local" (in-process), "http", "command"
+	Model    string        `toml:"model" json:"model"`                           // local: a supported model id; any provider: "none" (FTS only)
+	Dim      int           `toml:"dim" json:"dim"`                               // local: only 0 (native width); http, command: the vector width
+	Int8     bool          `toml:"int8" json:"int8"`                             // reserved: only false is accepted
+	Workers  int           `toml:"workers" json:"workers"`                       // reserved: 0 = rembed default
+	Batch    int           `toml:"batch" json:"batch"`                           // texts per Embed call during indexing
+	HTTP     *EmbedHTTP    `toml:"http,omitempty" json:"http,omitempty"`         // [embed.http]; nil when absent
+	Command  *EmbedCommand `toml:"command,omitempty" json:"command,omitempty"`   // [embed.command]; nil when absent
 }
+
+// EmbedHTTP is [embed.http]: the "http" provider, a generic embeddings API in the OpenAI request
+// shape. The model sent is embed.model. The key is never written in the file: APIKeyEnv names the
+// environment variable that holds it.
+type EmbedHTTP struct {
+	URL            string `toml:"url,omitempty" json:"url,omitempty"`                 // base URL, e.g. https://api.openai.com/v1
+	Path           string `toml:"path,omitempty" json:"path,omitempty"`               // endpoint below url; default /embeddings
+	APIKeyEnv      string `toml:"api_key_env,omitempty" json:"api_key_env,omitempty"` // variable holding the key; empty = no key
+	AuthHeader     string `toml:"auth_header,omitempty" json:"auth_header,omitempty"` // default Authorization
+	AuthScheme     string `toml:"auth_scheme,omitempty" json:"auth_scheme,omitempty"` // default Bearer; "none" = bare key
+	NoDimensions   bool   `toml:"no_dimensions,omitempty" json:"no_dimensions,omitempty"`
+	Truncate       bool   `toml:"truncate,omitempty" json:"truncate,omitempty"`
+	DocPrefix      string `toml:"doc_prefix,omitempty" json:"doc_prefix,omitempty"`
+	QueryPrefix    string `toml:"query_prefix,omitempty" json:"query_prefix,omitempty"`
+	TimeoutSeconds int    `toml:"timeout_seconds,omitzero" json:"timeout_seconds,omitempty"` // per call, plus 5 s per text; 0 = 30
+}
+
+// EmbedCommand is [embed.command]: the "command" provider, a program that reads
+// {"model","dim","texts"} as JSON on stdin and writes {"embeddings": [...]} on stdout. kb runs it
+// without a shell and never loads model weights itself.
+type EmbedCommand struct {
+	Program        string   `toml:"program,omitempty" json:"program,omitempty"`                // path, or a name on PATH
+	Args           []string `toml:"args,omitempty" json:"args,omitempty"`                      // one word each
+	TimeoutSeconds int      `toml:"timeout_seconds,omitzero" json:"timeout_seconds,omitempty"` // per run, plus 5 s per text; 0 = 60
+	DocPrefix      string   `toml:"doc_prefix,omitempty" json:"doc_prefix,omitempty"`
+	QueryPrefix    string   `toml:"query_prefix,omitempty" json:"query_prefix,omitempty"`
+}
+
+// Provider names config understands itself; any other name is checked against kb's registry
+// when the embedder is built.
+const (
+	ProviderLocal   = "local"
+	ProviderHTTP    = "http"
+	ProviderCommand = "command"
+)
+
+// ProviderName is the provider in effect: Provider lowercased, with empty meaning "local".
+func (e Embed) ProviderName() string {
+	if p := strings.ToLower(strings.TrimSpace(e.Provider)); p != "" {
+		return p
+	}
+	return ProviderLocal
+}
+
+// IsLocal reports whether the in-process model builds the vectors (the default).
+func (e Embed) IsLocal() bool { return e.ProviderName() == ProviderLocal }
 
 // Source is one [[sources]] table: where a store's entries come from. Paths and globs are
 // slash-separated and relative to the location root (not the store directory).
@@ -405,8 +460,8 @@ func (c Config) Validate(src string) error {
 	if strings.TrimSpace(c.Embed.Model) == "" {
 		return problem("embed.model", `must name a model, or "none" for full-text search only`)
 	}
-	if c.Embed.Dim != 0 {
-		return problem("embed.dim", "not supported yet: only 0 (the model's native width) is accepted (got %d)", c.Embed.Dim)
+	if err := validateEmbedProvider(c.Embed, problem); err != nil {
+		return err
 	}
 	if c.Embed.Int8 {
 		return problem("embed.int8", "not supported yet: only false is accepted")
@@ -525,11 +580,64 @@ func (c Config) Validate(src string) error {
 	return nil
 }
 
+// validateEmbedProvider checks embed.provider and its tables. With no provider (local) the rules
+// are exactly the pre-provider ones. The keys a provider needs (http's url, command's program, a
+// dim) are not required here, so a switch can be made one --set at a time; Embed.Needs reports
+// them when the embedder is built.
+func validateEmbedProvider(e Embed, problem func(key, format string, args ...any) error) error {
+	if strings.ContainsFunc(e.Provider, unicode.IsSpace) || strings.ContainsFunc(e.Provider, unicode.IsControl) {
+		return problem("embed.provider", "must be one word, such as local, http or command (got %q)", e.Provider)
+	}
+	if e.IsLocal() {
+		if e.Dim != 0 {
+			return problem("embed.dim", "not supported yet: only 0 (the model's native width) is accepted (got %d)", e.Dim)
+		}
+	} else if e.Dim < 0 {
+		return problem("embed.dim", "must be the model's vector width, a positive number (got %d)", e.Dim)
+	}
+	if h := e.HTTP; h != nil && h.TimeoutSeconds < 0 {
+		return problem("embed.http.timeout_seconds", "must be 0 or more (got %d)", h.TimeoutSeconds)
+	}
+	if c := e.Command; c != nil {
+		for i, a := range c.Args {
+			if a == "" || strings.ContainsFunc(a, unicode.IsSpace) {
+				return problem(fmt.Sprintf("embed.command.args[%d]", i+1), "must be one word with no spaces (got %q); wrap anything fancier in a script", a)
+			}
+		}
+		if c.TimeoutSeconds < 0 {
+			return problem("embed.command.timeout_seconds", "must be 0 or more (got %d)", c.TimeoutSeconds)
+		}
+	}
+	return nil
+}
+
+// Needs reports the first key the selected provider needs that is missing, as "key: what", or ""
+// when nothing is missing. The local provider and model "none" need nothing beyond Validate.
+func (e Embed) Needs() string {
+	if e.IsLocal() || e.Model == ModelNone {
+		return ""
+	}
+	if e.Dim == 0 {
+		return fmt.Sprintf("embed.dim: provider %s needs the model's vector width, such as dim = 768", e.ProviderName())
+	}
+	switch e.ProviderName() {
+	case ProviderHTTP:
+		if e.HTTP == nil || strings.TrimSpace(e.HTTP.URL) == "" {
+			return `embed.http.url: provider http needs the API's base URL, such as url = "https://api.openai.com/v1"`
+		}
+	case ProviderCommand:
+		if e.Command == nil || strings.TrimSpace(e.Command.Program) == "" {
+			return `embed.command.program: provider command needs the program to run, such as program = "/opt/embed/run"`
+		}
+	}
+	return ""
+}
+
 // CheckModel validates embed.model against the caller's table of supported models. "none" always
-// passes. known returns an error for an unsupported id; src and the key are added to it. The model
+// passes, and so does any model of a provider other than local: those name their own models. known returns an error for an unsupported id; src and the key are added to it. The model
 // table lives with the embedder (internal/embed/local), so config takes the lookup as a function.
 func (c Config) CheckModel(src string, known func(id string) error) error {
-	if c.Embed.Model == ModelNone {
+	if c.Embed.Model == ModelNone || !c.Embed.IsLocal() {
 		return nil
 	}
 	if err := known(c.Embed.Model); err != nil {
