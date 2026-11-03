@@ -248,7 +248,7 @@ func TestModelNamesProgramArgsAndModel(t *testing.T) {
 		return cl.Model()
 	}
 	plain := id(func(*Config) {})
-	if plain != `command ["/opt/embed" "--fast"] model=m` {
+	if plain != `command ["/opt/embed" "--fast"] model="m"` {
 		t.Fatalf("Model = %q", plain)
 	}
 	if id(func(c *Config) { c.Batch = 3 }) != plain {

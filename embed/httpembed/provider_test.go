@@ -169,7 +169,7 @@ func TestModelNamesEverySettingThatChangesVectors(t *testing.T) {
 		return cl.Model()
 	}
 	plain := id(func(*Config) {})
-	if plain != "http https://api.example/v1/embeddings model=m" {
+	if plain != `http "https://api.example/v1/embeddings" model="m"` {
 		t.Fatalf("Model = %q", plain)
 	}
 	if id(func(c *Config) { c.APIKey = "other" }) != plain || id(func(c *Config) { c.AuthHeader = "api-key" }) != plain {
@@ -180,6 +180,7 @@ func TestModelNamesEverySettingThatChangesVectors(t *testing.T) {
 		"path":         func(c *Config) { c.Path = "/embed" },
 		"model":        func(c *Config) { c.Model = "m2" },
 		"truncate":     func(c *Config) { c.Truncate = true },
+		"send dims":    func(c *Config) { c.SendDimensions = true },
 		"doc prefix":   func(c *Config) { c.DocPrefix = "d: " },
 		"query prefix": func(c *Config) { c.QueryPrefix = "q: " },
 	} {

@@ -6,9 +6,10 @@
 // Ollama's /v1): POST {baseURL}{path} with {"model": <model>, "input": [...], "dimensions": <dim>}
 // and "<AuthHeader>: <AuthScheme> <key>" when a key is set, answered by
 // {"data": [{"index": i, "embedding": [...]}, ...]}. The response is put back in input order by
-// index. The path and the credential header are configurable, so no single vendor's layout is
-// assumed. dimensions asks a model that can shorten its vectors for exactly Dim numbers;
-// SendDimensions=false leaves it out for a server that rejects the field.
+// index; a reply whose indexes are not exactly 0..n-1, each once, is an error. The path and the
+// credential header are configurable, so no single vendor's layout is assumed. dimensions asks a
+// model that can shorten its vectors for exactly Dim numbers; SendDimensions=false leaves it out
+// for a server that rejects the field.
 //
 // Requests larger than 16 texts are split into successive calls. Every call gets a deadline of
 // BaseTimeout + PerTextTimeout*n on top of the caller's own ctx.
@@ -112,10 +113,17 @@ func New(cfg Config) (*Client, error) {
 }
 
 // Model reports the identity of the vectors: the endpoint and the model, plus every option that
-// changes the vectors (truncation, task prefixes), so an index built against one API or model is
-// never mixed with another. The key and the auth header are not part of it.
+// changes the vectors (sending the dimensions field, truncation, task prefixes), so an index built
+// against one API, model or setting is never mixed with another. The key, the auth header and the
+// timeouts are not part of it.
+//
+// Every free-form field (endpoint, model, prefixes) is Go-quoted, so no value can imitate another
+// field or a flag: `model="m truncate"` and `model="m" truncate` stay distinct.
 func (c *Client) Model() string {
-	id := "http " + c.endpoint() + " model=" + c.cfg.Model
+	id := fmt.Sprintf("http %q model=%q", c.endpoint(), c.cfg.Model)
+	if c.cfg.SendDimensions {
+		id += " send_dimensions"
+	}
 	if c.cfg.Truncate {
 		id += " truncate"
 	}
@@ -210,7 +218,21 @@ func (c *Client) embedBatch(ctx context.Context, texts []string) ([][]float32, e
 		return nil, fmt.Errorf("http embedder: expected %d embeddings for %d inputs, got %d (%s)",
 			len(texts), len(texts), len(parsed.Data), extractError(body, status))
 	}
-	sort.SliceStable(parsed.Data, func(i, j int) bool { return parsed.Data[i].Index < parsed.Data[j].Index })
+	// Each input must be answered exactly once: every index in [0, n) appears once. A duplicate,
+	// negative or out-of-range index means the reply does not correspond to the request, and
+	// assigning vectors by position would silently attach them to the wrong texts.
+	seen := make([]bool, len(texts))
+	for _, d := range parsed.Data {
+		if d.Index < 0 || d.Index >= len(texts) {
+			return nil, fmt.Errorf("http embedder: response from %s has index %d, want 0..%d",
+				url, d.Index, len(texts)-1)
+		}
+		if seen[d.Index] {
+			return nil, fmt.Errorf("http embedder: response from %s has index %d more than once", url, d.Index)
+		}
+		seen[d.Index] = true
+	}
+	sort.Slice(parsed.Data, func(i, j int) bool { return parsed.Data[i].Index < parsed.Data[j].Index })
 	out := make([][]float32, len(parsed.Data))
 	for i, d := range parsed.Data {
 		if c.cfg.Truncate && len(d.Embedding) > c.cfg.Dim {

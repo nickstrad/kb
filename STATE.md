@@ -6,8 +6,9 @@ provider plugin onto kb v2, from the brief at
 kept-vs-adopted list: [docs/embedding-plugin.md](docs/embedding-plugin.md). This replaces the
 first plugin branch (`feat/embedding-plugin` @ 72ee067, built on the pre-v2 base).
 
-**Status:** port built and pushed on `feat/embedding-plugin-v2` (base main 898addb). Waiting for
-a cross-family review; not merged.
+**Status:** repair round done, awaiting a fresh cross-family confirm review; not merged. Astra's
+(Codex) review of 17192aa returned FAIL; all of her findings are fixed on this branch with
+regression tests (see "Repair round" below).
 
 ## Done
 
@@ -55,8 +56,9 @@ a cross-family review; not merged.
 
 ### Judgment calls (for Nick's review)
 
-- `Model()` identity strings: `http <endpoint> model=<m>[ truncate][ doc_prefix=..][ query_prefix=..]`
-  and `command ["prog" "arg"...] model=<m>[...]`. Key, auth header, batch, timeouts excluded.
+- `Model()` identity strings: `http "<endpoint>" model="<m>"[ send_dimensions][ truncate][ doc_prefix=".."][ query_prefix=".."]`
+  and `command ["prog" "arg"...] model="<m>"[...]`, every free-form field Go-quoted. Key, auth
+  header, batch, timeouts excluded.
 - Provider needs (`dim`, `http.url`, `command.program`) are checked at build time
   (`config.Embed.Needs`), not in `Validate`, so a switch works one `--set` at a time.
 - `embed.command.args` must be single words (passed to the provider as a space-joined option).
@@ -77,13 +79,42 @@ a cross-family review; not merged.
 - E2E journeys (`-tags fts5,e2e`, `GOFLAGS=-buildvcs=false` in a worktree): fail identically on
   the base and the port (macOS `Library/Caches` paths and the version string in the goldens).
 
+## Repair round (Astra's findings on 17192aa)
+
+Review evidence (Astra): `/tmp/plugin-review-probe_test.go` and
+`/tmp/plugin-review-probes.log` reproduce identity collisions and invalid response indexes.
+`/tmp/plugin-review-targeted.log` records passing provider-switching, default-resolution,
+environment-isolation, missing-program and timeout tests. `go vet ./...` exited 0.
+Full `go test -tags fts5 ./...` runs on 17192aa and base 898addb both failed the same six
+tests documented above (`/tmp/plugin-review-tests.log`, `/tmp/plugin-review-base-tests.log`).
+An external Go module successfully imported the public registry/built-ins; its dependency
+list contains no kb internal, rembed, or Hugging Face packages. Review artifacts are temporary.
+
+- Finding 1, identity: `httpembed.Client.Model()` and `command.Client.Model()` Go-quote the
+  endpoint, model and prefixes (command argv was already quoted), and HTTP adds `send_dimensions`.
+- Finding 3, HTTP indexes: `embedBatch` rejects a duplicate, negative or out-of-range index
+  (each of `0..n-1` exactly once) before reordering.
+- Regression tests: `embed/httpembed.TestSendDimensionsChangesIdentity`,
+  `embed/httpembed.TestModelIdentityIsCollisionFree`,
+  `embed/httpembed.TestEmbedRejectsInvalidResponseIndexes` (7 subtests),
+  `embed/command.TestModelIdentityIsCollisionFree`. All four fail on 17192aa (checked in a
+  scratch worktree with only the new test files copied in) and pass after. Astra's probe file
+  (`/tmp/plugin-review-probe_test.go`) fails 4/5 before and passes 5/5 after.
+- Existing identity assertions updated to the quoted form (`provider_test.go`, `command_test.go`,
+  `internal/cli/embed_provider_test.go`); docs/embedding-plugin.md updated.
+- After repair: `go vet ./...` and `go vet -tags fts5[,harnessfake] ./...` clean;
+  `go test -tags fts5 ./...` fails exactly the six pre-existing tests listed under Tests.
+- Third verdict ground (suite not green): the same six fail on untouched base 898addb; out of
+  scope (root permissions, darwin float goldens).
+
 ## In progress
 
 Nothing running.
 
 ## Next steps
 
-1. Cross-family review of `main..feat/embedding-plugin-v2` (Codex or Muse; one repair round).
+1. Fresh cross-family confirm review of the repair (`17192aa..feat/embedding-plugin-v2`), by
+   Codex or Muse; a second FAIL goes to arbitration.
 2. Run `go test -tags fts5 ./...` on darwin/arm64 to confirm green on the target platform.
 3. On PASS, merge to main (Nick's call), and retire the old `feat/embedding-plugin` branch.
 

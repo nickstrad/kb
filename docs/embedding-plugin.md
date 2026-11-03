@@ -44,9 +44,14 @@ fake, `Cached`) is a public `Embedder` with no change. `DocText`/`QueryText` fol
 embedder without `Prefixer` gets its text as is (the first branch defaulted to nomic prefixes).
 
 `Model()` must name every setting that changes the vectors, because embed_meta and the embedding
-cache key on it. The http client reports `http <endpoint> model=<model>` plus `truncate` and any
-prefixes; the command client reports `command ["<program>" "<arg>" ...] model=<model>` plus any
-prefixes. The API key, auth header, batch size and timeouts are not part of it.
+cache key on it. The http client reports `http "<endpoint>" model="<model>"` plus
+`send_dimensions`, `truncate` and any prefixes; the command client reports
+`command ["<program>" "<arg>" ...] model="<model>"` plus any prefixes. Every free-form field is
+Go-quoted, so a value can never imitate a flag or another field (`model="m truncate"` is not
+`model="m" truncate`). The API key, auth header, batch size and timeouts are not part of it.
+
+The http client also checks that a reply's indexes are exactly `0..n-1`, each once; a duplicate,
+negative or out-of-range index is an error rather than vectors attached to the wrong texts.
 
 Errors that mean "cannot be used right now" wrap `embed.ErrUnavailable`: a transport failure, the
 client's own deadline, a 5xx/408/429, a program that crashes or exits non-zero. A configuration

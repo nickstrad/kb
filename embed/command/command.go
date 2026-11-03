@@ -89,8 +89,11 @@ func New(cfg Config) (*Client, error) {
 
 // Model reports the identity of the vectors: the program, its arguments and the model name, plus
 // the task prefixes when set, so vectors from one program or model are never mixed with another.
+// Every free-form field is Go-quoted, so no value can imitate another field: a model named
+// `m doc_prefix="x"` and model m with doc prefix x stay distinct. Batch size, timeouts and the
+// environment are not part of it.
 func (c *Client) Model() string {
-	id := fmt.Sprintf("command %q model=%s", c.cfg.Argv, c.cfg.Model)
+	id := fmt.Sprintf("command %q model=%q", c.cfg.Argv, c.cfg.Model)
 	if c.cfg.DocPrefix != "" {
 		id += fmt.Sprintf(" doc_prefix=%q", c.cfg.DocPrefix)
 	}

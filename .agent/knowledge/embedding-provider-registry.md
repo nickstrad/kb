@@ -26,3 +26,24 @@ A changed URL/path/program is a different `Model()` and trips the embed_meta gua
 that wants a down API toggles one server rather than starting a new one.
 
 **Seen in:** embed/, internal/embed/provider/, internal/cli/setup.go, internal/config/config.go, docs/embedding-plugin.md · 2026-11-03
+
+**Independent review (17192aa, 2026-11-03):** identity completeness is not yet established.
+With truncation enabled, changing `send_dimensions` can return different vectors at the same
+`Model()` and `Dim()`, bypassing both the shared-cache key and the index compatibility guard.
+Unescaped model names also collide with identity suffixes (`model="m truncate"` versus
+`model="m", truncate=true` in HTTP; `model='m doc_prefix="x"'` versus `model="m", doc_prefix="x"`
+in command). The HTTP decoder sorts indexes but does not validate uniqueness
+or range: replies with indexes `[0,0]`, `[-1,1]`, and `[0,9]` for two inputs were accepted.
+Future tests must assert these boundaries, not just correctly reordered replies and one-option
+identity changes. Independent probe source and output: `/tmp/plugin-review-probe_test.go` and
+`/tmp/plugin-review-probes.log` (temporary review artifacts).
+
+**Repair (2026-11-03):** fixed. `Model()` now Go-quotes every free-form field
+(`http "<endpoint>" model="<m>"[ send_dimensions][ truncate][ doc_prefix=".."][ query_prefix=".."]`,
+`command ["prog" "arg"] model="<m>"[...]`), so no value can imitate a flag or field, and HTTP
+includes `send_dimensions`. The HTTP decoder rejects any reply whose indexes are not exactly
+`0..n-1`, each once (a server that omits `index` therefore fails as "index 0 more than once").
+Guarded by `TestModelIdentityIsCollisionFree` (httpembed and command: exhaustive cross-product
+of hostile values, any two distinct settings must differ), `TestSendDimensionsChangesIdentity`
+and `TestEmbedRejectsInvalidResponseIndexes`. When adding a vector-changing option to a
+provider, add it to `Model()` quoted and to the cross-product in that test.
