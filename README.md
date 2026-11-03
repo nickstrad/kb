@@ -105,6 +105,7 @@ and `kb eval` take the same `--set` to try a setting for one run. Commonly chang
 | Key | Default | What it does |
 |---|---|---|
 | `embed.model` | `BAAI/bge-small-en-v1.5` | the embedding model (`kb model list`), or `none` |
+| `embed.provider` | (unset: `local`) | who computes the vectors: the in-process model, or `http` / `command` (below) |
 | `search.k` | 8 | hits returned (1–20) |
 | `search.rrf_k`, `search.list_weights.*`, `search.bm25.*` | 60, 1, 1/2/3 | ranking (see `kb explain`) |
 | `search.exact_list` | true | the exact-identifier list (below) |
@@ -285,6 +286,42 @@ kb model cache           # the machine-wide embedding cache (--stats, the defaul
 Changing `embed.model` on an existing index needs `kb reindex --all`. `model = "none"` indexes and
 searches with full-text search only. Embeddings are cached per machine by model and text, so
 the same text is never embedded twice in any store.
+
+### Other embedding providers
+
+On a machine that cannot download or run Hugging Face models, point kb at an embeddings API or at
+a program of your own instead. kb then loads no model and downloads nothing; `kb model pull`
+does not apply. Set `embed.provider`, the model and its vector width:
+
+```toml
+[embed]
+provider = "http"                    # any API in the OpenAI request shape
+model = "text-embedding-3-small"
+dim = 768
+
+[embed.http]
+url = "https://api.openai.com/v1"    # POST {url}/embeddings
+api_key_env = "OPENAI_API_KEY"       # the variable holding the key; the key is never in the file
+# path, auth_header, auth_scheme, no_dimensions, truncate, doc_prefix, query_prefix, timeout_seconds
+```
+
+```toml
+[embed]
+provider = "command"                 # your program: JSON texts on stdin, JSON vectors on stdout
+model = "my-onnx-model"
+dim = 384
+
+[embed.command]
+program = "/opt/embed/run"
+args = ["--quiet"]
+```
+
+The program gets `{"model","dim","texts"}` on stdin and answers `{"embeddings": [[...], ...]}`
+(or `{"error": "..."}`) on stdout. Switching provider, model, URL or program needs
+`kb reindex --all`, like a model change. An unreachable API or a crashing program is "embedder
+unavailable" (search falls back to full-text, exit 2); a rejected key or a missing program is a
+configuration error (exit 1). The design, and how another Go program reuses the provider
+registry, is in [docs/embedding-plugin.md](docs/embedding-plugin.md).
 
 ## Upgrading
 
