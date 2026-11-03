@@ -8,7 +8,9 @@ brief at `docs/graphduck-eval-brief.md`, deliverable at `docs/graphduck-eval.md`
 
 ## Status
 
-GraphDuck evaluation written and committed on branch `eval/graphduck`; awaiting Nick's read.
+GraphDuck evaluation written (branch `eval/graphduck`) and checked against DuckDB 2.0 (branch
+`eval/graphduck-duckdb2-check`, `docs/graphduck-eval-duckdb2-check.md`). Overall verdict of the
+2.0 check: the no-pivot recommendation STANDS WITH QUALIFICATIONS. Awaiting Nick's read.
 
 ## Done
 
@@ -16,6 +18,11 @@ GraphDuck evaluation written and committed on branch `eval/graphduck`; awaiting 
   (c), four book-based changes (d). DuckDB claims verified on 2026-11-03 against the DuckDB
   2.0 docs and the local CLI 1.5.5 (HNSW persistence flag, FTS index not maintained on
   write, one-process file lock). Commit SHAs are in `git log eval/graphduck`.
+
+- `docs/graphduck-eval-duckdb2-check.md` (branch `eval/graphduck-duckdb2-check`): per-claim
+  check of the eval's DuckDB claims on DuckDB 2.0.0 (tested with the official CLI, plus docs).
+  C1 (single writer) and C3 (FTS maintenance) WEAKENED by Quack (beta) and FTS
+  `incremental = 1`; C2 (HNSW persistence experimental) and the rest HOLD.
 
 ## In progress
 
@@ -31,17 +38,24 @@ Nothing. No background runs.
    extracted text `/root/Software/research/graphduck.txt` when no longer needed (they are
    outside the repo and not committed).
 
+4. Whatever the pivot decision, `kb stats` depends on the archived `marcboeker/go-duckdb/v2`;
+   moving to `github.com/duckdb/duckdb-go/v2` is a candidate maintenance item (see the 2.0
+   check, C6).
+
 ## Open decisions
 
 - Owner: Nick. Whether to adopt any of the proposed changes, and whether `related:` front
   matter should be part of the knowledge-repo contract (`/root/Raw/knowledge/AGENTS.md`).
+- Owner: Nick. Whether the eval should be revised per the 2.0 check's qualifications
+  (restate the concurrency and FTS arguments, update the Go driver facts).
 - Owner: Nick. Whether to merge `eval/graphduck` to main as documentation (the brief says do
   not merge without asking).
 
 ## Resume instructions
 
 - Branch `eval/graphduck`, worktree `/root/Software/kb-work/graphduck-eval` (main checkout
-  at `/root/Software/kb`). No detached runs; nothing to relaunch.
+  at `/root/Software/kb`). The 2.0 check is on branch `eval/graphduck-duckdb2-check`, worktree
+  `/root/Software/kb-work/graphduck-duckdb2`. No detached runs; nothing to relaunch.
 - Research inputs: the PDF at `/root/Software/kb/research/graphduck.pdf`, text extraction at
   `/root/Software/research/graphduck.txt`, companion repo clone at
   `/root/Software/research/graphduck`.
