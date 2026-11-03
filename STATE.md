@@ -6,9 +6,9 @@ provider plugin onto kb v2, from the brief at
 kept-vs-adopted list: [docs/embedding-plugin.md](docs/embedding-plugin.md). This replaces the
 first plugin branch (`feat/embedding-plugin` @ 72ee067, built on the pre-v2 base).
 
-**Status:** repair round done, awaiting a fresh cross-family confirm review; not merged. Astra's
-(Codex) review of 17192aa returned FAIL; all of her findings are fixed on this branch with
-regression tests (see "Repair round" below).
+**Status:** repair independently confirmed on 7284b3a; not merged. Confirm review passed
+all six checks against the brief's accepted Linux baseline. Target-platform verification and
+Nick's merge decision remain pending.
 
 ## Done
 
@@ -107,16 +107,27 @@ list contains no kb internal, rembed, or Hugging Face packages. Review artifacts
 - Third verdict ground (suite not green): the same six fail on untouched base 898addb; out of
   scope (root permissions, darwin float goldens).
 
+## Confirm review (Codex, 2026-11-03)
+
+- Original independent probes: all five pass, including HTTP timeout/cancellation.
+- Committed repair tests pass; all four fail when copied onto pre-repair 17192aa.
+- Default local resolution, none/FTS, automatic download boundaries, environment isolation,
+  missing-program classification and provider switching pass.
+- External module imports public registry/built-ins and runs; dependency graph has no kb internal,
+  rembed or Hugging Face packages (`-buildvcs=false` needed for external dependency listing here).
+- Fresh `go test -count=1 -tags fts5 -json ./...`: 3565 pass, 7 skip, exactly the six accepted
+  baseline failures above; `go vet ./...` clean. darwin/arm64 remains unverified.
+- Evidence: `/tmp/plugin-confirm-evidence/{suite.json,targeted.log,before.log,vet.log,external-deps.txt}`.
+  Temporary artifacts; no product changes, commits or merges made by this review.
+
 ## In progress
 
 Nothing running.
 
 ## Next steps
 
-1. Fresh cross-family confirm review of the repair (`17192aa..feat/embedding-plugin-v2`), by
-   Codex or Muse; a second FAIL goes to arbitration.
-2. Run `go test -tags fts5 ./...` on darwin/arm64 to confirm green on the target platform.
-3. On PASS, merge to main (Nick's call), and retire the old `feat/embedding-plugin` branch.
+1. Run `go test -tags fts5 ./...` on darwin/arm64 to confirm green on the target platform.
+2. On PASS, merge to main (Nick's call), and retire the old `feat/embedding-plugin` branch.
 
 ## Open decisions / blockers
 

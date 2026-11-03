@@ -47,3 +47,7 @@ Guarded by `TestModelIdentityIsCollisionFree` (httpembed and command: exhaustive
 of hostile values, any two distinct settings must differ), `TestSendDimensionsChangesIdentity`
 and `TestEmbedRejectsInvalidResponseIndexes`. When adding a vector-changing option to a
 provider, add it to `Model()` quoted and to the cross-product in that test.
+
+**Independent confirmation (7284b3a, 2026-11-03):** original review probes pass; all four
+committed repair regressions fail on 17192aa and pass on the repair. Full Linux/root suite has
+only the six accepted baseline failures; vet is clean. See STATE.md for evidence locations.
