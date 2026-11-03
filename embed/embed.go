@@ -1,6 +1,13 @@
-// Package embed defines the embedding interface the indexer and the searcher use, so the
-// embedder implementations (embed/ollama, embed/openai, the FTS-only None, and the deterministic
-// test double embed/fake) are interchangeable. embed/provider picks one from the environment.
+// Package embed is kb's embedding plugin surface: the Embedder contract every provider
+// implements, and a Registry that picks and configures a provider by name from configuration
+// (explicit values, then environment variables). It is importable by any Go module; nothing in it
+// is specific to kb.
+//
+// Providers that ship with it live in subpackages: embed/ollama (an Ollama server), embed/openai
+// (OpenAI-compatible HTTP APIs: "openai", "openrouter" and the generic "http"), embed/command (a
+// user-supplied program that speaks JSON on stdin/stdout) and None (FTS-only, in this package).
+// embed/builtin registers all of them. embed/fake is a deterministic test double. See README.md
+// in this directory for how another project adopts the registry and adds its own provider.
 //
 // Some models are asymmetric: nomic-embed-text wants stored documents and incoming queries to
 // carry different prefixes. Callers never prepend a prefix themselves; they go through DocText
@@ -46,6 +53,12 @@ type Prefixer interface {
 	Prefixes() (doc, query string)
 }
 
+// Pinger is implemented by an embedder that can check, cheaply and before any destructive work,
+// that it is reachable and correctly configured. kb doctor and kb reindex --all use it.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
 // DocText returns text as e should embed it for indexing.
 func DocText(e Embedder, text string) string {
 	if p, ok := e.(Prefixer); ok {
@@ -64,7 +77,7 @@ func QueryText(e Embedder, query string) string {
 	return QueryPrefix + query
 }
 
-// None is the embedder for KB_EMBEDDER=none: the index holds no vectors and search is FTS only.
+// None is the embedder for the "none" provider (KB_EMBEDDER=none in kb): the index holds no vectors and search is FTS only.
 // Its Dim is 0, which is how the indexer and the store recognise it; Embed is never meant to be
 // called and always fails.
 type None struct{}

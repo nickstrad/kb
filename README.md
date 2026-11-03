@@ -28,10 +28,16 @@ This builds `.cache/kb`, links `/usr/local/bin/kb` to it, and runs `kb doctor`.
 | nothing set | Ollama at `KB_OLLAMA_URL` (default `http://127.0.0.1:11434`), `nomic-embed-text` |
 | `KB_EMBEDDER=none` | no embeddings; full-text search only |
 | `KB_EMBEDDER=openai` + `KB_EMBED_URL` | any other OpenAI-style `/embeddings` server |
+| `KB_EMBEDDER=http` + `KB_EMBED_URL` + `KB_EMBED_API_KEY` + `KB_EMBED_MODEL` | a generic HTTP embeddings API (path and auth header configurable) |
+| `KB_EMBEDDER=command` + `KB_EMBED_COMMAND` + `KB_EMBED_MODEL` | your own program: JSON texts on stdin, JSON vectors on stdout |
 
 `--embedder` and `--embed-model` (or `KB_EMBEDDER` and `KB_EMBED_MODEL`) override the choice.
 Vectors are 768 numbers wide. Changing the embedder or model on an existing store requires
 `kb reindex --all`. `kb help` and `internal/embed/provider` list every setting.
+
+The embedding layer is a public, importable plugin package, `github.com/nickstrad/kb/embed`.
+Other Go projects can use it and register their own providers; see
+[docs/embedding-plugin.md](docs/embedding-plugin.md).
 
 ## Use in a project
 

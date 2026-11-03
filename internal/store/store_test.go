@@ -15,7 +15,7 @@ import (
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 
-	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/embed/fake"
 )
 
 // TestOpenAppliesSchema opens a fresh database in a temp directory and checks the three things a

@@ -30,7 +30,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/embed"
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/reindex"
 	"github.com/nickstrad/kb/internal/store"

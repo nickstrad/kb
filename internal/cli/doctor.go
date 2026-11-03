@@ -17,7 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/embed"
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/index"
 	"github.com/nickstrad/kb/internal/store"
@@ -179,7 +179,7 @@ func checkEmbedMeta(d *doctorState, st *store.Store, embedder embed.Embedder) {
 
 // checkEmbedder pings the configured embedder when it supports it (the pinger interface, defined
 // in reindex.go, is satisfied by the Ollama and OpenAI-style clients). The none embedder has
-// nothing to reach. A test embedder (internal/embed/fake) does not implement Ping, so it is
+// nothing to reach. A test embedder (embed/fake) does not implement Ping, so it is
 // reported as a warning rather than skipped silently or faked as ok.
 func checkEmbedder(ctx context.Context, d *doctorState, embedder embed.Embedder) {
 	if embed.IsNone(embedder) {

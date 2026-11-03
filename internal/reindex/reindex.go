@@ -16,7 +16,7 @@
 // is warned about on Stderr and counted in Summary.Failed; it does not stop the rest of the repo
 // from being reindexed. An embedder failure is different: since it will keep failing for every
 // subsequent entry too, it aborts the whole run and is returned as an error. This package never
-// imports a concrete embedder implementation (e.g. internal/embed/ollama) — it only knows the
+// imports a concrete embedder implementation (e.g. embed/ollama) — it only knows the
 // embed.Embedder interface — so it has no way to distinguish "embedder unreachable" from any other
 // embedder error by type. It simply returns the error from embed.Embedder.Embed wrapped with
 // %w, which preserves the chain: a caller that constructed the embedder (kb reindex, in
@@ -30,8 +30,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/nickstrad/kb/embed"
 	"github.com/nickstrad/kb/internal/chunk"
-	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/store"
 )

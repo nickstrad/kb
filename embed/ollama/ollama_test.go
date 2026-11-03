@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/embed"
 )
 
 // fakeVector returns a deterministic vector of the given dimension, distinct per index so tests

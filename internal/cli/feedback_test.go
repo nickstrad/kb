@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nickstrad/kb/internal/embed/ollama"
+	"github.com/nickstrad/kb/embed/ollama"
 	"github.com/nickstrad/kb/internal/store"
 )
 

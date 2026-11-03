@@ -10,9 +10,9 @@
 // Configuration: New(baseURL, model string, dim int) falls back, for each empty/zero argument,
 // to the environment variables KB_OLLAMA_URL and KB_EMBED_MODEL (checked only when the
 // corresponding argument is empty), then to the package defaults (http://127.0.0.1:11434,
-// nomic-embed-text, 768). The CLI always calls New("", "", 0), so in practice KB_OLLAMA_URL and
-// KB_EMBED_MODEL are the real configuration knobs; dim has no environment override since it is a
-// property of whatever model is selected.
+// nomic-embed-text, 768). That environment fallback predates this package being public; code
+// that goes through the embed registry (ollama.Provider) always passes explicit values, which the
+// registry resolves from its own prefix (KB_OLLAMA_URL and KB_EMBED_MODEL for kb).
 //
 // Timeouts: there is no fixed http.Client.Timeout, since a real batch of 16 large chunks has been
 // measured at 16-39s warm on this box and a flat 30s would abort it. Instead every call gets a
@@ -33,7 +33,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/embed"
 )
 
 // Defaults used by New when an argument is empty/zero and the corresponding environment variable

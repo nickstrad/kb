@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nickstrad/kb/internal/embed"
+	"github.com/nickstrad/kb/embed"
 )
 
 // maxBatch is the largest number of texts sent in one /embeddings call.
@@ -56,6 +56,14 @@ type Config struct {
 	Truncate    bool
 	DocPrefix   string
 	QueryPrefix string
+
+	// Path is the endpoint below BaseURL; empty means "/embeddings".
+	Path string
+	// AuthHeader and AuthScheme shape the credential header: AuthHeader defaults to
+	// "Authorization" and AuthScheme to "Bearer", giving "Authorization: Bearer <key>". An API
+	// that wants e.g. "api-key: <key>" sets AuthHeader "api-key" and AuthScheme "none".
+	AuthHeader string
+	AuthScheme string
 }
 
 // Client is an embed.Embedder backed by an OpenAI-compatible embeddings endpoint.
@@ -79,6 +87,20 @@ func New(cfg Config) (*Client, error) {
 	case cfg.Dim <= 0:
 		return nil, fmt.Errorf("openai embedder: dimension must be positive, got %d", cfg.Dim)
 	}
+	if cfg.Path == "" {
+		cfg.Path = "/embeddings"
+	} else if !strings.HasPrefix(cfg.Path, "/") {
+		cfg.Path = "/" + cfg.Path
+	}
+	if cfg.AuthHeader == "" {
+		cfg.AuthHeader = "Authorization"
+	}
+	switch strings.ToLower(cfg.AuthScheme) {
+	case "":
+		cfg.AuthScheme = "Bearer"
+	case "none":
+		cfg.AuthScheme = ""
+	}
 	return &Client{
 		cfg:            cfg,
 		http:           &http.Client{},
@@ -98,6 +120,9 @@ func (c *Client) Prefixes() (doc, query string) { return c.cfg.DocPrefix, c.cfg.
 
 // BaseURL reports the endpoint base in effect.
 func (c *Client) BaseURL() string { return c.cfg.BaseURL }
+
+// endpoint is the full URL requests are posted to.
+func (c *Client) endpoint() string { return c.cfg.BaseURL + c.cfg.Path }
 
 // Embed turns texts into vectors, one per input, in order. Empty input makes no request.
 func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
@@ -150,7 +175,7 @@ func (c *Client) embedBatch(ctx context.Context, texts []string) ([][]float32, e
 	if err != nil {
 		return nil, err
 	}
-	url := c.cfg.BaseURL + "/embeddings"
+	url := c.endpoint()
 	switch {
 	case status >= 500, status == http.StatusTooManyRequests, status == http.StatusRequestTimeout:
 		return nil, fmt.Errorf("%s returned %s: %w", url, extractError(body, status), embed.ErrUnavailable)
@@ -188,14 +213,18 @@ func (c *Client) post(ctx context.Context, jsonBody []byte, n int) ([]byte, int,
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	url := c.cfg.BaseURL + "/embeddings"
+	url := c.endpoint()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, url, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, 0, fmt.Errorf("openai embedder: building request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		v := c.cfg.APIKey
+		if c.cfg.AuthScheme != "" {
+			v = c.cfg.AuthScheme + " " + v
+		}
+		req.Header.Set(c.cfg.AuthHeader, v)
 	}
 
 	resp, err := c.http.Do(req)

@@ -13,8 +13,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/nickstrad/kb/internal/embed"
-	"github.com/nickstrad/kb/internal/embed/fake"
+	"github.com/nickstrad/kb/embed"
+	"github.com/nickstrad/kb/embed/fake"
 	"github.com/nickstrad/kb/internal/store"
 )
 
