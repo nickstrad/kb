@@ -316,7 +316,9 @@ func newRootCmd(d *deps, stdout, stderr io.Writer) *cobra.Command {
 			"kb add. Search never downloads: without the model it falls back to full-text search\n" +
 			"(exit 2). The model is the [embed] model key of the store config (kb config --path; kb model list shows\n" +
 			"the supported ids; \"none\" indexes and searches with full-text search only). Changing\n" +
-			"it on an existing index needs kb reindex --all. kb config shows the effective settings.",
+			"it on an existing index needs kb reindex --all. kb config shows the effective settings.\n" +
+			"[embed] provider = \"http\" or \"command\" computes vectors with an embeddings API or a program\n" +
+			"of your own instead, with no model download (README: Other embedding providers).",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

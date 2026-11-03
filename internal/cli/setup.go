@@ -15,6 +15,7 @@ import (
 	"github.com/nickstrad/kb/internal/embed"
 	"github.com/nickstrad/kb/internal/embed/cache"
 	"github.com/nickstrad/kb/internal/embed/local"
+	"github.com/nickstrad/kb/internal/embed/provider"
 	"github.com/nickstrad/kb/internal/entry"
 	"github.com/nickstrad/kb/internal/errs"
 	"github.com/nickstrad/kb/internal/store"
@@ -80,7 +81,10 @@ func (d *deps) newEmbedder(cmd *cobra.Command, ecfg config.Embed) (embed.Embedde
 	return d.withEmbedCache(cmd, e), nil
 }
 
-// buildEmbedder is newEmbedder without the shared cache.
+// buildEmbedder is newEmbedder without the shared cache. The embedder comes from kb's provider
+// registry (internal/embed/provider): with no embed.provider that is the local in-process model,
+// exactly as before the registry; "http" and "command" never touch the model cache or download
+// anything. model "none" is FTS only whatever the provider.
 func (d *deps) buildEmbedder(cmd *cobra.Command, ecfg config.Embed) (embed.Embedder, error) {
 	if d.embedder != nil {
 		return d.embedder(ecfg)
@@ -88,21 +92,29 @@ func (d *deps) buildEmbedder(cmd *cobra.Command, ecfg config.Embed) (embed.Embed
 	if ecfg.Model == config.ModelNone {
 		return embed.None{}, nil
 	}
-	if harnessModel != nil {
+	if harnessModel != nil && ecfg.IsLocal() {
 		if e, ok := harnessModel(ecfg.Model); ok {
 			return e, nil
 		}
 	}
-	spec, err := local.Lookup(ecfg.Model)
+	reg, err := provider.NewRegistry(d.modelCacheDir)
 	if err != nil {
-		return nil, usageErr("%v", err)
+		return nil, errs.Wrap(err, errs.Internal, "cli.buildEmbedder", "cannot build the embedder registry")
 	}
-	cache, err := d.modelCacheDir()
+	e, err := provider.Open(reg, ecfg)
 	if err != nil {
-		return nil, err // already a Usage error naming the directory
+		return nil, err
 	}
-	e := local.New(spec, cache)
-	if downloadsModel(cmd) && !e.Cached() {
+	le, ok := e.(*local.Embedder)
+	if ok && downloadsModel(cmd) && !le.Cached() {
+		cache, err := d.modelCacheDir()
+		if err != nil {
+			return nil, err // already a Usage error naming the directory
+		}
+		spec, err := local.Lookup(le.Model())
+		if err != nil {
+			return nil, usageErr("%v", err)
+		}
 		stderr := cmd.ErrOrStderr()
 		fmt.Fprintf(stderr, "kb: downloading embedding model %s to %s (once per machine)\n", spec.ID, cache)
 		if err := d.pullModel(cmd.Context(), spec, cache); err != nil {

@@ -205,6 +205,9 @@ func runModelPath(cmd *cobra.Command, d *deps, stdout io.Writer) error {
 	if ecfg.Model == config.ModelNone {
 		return usageErr("embed.model is %q: this store uses full-text search only, so there is no model directory", config.ModelNone)
 	}
+	if !ecfg.IsLocal() {
+		return usageErr("embed.provider is %q: the provider computes the vectors outside kb, so there is no model directory", ecfg.ProviderName())
+	}
 	spec, err := local.Lookup(ecfg.Model)
 	if err != nil {
 		return usageErr("%s", err)
@@ -227,6 +230,9 @@ func runModelPull(cmd *cobra.Command, d *deps, stdout, stderr io.Writer) error {
 	}
 	if ecfg.Model == config.ModelNone {
 		return usageErr("embed.model is %q: this store uses full-text search only, so there is no model to download", config.ModelNone)
+	}
+	if !ecfg.IsLocal() {
+		return usageErr("embed.provider is %q: the provider computes the vectors outside kb, so there is no model to download", ecfg.ProviderName())
 	}
 	spec, err := local.Lookup(ecfg.Model)
 	if err != nil {
