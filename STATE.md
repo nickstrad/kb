@@ -4,8 +4,8 @@
 provider plugin, from the brief at [docs/embedding-plugin-brief.md](docs/embedding-plugin-brief.md).
 The design is in [docs/embedding-plugin.md](docs/embedding-plugin.md).
 
-**Status:** the embedding plugin is built, tested and pushed on `feat/embedding-plugin`. It waits
-for a cross-family review before it can merge to main.
+**Status:** Astra's review came back FAIL with two findings. The repair round fixed both and pushed
+them to `feat/embedding-plugin`, which now waits for Astra's confirm review.
 
 ## Done
 
@@ -13,7 +13,13 @@ for a cross-family review before it can merge to main.
   out of `internal/`, `embed/builtin`, new `http` and `command` providers. kb resolves through
   the registry with prefix `KB_`, and its default behavior is unchanged.
 - `90e6eea` docs: design note `docs/embedding-plugin.md`, `embed/README.md`, and the brief.
-- Tests: `go test -tags fts5 ./...` is green (389 passing, 3 skipped by design: live Ollama and
+- Repair round (brief: [docs/embedding-plugin-repair-brief.md](docs/embedding-plugin-repair-brief.md)),
+  in the `embed: fix Astra review findings` commit. (1) `ollama.Provider` now builds through
+  `newClient`, which reads no environment, so a non-`KB_` registry never picks up `KB_EMBED_MODEL`
+  or `KB_OLLAMA_URL`. Test: `TestRegistryIgnoresKBEnvironment`. (2) In `embed/command`, a
+  program path that does not exist (`fs.ErrNotExist`) is a configuration error, not
+  `ErrUnavailable`. Test: `TestMissingAbsoluteProgramIsAConfigurationError`.
+- Tests: `go test -tags fts5 ./...` is green (393 passing, 3 skipped by design: live Ollama and
   the two real-repo checks). Without `-tags fts5`, `internal/store` fails because the tag is
   required; that was already true on `ad5c811`.
 
@@ -23,10 +29,10 @@ Nothing running.
 
 ## Next steps
 
-1. Cross-family review of `feat/embedding-plugin` against the brief (Codex or Muse seat). The
-   verdict is PASS, NITS or FAIL, with one repair round allowed.
+1. Astra confirm review of the repair commit. A second FAIL goes to arbitration by Muse Wonder Full.
 2. On PASS, merge to main. That is Nick's call; do not merge without the review.
-3. Optional: drop `ollama.New`'s fallback to `KB_*` environment variables (its tests pin it today).
+3. Optional: drop `ollama.New`'s fallback to `KB_*` environment variables. Only direct callers
+   of `New` use it now, and its tests still pin it.
 
 ## Open decisions / blockers
 

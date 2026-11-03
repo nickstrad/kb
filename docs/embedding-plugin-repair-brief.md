@@ -1,0 +1,12 @@
+# Brief (Opus): repair round for feat/embedding-plugin - Astra review FAIL, two findings
+
+You are in the embedding-plugin worktree of the kb repo on branch feat/embedding-plugin. Astra's cross-family review of your plugin build returned FAIL with two findings, quoted verbatim:
+
+Finding 1: "FAIL — registry-based Ollama selection leaks `KB_EMBED_MODEL` into other projects" — "an independent scratch program using prefix `OTHER_` and an empty environment lookup resolved `Model=\"\"` but constructed an Ollama client with `Model=\"kb-only-model\"` from process `KB_EMBED_MODEL`. embed/ollama/provider.go:25 passes the empty model into the legacy environment fallback. This contradicts the design's claim that registry users are unaffected."
+
+Finding 2: "missing absolute command paths are misclassified as temporary unavailability" — "a nonexistent absolute executable returns `ErrUnavailable`, reproduced independently. embed/command/command.go:153 handles `exec.ErrNotFound` but misses filesystem "not found" errors, permitting hybrid fallback for a configuration mistake."
+
+Fix both, on this branch:
+1. A provider constructed through the registry must be governed ONLY by the resolved embed.Config and the registry's own prefixed environment - never by kb's KB_-prefixed variables or any other process env outside that resolution. Keep the legacy ollama.New env fallback for direct legacy callers if existing tests pin it, but the registry path (embed/ollama/provider.go) must not route through it with empty values. Add a regression test mirroring the reviewer's probe: registry with a non-KB prefix and an empty lookup, KB_EMBED_MODEL set in the process environment, and assert the constructed embedder's model is NOT the KB_ value.
+2. In embed/command, a user-supplied executable that does not exist on the filesystem (fs.ErrNotExist / *os.PathError from fork/exec, as opposed to a PATH lookup miss) is a permanent configuration error: it must NOT be wrapped in embed.ErrUnavailable. Add a test with a nonexistent absolute path asserting the error is not ErrUnavailable (and that a PATH-miss / genuinely unavailable case keeps whatever behavior the current tests pin, if they differ).
+Run `go test -tags fts5 ./...` (must be fully green) and `go vet -tags fts5 ./...`. Commit the fixes and tests on feat/embedding-plugin, push the branch, and update STATE.md. Print: what you changed per finding, the new regression tests' names, the test summary line, and the new branch tip.

@@ -1,0 +1,11 @@
+# Brief (Astra): cross-family review of feat/embedding-plugin (kb embedding provider plugin)
+
+You are in the embedding-plugin worktree of the kb repo, reviewing branch feat/embedding-plugin (tip 1596706) against main (ad5c811). The change turns kb's internal embedding layer into a public provider plugin. The owner's requirement behind it: an embedding plugin usable by different projects, working if someone adds an API-based embedding approach or their own local embedding model, never requiring Hugging Face models to be loaded in-process (his work computer cannot load them), with kb's current approach as the default and first user of the plugin.
+
+Verify independently and print exactly one verdict line: PASS, PASS WITH NITS, or FAIL with one-line reasons. Check:
+1. Provider-agnostic surface: the new public package (embed/ at repo root) defines the provider contract and registry without leaking kb-specific internals - check its imports (it must not import kb internal/ packages) and that a provider can be registered and selected by name + configuration without editing kb code. Try registering/selecting in a test or scratch program if unsure.
+2. Default preserves current behavior: compare the selection logic against main's internal/embed/provider/provider.go - same defaults (Ollama first, OpenRouter auto-selected when its key is set, openai, none), same env vars with no renames, same model/dim defaults, and the embed_meta no-mixing guard still enforced.
+3. No Hugging Face hard dependency: grep the diff and new packages for huggingface/transformers/weight downloads or in-process model loading; the command provider must only exchange JSON with a user-supplied program, and the http provider only HTTP calls.
+4. Tests genuinely cover switching: run `go test -tags fts5 ./...` yourself and confirm it is green; read the new tests (registry selection, the CLI embedder switch test, http against a fake server, command against a fake program) and confirm they would fail if provider selection were broken - not just mocks asserting themselves.
+5. Scope: the change stays within the embedding layer plus its call sites; flag anything unrelated.
+Read docs/embedding-plugin.md for the stated design and check the code matches it. Do not edit code; report findings only.
