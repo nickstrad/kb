@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os/exec"
 	"strings"
 	"time"
@@ -152,7 +153,9 @@ func (c *Client) run(ctx context.Context, texts []string) ([][]float32, error) {
 			return nil, fmt.Errorf("command embedder %s: %w", name, ctx.Err())
 		case callCtx.Err() != nil:
 			return nil, fmt.Errorf("command embedder %s: no answer within %s: %w", name, timeout, embed.ErrUnavailable)
-		case errors.Is(err, exec.ErrNotFound):
+		case errors.Is(err, exec.ErrNotFound), errors.Is(err, fs.ErrNotExist):
+			// A PATH miss or a program path that does not exist is a configuration mistake,
+			// not a temporary outage, so it is never ErrUnavailable.
 			return nil, fmt.Errorf("command embedder: %w", err)
 		}
 		var exit *exec.ExitError

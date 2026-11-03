@@ -21,7 +21,8 @@ func Provider() embed.Provider {
 			{Key: "query_prefix", Default: embed.QueryPrefix, KeepEmpty: true, Doc: "prefix for queries"},
 		},
 		New: func(cfg embed.Config) (embed.Embedder, error) {
-			c := New(cfg.Get("url"), cfg.Model, cfg.Dim)
+			// newClient, not New: the registry path must not fall back to KB_* variables.
+			c := newClient(cfg.Get("url"), cfg.Model, cfg.Dim)
 			c.DocPrefix, c.QueryPrefix = embed.DocPrefix, embed.QueryPrefix
 			if v, ok := cfg.Lookup("doc_prefix"); ok {
 				c.DocPrefix = v

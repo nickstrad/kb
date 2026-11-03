@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,5 +214,22 @@ func TestProviderReadsOptions(t *testing.T) {
 	}
 	if _, err := r.Open(embed.Config{Provider: Name, Dim: 2, Options: map[string]string{"command": "x"}}); err == nil {
 		t.Error("no model: want an error")
+	}
+}
+
+// A nonexistent absolute program path is a configuration mistake, like a PATH miss: it must not
+// be ErrUnavailable, or hybrid search would quietly fall back instead of reporting it.
+func TestMissingAbsoluteProgramIsAConfigurationError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-embedder")
+	c, err := New(Config{Argv: []string{missing}, Model: "m", Dim: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Embed(context.Background(), []string{"x"})
+	if err == nil || errors.Is(err, embed.ErrUnavailable) {
+		t.Fatalf("got %v (unavailable=%v)", err, errors.Is(err, embed.ErrUnavailable))
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("error %v does not wrap fs.ErrNotExist", err)
 	}
 }

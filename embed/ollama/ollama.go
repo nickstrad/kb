@@ -10,9 +10,10 @@
 // Configuration: New(baseURL, model string, dim int) falls back, for each empty/zero argument,
 // to the environment variables KB_OLLAMA_URL and KB_EMBED_MODEL (checked only when the
 // corresponding argument is empty), then to the package defaults (http://127.0.0.1:11434,
-// nomic-embed-text, 768). That environment fallback predates this package being public; code
-// that goes through the embed registry (ollama.Provider) always passes explicit values, which the
-// registry resolves from its own prefix (KB_OLLAMA_URL and KB_EMBED_MODEL for kb).
+// nomic-embed-text, 768). That environment fallback predates this package being public and
+// applies only to direct callers of New. The registry path (ollama.Provider) never reads it: it
+// builds the client from the resolved embed.Config alone, so an empty value there means the
+// package default, and only the registry's own prefix (KB_ for kb) governs it.
 //
 // Timeouts: there is no fixed http.Client.Timeout, since a real batch of 16 large chunks has been
 // measured at 16-39s warm on this box and a flat 30s would abort it. Instead every call gets a
@@ -95,11 +96,18 @@ func New(baseURL, model string, dim int) *Client {
 	if baseURL == "" {
 		baseURL = os.Getenv("KB_OLLAMA_URL")
 	}
-	if baseURL == "" {
-		baseURL = DefaultBaseURL
-	}
 	if model == "" {
 		model = os.Getenv("KB_EMBED_MODEL")
+	}
+	return newClient(baseURL, model, dim)
+}
+
+// newClient returns a Client from its arguments and the package defaults only. It never reads
+// the environment; ollama.Provider uses it so a registry-built client depends on its
+// embed.Config alone.
+func newClient(baseURL, model string, dim int) *Client {
+	if baseURL == "" {
+		baseURL = DefaultBaseURL
 	}
 	if model == "" {
 		model = DefaultModel

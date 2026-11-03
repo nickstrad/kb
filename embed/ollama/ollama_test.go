@@ -431,3 +431,31 @@ func TestLiveOllama(t *testing.T) {
 		t.Fatalf("got dim %d, want 768", len(vecs[0]))
 	}
 }
+
+// A registry with another prefix must not pick up kb's KB_* variables: the reviewer's probe, an
+// OTHER_ prefix with an empty lookup and KB_EMBED_MODEL/KB_OLLAMA_URL set in the process.
+func TestRegistryIgnoresKBEnvironment(t *testing.T) {
+	t.Setenv("KB_EMBED_MODEL", "kb-only-model")
+	t.Setenv("KB_OLLAMA_URL", "http://kb-only.invalid:1")
+	r := embed.NewRegistry()
+	r.MustRegister(Provider())
+	env := embed.Env{Prefix: "OTHER_", Lookup: func(string) (string, bool) { return "", false }}
+	cfg, err := r.Resolve(embed.Config{Provider: Name}, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model != "" {
+		t.Fatalf("resolved Model = %q, want empty", cfg.Model)
+	}
+	e, err := r.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := e.(*Client)
+	if c.Model() == "kb-only-model" || c.Model() != DefaultModel {
+		t.Errorf("Model = %q, want %q (not the KB_ value)", c.Model(), DefaultModel)
+	}
+	if c.BaseURL() != DefaultBaseURL {
+		t.Errorf("BaseURL = %q, want %q", c.BaseURL(), DefaultBaseURL)
+	}
+}
